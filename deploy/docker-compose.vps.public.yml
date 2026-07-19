@@ -1,0 +1,4 @@
+services:
+  portal:
+    ports:
+      - "127.0.0.1:8094:8080"

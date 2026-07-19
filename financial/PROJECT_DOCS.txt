@@ -1,0 +1,247 @@
+cd F:\project\12_2\erp-textile-go
+
+@'
+# 🏭 ERP TEXTILE - Complete Project Documentation
+## Version: 2.2.0 | Date: June 2026
+
+---
+
+## 📊 PROJECT OVERVIEW
+ERP system for textile manufacturing with:
+- Inventory Management (Dual: Owned + Consignment)
+- Production Management (Order + Completion)
+- Invoice & Hybrid Settlement (Cash/Check/Yarn Barter/Fabric Barter)
+- Customer Credit Scoring
+- Cost Management
+- Commission Calculator
+
+---
+
+## 🗂️ PROJECT STRUCTURE
+
+erp-textile-go/
+├── cmd/
+│   ├── api/main.go          # Go API server (port 8081)
+│   ├── migrate/main.go      # Database migration runner
+│   └── dbtest/main.go       # Database connection test
+├── internal/
+│   ├── domain/
+│   │   ├── entity/           # All domain entities (Party, Invoice, Cost, etc.)
+│   │   ├── valueobject/      # Money, CreditScore, Address
+│   │   ├── repository/       # Repository interfaces
+│   │   └── service/          # Business logic services
+│   ├── application/
+│   │   └── usecase/          # Application use cases
+│   ├── infrastructure/
+│   │   └── persistence/postgres/
+│   │       ├── migrations/   # 9 SQL migration files
+│   │       └── *_repo_impl.go # Repository implementations
+│   └── presentation/
+│       ├── handler/          # HTTP handlers
+│       ├── middleware/       # Auth, Logging, CORS
+│       └── router/           # Route definitions
+├── web/
+│   ├── index.html            # MAIN FRONTEND (Pure JS, No Dependencies)
+│   ├── index_backup.html     # Backup of frontend
+│   └── backup_*.html         # Timestamped backups
+├── tests/                    # Unit & Integration tests
+├── docker-compose.yml        # Docker services
+└── go.mod                    # Go module
+
+---
+
+## 🗄️ DATABASE (PostgreSQL - Docker)
+
+Container: textile-erp-db (port 5433)
+Database: textile_erp
+User: erp_user / Password: change_me
+
+29 Tables Created:
+- parties (5 records)
+- items (5 records)
+- warehouses (3 records)
+- machines (2 records)
+- accounts (17 records)
+- uoms (4 records)
+- risk_group_definitions (3 records)
+- customer_credit_profiles
+- production_orders, production_consumptions, production_outputs
+- inventory_lots, inventory_txns, inventory_txn_lines
+- settlements, settlement_lines
+- commission_invoices
+- journal_vouchers, journal_voucher_lines
+- boms, bom_lines
+- credit_score_logs, credit_alerts
+- tax_invoices, audit_logs
+
+Backend database connection: NOT WORKING
+- pq driver downloaded locally but go.mod replace directive not working
+- API runs WITHOUT database (graceful degradation)
+
+---
+
+## 🎨 FRONTEND (web/index.html)
+
+TECH: Pure JavaScript (NO React, NO npm, NO CDN, NO dependencies)
+SIZE: ~27KB (single file)
+HOW TO RUN: Double-click index.html (opens in browser)
+
+LOGIN: admin / admin123
+
+9 MODULES:
+1. 📊 Dashboard - 4 stat cards + Financial Advisor
+2. 👥 Parties - Customer cards with credit scores + Add form
+3. 🏭 Production - Create order + Complete production with live calculation
+4. 📦 Inventory - Dual system (Owned/Custody) with CRUD operations
+5. 🧾 Invoices - Hybrid settlement + Print function
+6. 💸 Costs - Add/List cost items
+7. 🛡️ Credit - SVG circle charts with risk levels
+8. 📊 Reports - KPI cards
+9. 🧮 Commission - Calculator
+
+INVENTORY FEATURES:
+- Tabs: ملکی (Owned) | امانی (Custody) | همه (All)
+- Add new item form (code, name, type, qty, unit cost, min stock, customer for custody)
+- Stock adjustment buttons (+10/-10)
+- Delete button (🗑️)
+- Edit button (✏️) - NEEDS FIXING (added but button not appearing in table)
+- Customer breakdown section for custody items
+
+INVOICE FEATURES:
+- Base amount + Penalty + Waste + Discount
+- Payment methods: Cash, Check, Yarn Barter, Fabric Barter
+- Live remaining balance calculation
+- Print invoice (opens new window with formatted invoice)
+- Invoice list with status badges
+
+DATA PERSISTENCE: In-memory only (NO localStorage yet)
+- Data lost on page refresh
+- Needs localStorage implementation for production use
+
+---
+
+## 🔧 BACKEND API (Go)
+
+Server: http://localhost:8081 (Go standard library, no framework)
+Endpoints:
+- GET  /health
+- POST /api/production/orders
+- POST /api/production/complete
+- POST /api/settlements
+- POST /api/advisor/advice
+- GET  /api/advisor/credit-report/{id}
+- POST /api/commission/calculate
+- POST /api/costs
+- GET  /api/costs/
+- GET  /api/inventory
+- POST /api/inventory/stock-in
+- POST /api/inventory/stock-out
+- GET  /api/invoices (NOT WORKING - 404)
+- POST /api/invoices (NOT WORKING - 404)
+
+Unit Tests: 3/3 PASS (waste_calculator, commission_calculator, credit_score)
+
+---
+
+## 🐳 DOCKER SERVICES (Running)
+
+1. textile-erp-db       - PostgreSQL 16 (port 5433) - HEALTHY
+2. textile-frontend     - Old project frontend (port 3000) - Node.js
+3. textile-backend      - Old project backend (port 8080) - HEALTHY
+4. textile-nginx        - Nginx (port 80)
+5. textile-postgres     - Old PostgreSQL (port 5432) - HEALTHY
+6. textile-redis        - Redis 7 (port 6379) - HEALTHY
+7. financial_postgres   - PostgreSQL 16 (another instance)
+
+---
+
+## ⚠️ KNOWN ISSUES
+
+1. pq driver: PostgreSQL driver for Go NOT connected
+   - go.mod has replace directive but missing go.sum entry
+   - API works without database
+
+2. Frontend invoice API: GET/POST /api/invoices returns 404
+   - Backend handler might not be registered in router
+
+3. Edit button (✏️) in inventory: Functions exist in code but button not appearing in table rows
+   - editItem() and saveEdit() functions are defined
+   - Button HTML not added to table row template
+
+4. Data persistence: All data lost on refresh
+   - Need to add localStorage to all data arrays
+
+5. Form labels: Some Persian text appears as question marks in terminal
+   - UTF-8 encoding issue in PowerShell output only (works in browser)
+
+---
+
+## 🚀 HOW TO RUN
+
+Frontend:
+  1. Open F:\project\12_2\erp-textile-go\web\index.html
+  2. Login: admin / admin123
+
+Backend (optional):
+  cd F:\project\12_2\erp-textile-go
+  go run ./cmd/api/main.go
+
+Database:
+  Already running in Docker (port 5433)
+  docker exec -it textile-erp-db psql -U erp_user -d textile_erp
+
+---
+
+## 📝 TO-DO (Priority Order)
+
+1. Fix edit button appearance in inventory table
+2. Add localStorage for data persistence
+3. Connect Go backend to PostgreSQL
+4. Fix invoice API endpoints (GET/POST /api/invoices)
+5. Add export to Excel feature
+6. Add user management (multi-user)
+7. Add real charts (Chart.js or Recharts via CDN)
+
+---
+
+## 🔑 KEY VARIABLES & FUNCTIONS (Frontend)
+
+Global Variables:
+- owned[]        - Owned inventory items
+- cons[]         - Custody inventory items
+- invoices[]     - Invoice records
+- costs[]        - Cost records
+- pmethods[]     - Payment methods in invoice form
+- invTab         - Current inventory tab ('owned'/'consignment'/'all')
+- showAddForm    - Toggle add/edit form visibility
+- editItemCode   - Code of item being edited (null if adding new)
+- newItem{}      - Form data for new/edit item
+
+Key Functions:
+- doLogin()      - Authentication
+- renderNav()    - Render sidebar navigation
+- renderPage()   - Route to current page
+- dash()         - Dashboard
+- partiesPage()  - Customer management
+- prod()         - Production
+- inv()          - Inventory (with full CRUD)
+- invPage()      - Invoices
+- costPage()     - Costs
+- creditPage()   - Credit scoring
+- reportsPage()  - Reports
+- commPage()     - Commission calculator
+- addItem()      - Add new inventory item
+- editItem()     - Edit inventory item
+- saveEdit()     - Save edited item
+- removeItem()   - Delete inventory item
+- stockInOut()   - Adjust stock qty (+/-)
+- mkInv()        - Create invoice
+- pin()          - Print invoice
+- fm()           - Format money
+- fn()           - Format number
+'@ | Out-File -FilePath "PROJECT_DOCS.txt" -Encoding UTF8
+
+Write-Host "✅ Documentation saved to PROJECT_DOCS.txt" -ForegroundColor Green
+Write-Host "📄 Size: $((Get-Item PROJECT_DOCS.txt).Length) bytes" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "📋 Give this file to any AI - it will understand everything!" -ForegroundColor Yellow
