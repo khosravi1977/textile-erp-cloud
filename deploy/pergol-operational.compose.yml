@@ -1,0 +1,48 @@
+name: pergol-operational
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pergol-operational-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pergol_operational_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    image: textile-erp-operational-app
+    container_name: pergol-operational-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      OPERATIONAL_DB_DRIVER: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      DB_SSLMODE: disable
+      OPERATIONAL_SQLITE_PATH: /seed/database.db
+      PORT: 8091
+    volumes:
+      - /opt/apps/pergol-operational/database.db:/seed/database.db:ro
+    ports:
+      - "0.0.0.0:${PUBLIC_PORT}:8091"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8091/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pergol_operational_pgdata:

@@ -1,0 +1,7 @@
+app:
+  name: textile-erp-financial
+  mode: production
+  feature_flags:
+    multi_tenant: true
+    audit_log: true
+    jwt_auth: true

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: textile-erp-config
+  namespace: textile-erp
+data:
+  APP_ENV: production
+  APP_PORT: "8081"
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: textile_erp
+  DB_USER: erp_user
+  DB_SSLMODE: disable
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+

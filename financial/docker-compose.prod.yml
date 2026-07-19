@@ -1,0 +1,145 @@
+﻿
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: textile-erp-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: textile_erp
+      POSTGRES_USER: erp_user
+      POSTGRES_PASSWORD: change_me
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U erp_user -d textile_erp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-replica:
+    image: postgres:16-alpine
+    container_name: textile-erp-db-replica
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: textile_erp
+      POSTGRES_USER: erp_user
+      POSTGRES_PASSWORD: change_me
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_replica_data:/var/lib/postgresql/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U erp_user -d textile_erp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: textile-erp-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: textile-erp-api
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: erp_user
+      DB_PASSWORD: change_me
+      DB_NAME: textile_erp
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      DB_READ_HOST: postgres-replica
+      DB_READ_PORT: 5432
+      DB_READ_USER: erp_user
+      DB_READ_PASSWORD: change_me
+      DB_READ_NAME: textile_erp
+      APP_PORT: 8081
+      APP_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: textile-erp-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: textile-erp-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      api:
+        condition: service_healthy
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: textile-erp-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:
+    driver: local
+  postgres_replica_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
