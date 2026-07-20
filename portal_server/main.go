@@ -365,10 +365,12 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", app.health)
 	mux.HandleFunc("/downloads/HesabYar.apk", app.downloadMobileApp)
+	mux.HandleFunc("/login", app.customerLogin)
 	mux.HandleFunc("/admin/login", app.adminLogin)
 	mux.HandleFunc("/admin/logout", app.adminLogout)
 	mux.HandleFunc("/admin/api/accesses", app.adminAccesses)
 	mux.HandleFunc("/admin/api/accesses/", app.adminAccessByID)
+	mux.HandleFunc("/admin/api/deprovision", app.adminDeprovision)
 	mux.HandleFunc("/admin", app.adminPanel)
 	mux.HandleFunc("/access/", app.accessEntry)
 	mux.HandleFunc("/api/portal/financial-session", app.portalFinancialSession)
@@ -440,6 +442,13 @@ func (a *portalApp) requireModuleAccess(module string, next http.Handler) http.H
 				http.Redirect(w, r, "/", http.StatusSeeOther)
 				return
 			}
+			if r.Method == http.MethodGet && (r.URL.Path == "/operational" || r.URL.Path == "/operational/" || strings.Contains(r.Header.Get("Accept"), "text/html")) {
+				if _, err := a.createOperationalSession(w, r); err != nil {
+					log.Printf("operational single sign-on failed for access=%d: %v", record.ID, err)
+					http.Error(w, "ورود خودکار به بخش عملیاتی برقرار نشد. دوباره از منوی اصلی تلاش کنید.", http.StatusServiceUnavailable)
+					return
+				}
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -500,6 +509,10 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := a.accessRecordFromRequest(r)
 	hasAccess := err == nil && record.ProjectKey == "textile-erp"
+	if !hasAccess {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
 	cardParts := make([]string, 0, 4)
 	cardParts = append(cardParts, `<a class="card mobile" href="https://textile.62.60.204.237.nip.io/downloads/HesabYar.apk" download>دانلود اپ حسابیار برای اندروید</a>`)
 	statusParts := []string{
@@ -578,6 +591,90 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
   </main>
 </body>
 </html>`))
+}
+
+func (a *portalApp) customerLogin(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/login" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method == http.MethodGet {
+		if record, err := a.accessRecordFromRequest(r); err == nil && record.ProjectKey == "textile-erp" {
+			http.Redirect(w, r, a.accessTarget(record), http.StatusSeeOther)
+			return
+		}
+		a.renderCustomerLogin(w, "")
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		a.renderCustomerLogin(w, "درخواست ورود معتبر نیست.")
+		return
+	}
+	username := strings.TrimSpace(r.Form.Get("username"))
+	password := r.Form.Get("password")
+	items, err := a.listAccesses()
+	if err != nil {
+		a.renderCustomerLogin(w, "سامانه ورود موقتاً در دسترس نیست.")
+		return
+	}
+	for _, record := range items {
+		if record.ProjectKey != "textile-erp" || !record.IsActive || time.Now().After(record.ExpiresAt) {
+			continue
+		}
+		if !strings.EqualFold(username, strings.TrimSpace(record.Username)) {
+			continue
+		}
+		if a.verifyAccessPassword(record.AccessToken, password) != nil {
+			continue
+		}
+		if record.MustChangePassword || accessRequiresSetup(record) {
+			http.Redirect(w, r, "/access/"+url.PathEscape(record.AccessToken), http.StatusSeeOther)
+			return
+		}
+		a.setPortalAccessCookie(w, r, record.AccessToken, record.ExpiresAt)
+		_ = a.markAccessUsed(record.ID)
+		http.Redirect(w, r, a.accessTarget(record), http.StatusSeeOther)
+		return
+	}
+	a.renderCustomerLogin(w, "نام کاربری یا رمز عبور صحیح نیست.")
+}
+
+func (a *portalApp) renderCustomerLogin(w http.ResponseWriter, errMsg string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	errorHTML := ""
+	if errMsg != "" {
+		errorHTML = `<div class="error">` + html.EscapeString(errMsg) + `</div>`
+	}
+	_, _ = w.Write([]byte(`<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ورود مشتری ERP نساجی</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f7f1e8;color:#2a1a14;font-family:Tahoma,Arial;display:flex;align-items:center;justify-content:center;padding:24px}
+    .panel{width:min(460px,96vw);background:#fffaf4;border:1px solid #dbc7ae;border-radius:20px;padding:28px;box-shadow:0 24px 80px rgba(75,43,24,.12)}
+    h1{margin:0 0 10px;font-size:28px}.lead,.muted{color:#6f574a;line-height:1.9}.muted{font-size:13px;margin-top:14px}
+    form{display:grid;gap:12px;margin-top:20px}input{width:100%;border:1px solid #c8ab8b;border-radius:12px;padding:13px 14px;background:#fff;color:#2a1a14}
+    button{border:1px solid #8b5e3c;background:#8b5e3c;color:#fff;border-radius:12px;padding:13px 16px;cursor:pointer;font-weight:bold}
+    .error{margin-top:14px;background:#fff0f0;color:#9f2333;border:1px solid #efb0b0;border-radius:12px;padding:10px 12px}
+  </style>
+</head>
+<body><main class="panel">
+  <h1>ورود مشتری ERP نساجی</h1>
+  <div class="lead">با نام کاربری و رمز فعلی خود از هر رایانه یا گوشی وارد شوید.</div>
+  ` + errorHTML + `
+  <form method="post" action="/login">
+    <input name="username" placeholder="نام کاربری" autocomplete="username" required>
+    <input name="password" type="password" placeholder="رمز عبور" autocomplete="current-password" required>
+    <button type="submit">ورود به برنامه</button>
+  </form>
+  <div class="muted">لینک دعوت فقط برای ساخت اولیه حساب است. برای ورودهای بعدی همین صفحه را ذخیره کنید.</div>
+</main></body></html>`))
 }
 
 func (a *portalApp) adminLogin(w http.ResponseWriter, r *http.Request) {
@@ -1129,6 +1226,9 @@ type accessRequest struct {
 	CanManageTeam2      *bool    `json:"can_manage_team"`
 	RequiresSetup       *bool    `json:"requiresSetup"`
 	RequiresSetup2      *bool    `json:"requires_setup"`
+	MustChangePassword  *bool    `json:"mustChangePassword"`
+	MustChangePassword2 *bool    `json:"must_change_password"`
+	ForcePasswordChange *bool    `json:"forcePasswordChange"`
 	AllowFinancial      *bool    `json:"allowFinancial"`
 	AllowFinancial2     *bool    `json:"allow_financial"`
 	AllowOperational    *bool    `json:"allowOperational"`
@@ -1167,6 +1267,12 @@ func decodeAccessRequest(r *http.Request) (accessRequest, error) {
 	if req.RequiresSetup == nil {
 		req.RequiresSetup = req.RequiresSetup2
 	}
+	if req.MustChangePassword == nil {
+		req.MustChangePassword = req.MustChangePassword2
+	}
+	if req.MustChangePassword == nil {
+		req.MustChangePassword = req.ForcePasswordChange
+	}
 	if req.AllowFinancial == nil {
 		req.AllowFinancial = req.AllowFinancial2
 	}
@@ -1181,6 +1287,79 @@ func decodeAccessRequest(r *http.Request) (accessRequest, error) {
 	req.Notes = strings.TrimSpace(req.Notes)
 	req.AccessRole = strings.TrimSpace(req.AccessRole)
 	return req, nil
+}
+
+func (a *portalApp) adminDeprovision(w http.ResponseWriter, r *http.Request) {
+	if !a.isAdminAuthenticated(r) {
+		respondJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var payload struct{ Username string `json:"username"` }
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&payload); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	username := strings.TrimSpace(payload.Username)
+	if username == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "username is required"})
+		return
+	}
+	if err := a.deprovisionTextileTenant(username); err != nil {
+		respondJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	items, err := a.listAccesses()
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	for _, item := range items {
+		if item.ProjectKey == "textile-erp" && strings.EqualFold(strings.TrimSpace(item.Username), username) {
+			if err := a.deleteAccess(item.ID); err != nil {
+				respondJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *portalApp) deprovisionTextileTenant(username string) error {
+	payload, err := json.Marshal(map[string]string{"username": strings.TrimSpace(username)})
+	if err != nil {
+		return err
+	}
+	endpoint := strings.TrimRight(a.operationalAPI, "/") + "/api/portal/deprovision"
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Operational-Portal-Secret", a.operationalSessionSecret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !result.Success {
+		if strings.TrimSpace(result.Error) == "" {
+			result.Error = fmt.Sprintf("operational tenant deprovisioning failed with status %d", resp.StatusCode)
+		}
+		return errors.New(result.Error)
+	}
+	return nil
 }
 
 func (a *portalApp) adminAccesses(w http.ResponseWriter, r *http.Request) {
@@ -1222,10 +1401,6 @@ func (a *portalApp) adminAccesses(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "username and password are required when setup is disabled"})
 			return
 		}
-		if req.ProjectKey == "textile-erp" && req.FinancialCompanyID <= 0 {
-			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "financial company id is required for textile customers"})
-			return
-		}
 		expiresAt, err := resolveExpiry(req.ExpiresAt, req.TrialDays)
 		if err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -1235,6 +1410,13 @@ func (a *portalApp) adminAccesses(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
+		}
+		if req.MustChangePassword != nil && !requiresSetup && access.MustChangePassword != *req.MustChangePassword {
+			access, err = a.setAccessMustChangePassword(access.ID, *req.MustChangePassword)
+			if err != nil {
+				respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
 		}
 		respondJSON(w, http.StatusCreated, a.accessResponse(access, rawPassword))
 	default:
@@ -1300,6 +1482,13 @@ func (a *portalApp) adminAccessByID(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
+		}
+		if req.MustChangePassword != nil && !requiresSetup && access.MustChangePassword != *req.MustChangePassword {
+			access, err = a.setAccessMustChangePassword(access.ID, *req.MustChangePassword)
+			if err != nil {
+				respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
 		}
 		respondJSON(w, http.StatusOK, a.accessResponse(access, rawPassword))
 		return
@@ -1371,7 +1560,6 @@ func (a *portalApp) accessEntry(w http.ResponseWriter, r *http.Request) {
 		}
 		username := strings.TrimSpace(r.Form.Get("username"))
 		currentPassword := r.Form.Get("current_password")
-		newUsername := strings.TrimSpace(r.Form.Get("new_username"))
 		newPassword := strings.TrimSpace(r.Form.Get("new_password"))
 		confirmPassword := strings.TrimSpace(r.Form.Get("confirm_password"))
 		if !strings.EqualFold(username, strings.TrimSpace(record.Username)) || a.verifyAccessPassword(token, currentPassword) != nil {
@@ -1386,7 +1574,7 @@ func (a *portalApp) accessEntry(w http.ResponseWriter, r *http.Request) {
 			a.renderAccessPage(w, &record, "رمز عبور جدید باید با رمز موقت متفاوت باشد.")
 			return
 		}
-		updated, err := a.changeTemporaryCredentials(token, newUsername, newPassword)
+		updated, err := a.changeTemporaryPassword(token, newPassword)
 		if err != nil {
 			a.renderAccessPage(w, &record, err.Error())
 			return
@@ -1497,21 +1685,30 @@ func (a *portalApp) createOperationalSession(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		return nil, err
 	}
-	token, err := a.signOperationalSession(record)
+	if record.FinancialCompanyID <= 0 || record.ID <= 0 || strings.TrimSpace(record.Username) == "" {
+		return nil, errors.New("operational access is not configured")
+	}
+	role := "viewer"
+	if normalizeAccessRole(effectiveAccessRole(record)) == "owner" {
+		role = "admin"
+	}
+	payload, err := json.Marshal(map[string]any{
+		"company_id": record.FinancialCompanyID,
+		"access_id":  record.ID,
+		"username":   record.Username,
+		"role":       role,
+	})
 	if err != nil {
 		return nil, err
 	}
-	payload, err := json.Marshal(map[string]string{"token": token})
-	if err != nil {
-		return nil, err
-	}
-	loginURL := strings.TrimRight(a.operationalAPI, "/") + "/api/portal-session"
+	loginURL := strings.TrimRight(a.operationalAPI, "/") + "/api/portal/session"
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, loginURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Operational-Portal-Secret", a.operationalSessionSecret)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -1820,18 +2017,13 @@ func (a *portalApp) renderAccessPage(w http.ResponseWriter, record *projectAcces
 	}
 	if changePasswordMode {
 		formHTML = `<form method="post">
-        <label>نام کاربری موقت
-          <input name="username" value="` + html.EscapeString(record.Username) + `" autocomplete="username" readonly required>
-        </label>
+        <input name="username" placeholder="نام کاربری" autocomplete="username" required>
         <input name="current_password" type="password" placeholder="رمز عبور موقت" autocomplete="current-password" required>
-        <label>نام کاربری شخصی برای ورودهای بعدی
-          <input name="new_username" placeholder="نام کاربری جدید" autocomplete="username" required>
-        </label>
         <input name="new_password" type="password" placeholder="رمز عبور جدید؛ حداقل ۱۰ کاراکتر" autocomplete="new-password" required>
         <input name="confirm_password" type="password" placeholder="تکرار رمز عبور جدید" autocomplete="new-password" required>
-        <button type="submit">ثبت نام کاربری و رمز شخصی و ورود</button>
+        <button type="submit">ثبت رمز جدید و ورود</button>
       </form>
-      <div class="muted">این مرحله فقط یک بار انجام می‌شود. برای ورودهای بعدی همین لینک را باز کنید و نام کاربری و رمز شخصی خودتان را وارد کنید.</div>`
+      <div class="muted">پس از ثبت رمز جدید، برای ورودهای بعدی از همین لینک یا کد QR و رمز جدید استفاده کنید.</div>`
 	}
 	if setupMode {
 		buttonText = "ذخیره و ادامه"
@@ -2057,6 +2249,67 @@ func validateAccessPassword(password string) error {
 	return nil
 }
 
+func existingFinancialCompanyID(items []projectAccess, companyName string) int64 {
+	companyName = strings.TrimSpace(companyName)
+	var companyID int64
+	for _, item := range items {
+		if item.ProjectKey != "textile-erp" || item.FinancialCompanyID <= 0 {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(item.CompanyName), companyName) && item.FinancialCompanyID > companyID {
+			companyID = item.FinancialCompanyID
+		}
+	}
+	return companyID
+}
+
+func (a *portalApp) provisionTextileTenant(financialCompanyID, accessID int64, companyName, contactName, username, password, role string) (int64, error) {
+	operationalRole := "viewer"
+	if normalizeAccessRole(role) == "owner" {
+		operationalRole = "admin"
+	}
+	payload, err := json.Marshal(map[string]any{
+		"company_id":   financialCompanyID,
+		"access_id":    accessID,
+		"company_name": companyName,
+		"contact_name": contactName,
+		"username":     username,
+		"password":     password,
+		"role":         operationalRole,
+	})
+	if err != nil {
+		return 0, err
+	}
+	endpoint := strings.TrimRight(a.operationalAPI, "/") + "/api/portal/provision"
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Operational-Portal-Secret", a.operationalSessionSecret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Success   bool   `json:"success"`
+		CompanyID int64  `json:"company_id"`
+		Error     string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !result.Success || result.CompanyID <= 0 {
+		if strings.TrimSpace(result.Error) == "" {
+			result.Error = fmt.Sprintf("operational tenant provisioning failed with status %d", resp.StatusCode)
+		}
+		return 0, errors.New(result.Error)
+	}
+	return result.CompanyID, nil
+}
+
 func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, username, password string, financialCompanyID int64, expiresAt time.Time, notes, accessRole string, permissions []string, canManageTeam, requiresSetup, allowFinancial, allowOperational bool) (projectAccess, string, error) {
 	if !validProject(projectKey) {
 		return projectAccess{}, "", fmt.Errorf("invalid project key")
@@ -2067,7 +2320,7 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 	username = strings.TrimSpace(username)
 	password = strings.TrimSpace(password)
 	notes = strings.TrimSpace(notes)
-	if projectKey == "textile-erp" && financialCompanyID <= 0 {
+	if projectKey == "textile-erp" && financialCompanyID <= 0 && requiresSetup {
 		return projectAccess{}, "", fmt.Errorf("financial company id is required for textile customer access")
 	}
 	if expiresAt.Before(time.Now()) {
@@ -2098,6 +2351,9 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 	items, err := readAccesses(a.accessFile)
 	if err != nil {
 		return projectAccess{}, "", err
+	}
+	if projectKey == "textile-erp" && financialCompanyID <= 0 {
+		financialCompanyID = existingFinancialCompanyID(items, companyName)
 	}
 
 	if requiresSetup {
@@ -2139,12 +2395,22 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 		enc = passwordEnc
 		rawPassword = password
 	}
+	accessID := nextAccessID(items)
+	if projectKey == "textile-erp" && !requiresSetup {
+		financialCompanyID, err = a.provisionTextileTenant(financialCompanyID, accessID, companyName, contactName, username, password, role)
+		if err != nil {
+			return projectAccess{}, "", err
+		}
+	}
+	if projectKey == "textile-erp" && financialCompanyID <= 0 {
+		return projectAccess{}, "", fmt.Errorf("financial company id is required for textile customer access")
+	}
 	token, err := randomHex(24)
 	if err != nil {
 		return projectAccess{}, "", err
 	}
 	record := projectAccess{
-		ID:                 nextAccessID(items),
+		ID:                 accessID,
 		ProjectKey:         projectKey,
 		CompanyName:        companyName,
 		ContactName:        contactName,
@@ -2293,6 +2559,29 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 	return record, rawPassword, nil
 }
 
+func (a *portalApp) setAccessMustChangePassword(id int64, mustChange bool) (projectAccess, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	items, err := readAccesses(a.accessFile)
+	if err != nil {
+		return projectAccess{}, err
+	}
+	for index := range items {
+		if items[index].ID != id {
+			continue
+		}
+		if items[index].RequiresSetup {
+			mustChange = false
+		}
+		items[index].MustChangePassword = mustChange
+		if err := writeAccesses(a.accessFile, items); err != nil {
+			return projectAccess{}, err
+		}
+		return items[index], nil
+	}
+	return projectAccess{}, os.ErrNotExist
+}
+
 func (a *portalApp) finalizeAccessSetup(token, contactName, username, password string) (projectAccess, error) {
 	contactName = strings.TrimSpace(contactName)
 	username = strings.TrimSpace(username)
@@ -2354,12 +2643,8 @@ func (a *portalApp) finalizeAccessSetup(token, contactName, username, password s
 	return record, nil
 }
 
-func (a *portalApp) changeTemporaryCredentials(token, username, password string) (projectAccess, error) {
-	username = strings.TrimSpace(username)
+func (a *portalApp) changeTemporaryPassword(token, password string) (projectAccess, error) {
 	password = strings.TrimSpace(password)
-	if len([]rune(username)) < 3 || len([]rune(username)) > 64 || strings.ContainsAny(username, " \t\r\n") {
-		return projectAccess{}, fmt.Errorf("نام کاربری باید بین ۳ تا ۶۴ کاراکتر و بدون فاصله باشد")
-	}
 	if err := validateAccessPassword(password); err != nil {
 		return projectAccess{}, err
 	}
@@ -2377,29 +2662,19 @@ func (a *portalApp) changeTemporaryCredentials(token, username, password string)
 	if err != nil {
 		return projectAccess{}, err
 	}
-	index := -1
-	for i := range items {
-		if items[i].AccessToken == token {
-			index = i
-			break
+	for index := range items {
+		if items[index].AccessToken != token {
+			continue
 		}
+		items[index].PasswordHash = string(hash)
+		items[index].PasswordEnc = enc
+		items[index].MustChangePassword = false
+		if err := writeAccesses(a.accessFile, items); err != nil {
+			return projectAccess{}, err
+		}
+		return items[index], nil
 	}
-	if index == -1 {
-		return projectAccess{}, os.ErrNotExist
-	}
-	record := items[index]
-	if accessUsernameTaken(items, record, username, record.ID) {
-		return projectAccess{}, fmt.Errorf("این نام کاربری قبلا برای این شرکت ثبت شده است.")
-	}
-	record.Username = username
-	record.PasswordHash = string(hash)
-	record.PasswordEnc = enc
-	record.MustChangePassword = false
-	items[index] = record
-	if err := writeAccesses(a.accessFile, items); err != nil {
-		return projectAccess{}, err
-	}
-	return record, nil
+	return projectAccess{}, os.ErrNotExist
 }
 
 func (a *portalApp) tenantAccesses(record projectAccess) ([]projectAccess, error) {

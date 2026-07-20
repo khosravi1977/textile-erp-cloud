@@ -13,8 +13,7 @@ const API_BASE = window.ERP_FINANCIAL_API || import.meta.env.VITE_API_BASE || (
   window.location.port === '5173' ? `${window.location.protocol}//${window.location.hostname}:8081/api` : '/api/financial/api'
 );
 const PORTAL_FINANCIAL_SESSION = window.ERP_PORTAL_FINANCIAL_SESSION || '';
-const LAN_ORIGIN = window.ERP_LAN_ORIGIN || window.location.origin;
-const MOBILE_APP_DOWNLOAD_URL = '/downloads/HesabYar.apk';
+const MOBILE_APP_DOWNLOAD_URL = 'https://textile.62.60.204.237.nip.io/downloads/HesabYar.apk';
 
 const authHeaders = () => {
 
@@ -1010,9 +1009,7 @@ async function buildQrImageUrl(value) {
 export default function App() {
   const [currentPage, setCurrentPage] = useState('dashboard');
   const [isLoggedIn, setIsLoggedIn] = useState(Boolean(localStorage.getItem('financial-auth-token')));
-  // Always refresh a portal-linked token before loading workspace data. This also
-  // replaces stale tokens left by a previous server or local package.
-  const [authBooting, setAuthBooting] = useState(Boolean(PORTAL_FINANCIAL_SESSION));
+  const [authBooting, setAuthBooting] = useState(Boolean(PORTAL_FINANCIAL_SESSION) && !localStorage.getItem('financial-auth-token'));
   const [sessionProfile, setSessionProfile] = useLocalStorage('financial-auth-profile', null);
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
@@ -1321,7 +1318,7 @@ function MobileAppPage() {
   const createPairing = async () => {
     setBusy(true); setError(''); setQrImage('');
     try {
-      const apiBase = new URL(API_BASE, LAN_ORIGIN).toString().replace(/\/$/, '')
+      const apiBase = new URL(API_BASE, window.location.origin).toString().replace(/\/$/, '')
         .replace('textile.62-60-204-237.sslip.io', 'textile.62.60.204.237.nip.io');
       const result = await apiJSON('/mobile/pairing', { method: 'POST', body: { api_base: apiBase } });
       setPairing(result);

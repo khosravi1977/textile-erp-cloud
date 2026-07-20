@@ -4,10 +4,6 @@ import { createRoot } from 'react-dom/client';
 
 import JsBarcode from 'jsbarcode';
 
-import { BrowserMultiFormatReader } from '@zxing/browser';
-
-import QRCode from 'qrcode';
-
 import './style.css';
 
 
@@ -22,7 +18,6 @@ const PORTAL_OPERATIONAL_SESSION = window.ERP_PORTAL_OPERATIONAL_SESSION || (
     ? '/api/portal/operational-session'
     : ''
 );
-const LOCAL_MODE = Boolean(window.ERP_LOCAL_MODE);
 
 
 
@@ -1227,7 +1222,7 @@ function Salon({ lookups, notify }) {
 
 
 
-  const save = async (printAfterSave = true) => {
+  const save = async () => {
 
     const savedLabel = labelData();
 
@@ -1908,440 +1903,6 @@ function MachineFormulas({ notify }) {
 
 
 
-function MobileBarcodeScanner({ onCode, onClose }) {
-
-  const videoRef = React.useRef(null);
-
-  const streamRef = React.useRef(null);
-
-  const imageInputRef = React.useRef(null);
-
-  const [message, setMessage] = useState('در حال فعال کردن دوربین...');
-
-  const decodeImage = async event => {
-
-    const file = event.target.files?.[0];
-
-    event.target.value = '';
-
-    if (!file) return;
-
-    const imageURL = URL.createObjectURL(file);
-
-    try {
-
-      setMessage('در حال خواندن بارکد از تصویر...');
-
-      const image = new Image();
-
-      image.src = imageURL;
-
-      await image.decode();
-
-      const result = await new BrowserMultiFormatReader().decodeFromImageElement(image);
-
-      const code = String(result?.getText?.() || '').trim();
-
-      if (!code) throw new Error('بارکدی در تصویر پیدا نشد. عکس واضح‌تر و نزدیک‌تر بگیرید.');
-
-      streamRef.current?.getTracks().forEach(track => track.stop());
-
-      onCode(code);
-
-    } catch (err) {
-
-      setMessage(err.message || 'بارکدی در تصویر پیدا نشد. دوباره عکس بگیرید.');
-
-    } finally {
-
-      URL.revokeObjectURL(imageURL);
-
-    }
-
-  };
-
-  useEffect(() => {
-
-    let active = true;
-
-    let timer = 0;
-
-    const stop = () => {
-
-      window.clearTimeout(timer);
-
-      streamRef.current?.getTracks().forEach(track => track.stop());
-
-      streamRef.current = null;
-
-    };
-
-    const start = async () => {
-
-      try {
-
-        if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-
-          throw new Error('برای شبکه محلی از دکمه «گرفتن عکس بارکد» استفاده کنید. اسکن زنده فقط روی HTTPS یا localhost فعال است.');
-
-        }
-
-        if (!window.BarcodeDetector) {
-
-          throw new Error('اسکن زنده در این مرورگر فعال نیست؛ از دکمه «گرفتن عکس بارکد» استفاده کنید.');
-
-        }
-
-        const detector = new window.BarcodeDetector({ formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'qr_code'] });
-
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
-
-        if (!active) {
-
-          stream.getTracks().forEach(track => track.stop());
-
-          return;
-
-        }
-
-        streamRef.current = stream;
-
-        videoRef.current.srcObject = stream;
-
-        await videoRef.current.play();
-
-        setMessage('بارکد طاقه را داخل کادر قرار دهید.');
-
-        const scan = async () => {
-
-          if (!active) return;
-
-          try {
-
-            const results = await detector.detect(videoRef.current);
-
-            const code = String(results?.[0]?.rawValue || '').trim();
-
-            if (code) {
-
-              stop();
-
-              onCode(code);
-
-              return;
-
-            }
-
-          } catch {
-
-          }
-
-          timer = window.setTimeout(scan, 240);
-
-        };
-
-        scan();
-
-      } catch (err) {
-
-        setMessage(err.message || 'دوربین در دسترس نیست.');
-
-      }
-
-    };
-
-    start();
-
-    return () => {
-
-      active = false;
-
-      stop();
-
-    };
-
-  }, []);
-
-  return <div className="mobile-scanner" role="dialog" aria-modal="true" aria-label="اسکن بارکد طاقه">
-
-    <div className="mobile-scanner-card">
-
-      <div className="mobile-scanner-head"><strong>بارگیری با موبایل</strong><button type="button" className="ghost" onClick={onClose}>بستن</button></div>
-
-      <div className="mobile-scanner-frame"><video ref={videoRef} playsInline muted /></div>
-
-      <p>{message}</p>
-
-      <input ref={imageInputRef} className="mobile-scanner-file" type="file" accept="image/*" capture="environment" onChange={decodeImage} />
-
-      <button type="button" className="primary mobile-scanner-photo" onClick={() => imageInputRef.current?.click()}>گرفتن عکس بارکد / انتخاب تصویر</button>
-
-    </div>
-
-  </div>;
-
-}
-
-function MobileLoadingDialog({ session, onClose }) {
-
-  return <div className="mobile-loading-dialog" role="dialog" aria-modal="true" aria-label="اتصال بارگیری موبایل">
-
-    <div className="mobile-loading-dialog-card">
-
-      <div className="mobile-scanner-head"><strong>بارگیری با موبایل</strong><button type="button" className="ghost" onClick={onClose}>بستن اتصال</button></div>
-
-      <p className="mobile-loading-help">این QR را با دوربین گوشی اسکن کنید. پنل بارگیری روی گوشی باز می‌شود و طاقه‌های ثبت‌شده به‌صورت خودکار به همین فاکتور اضافه می‌شوند.</p>
-
-      <div className="mobile-loading-qr"><img src={session.qrImage} alt="QR اتصال بارگیری موبایل" /></div>
-
-      <div className="mobile-loading-status"><span className="connection-dot" /> اتصال فعال است</div>
-
-      <div className="mobile-loading-stats"><b>{fmt(session.count || 0)}</b><span>طاقه از موبایل دریافت شد</span></div>
-
-      <div className="mobile-loading-url" dir="ltr">{session.url}</div>
-
-      <button type="button" onClick={() => navigator.clipboard?.writeText(session.url)}>کپی لینک برای ارسال به گوشی</button>
-
-      <small>اعتبار اتصال تا {new Date(session.expires_at).toLocaleTimeString('fa-IR')} است.</small>
-
-    </div>
-
-  </div>;
-
-}
-
-function MobileLoadingPage() {
-
-  const token = new URLSearchParams(window.location.search).get('token') || '';
-
-  const [session, setSession] = useState(null);
-
-  const [code, setCode] = useState('');
-
-  const [message, setMessage] = useState('در حال اتصال به فاکتور...');
-
-  const [error, setError] = useState('');
-
-  const [scannerOpen, setScannerOpen] = useState(false);
-
-  const [pendingItem, setPendingItem] = useState(null);
-
-  const [busy, setBusy] = useState(false);
-
-  const refresh = async () => {
-
-    if (!token) throw new Error('کد اتصال در لینک وجود ندارد. QR را دوباره اسکن کنید.');
-
-    const data = await api(`/mobile-loading/${encodeURIComponent(token)}`);
-
-    setSession(data);
-
-    setMessage('اتصال برقرار است. بارکد طاقه بعدی را اسکن کنید.');
-
-    return data;
-
-  };
-
-  useEffect(() => {
-
-    let active = true;
-
-    const load = async () => {
-
-      try {
-
-        const data = await api(`/mobile-loading/${encodeURIComponent(token)}`);
-
-        if (active) {
-
-          setSession(data);
-
-          setMessage(current => current === 'در حال اتصال به فاکتور...' ? 'اتصال برقرار است. بارکد طاقه بعدی را اسکن کنید.' : current);
-
-        }
-
-      } catch (err) {
-
-        if (active) setError(err.message);
-
-      }
-
-    };
-
-    load();
-
-    const timer = window.setInterval(load, 2500);
-
-    return () => { active = false; window.clearInterval(timer); };
-
-  }, [token]);
-
-  const previewCode = async rawCode => {
-
-    const value = String(rawCode || code || '').trim();
-
-    if (!value) return;
-
-    setError('');
-
-    setPendingItem(null);
-
-    setBusy(true);
-
-    setMessage(`در حال دریافت اطلاعات طاقه ${value}...`);
-
-    try {
-
-      const result = await api(`/mobile-loading/${encodeURIComponent(token)}/preview`, { method: 'POST', body: { code: value } });
-
-      setCode(value);
-
-      setPendingItem(result.item);
-
-      setMessage('اطلاعات طاقه را بررسی کنید؛ در صورت صحت، تأیید و ثبت را بزنید.');
-
-      if (navigator.vibrate) navigator.vibrate(60);
-
-    } catch (err) {
-
-      setError(err.message);
-
-      setMessage('اطلاعات طاقه دریافت نشد. کد را بررسی و دوباره تلاش کنید.');
-
-      if (navigator.vibrate) navigator.vibrate([100, 80, 100]);
-
-    } finally {
-
-      setBusy(false);
-
-    }
-
-  };
-
-  const confirmItem = async () => {
-
-    if (!pendingItem || busy) return;
-
-    const value = String(pendingItem.id);
-
-    setError('');
-
-    setBusy(true);
-
-    setMessage(`در حال ثبت نهایی طاقه ${value}...`);
-
-    try {
-
-      await api(`/mobile-loading/${encodeURIComponent(token)}/items`, { method: 'POST', body: { code: value } });
-
-      setPendingItem(null);
-
-      setCode('');
-
-      const data = await refresh();
-
-      setMessage(`طاقه ${value} با تأیید شما ثبت شد. تعداد کل: ${fmt(data.count)}`);
-
-      if (navigator.vibrate) navigator.vibrate(120);
-
-    } catch (err) {
-
-      setError(err.message);
-
-      setMessage('ثبت نهایی انجام نشد. اطلاعات را بررسی و دوباره تلاش کنید.');
-
-      if (navigator.vibrate) navigator.vibrate([100, 80, 100]);
-
-    } finally {
-
-      setBusy(false);
-
-    }
-
-  };
-
-  const cancelPreview = () => {
-
-    setPendingItem(null);
-
-    setCode('');
-
-    setError('');
-
-    setMessage('ثبت لغو شد. بارکد طاقه بعدی را اسکن کنید.');
-
-  };
-
-  return <main className="mobile-loading-page" dir="rtl">
-
-    <header><span>Textile ERP</span><h1>پنل بارگیری فاکتور خروج</h1><p>این صفحه فقط برای بارگیری موقت همین فاکتور فعال است.</p></header>
-
-    <section className="mobile-loading-summary">
-
-      <div><span>شماره فاکتور</span><b>{session?.invoice_no || 'ثبت نشده'}</b></div>
-
-      <div><span>مشتری</span><b>{session?.customer || 'ثبت نشده'}</b></div>
-
-      <div><span>تعداد طاقه</span><b>{fmt(session?.count || 0)}</b></div>
-
-      <div><span>جمع متراژ</span><b>{fmt(session?.total_metr || 0)}</b></div>
-
-    </section>
-
-    <section className="mobile-loading-action">
-
-      <button type="button" className="primary mobile-camera-button" disabled={!session || busy || pendingItem} onClick={() => setScannerOpen(true)}>اسکن بارکد با دوربین</button>
-
-      <div className="mobile-code-entry"><input inputMode="numeric" autoComplete="off" placeholder="کد طاقه" value={code} disabled={busy || pendingItem} onChange={event => setCode(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') previewCode(); }} /><button type="button" disabled={busy || pendingItem} onClick={() => previewCode()}>{busy && !pendingItem ? 'در حال بررسی...' : 'نمایش اطلاعات'}</button></div>
-
-      <p className="mobile-loading-message">{message}</p>
-
-      {error && <p className="mobile-loading-error">{error}</p>}
-
-      {pendingItem && <div className="mobile-taghe-confirmation">
-
-        <div className="mobile-taghe-confirmation-head"><span>اطلاعات طاقه برای تأیید</span><b>کد {pendingItem.id}</b></div>
-
-        <dl>
-
-          <div><dt>کالا</dt><dd>{pendingItem.kala || '-'}</dd></div>
-
-          <div><dt>ماشین</dt><dd>{pendingItem.machine || '-'}</dd></div>
-
-          <div><dt>متراژ</dt><dd>{fmt(pendingItem.metr || 0)} متر</dd></div>
-
-          <div><dt>وزن</dt><dd>{fmt(pendingItem.weight || 0)} کیلوگرم</dd></div>
-
-          <div><dt>شماره چله</dt><dd>{pendingItem.shom_chelle || '-'}</dd></div>
-
-          <div><dt>هم‌پود</dt><dd>{pendingItem.ham_pod || '-'}</dd></div>
-
-          <div><dt>هم‌چله</dt><dd>{pendingItem.ham_chelle || '-'}</dd></div>
-
-        </dl>
-
-        <div className="mobile-taghe-confirmation-actions"><button type="button" className="primary" disabled={busy} onClick={confirmItem}>{busy ? 'در حال ثبت...' : 'تأیید و ثبت طاقه'}</button><button type="button" className="ghost" disabled={busy} onClick={cancelPreview}>لغو</button></div>
-
-      </div>}
-
-    </section>
-
-    <section className="mobile-loaded-items">
-
-      <h2>طاقه‌های بارگیری‌شده</h2>
-
-      {(session?.items || []).length ? (session.items || []).slice().reverse().map(item => <article key={item.id}><b>{item.id}</b><span>{fmt(item.metr)} متر</span><span>{fmt(item.weight)} کیلوگرم</span><small>{item.kala || '-'}</small></article>) : <p>هنوز طاقه‌ای ثبت نشده است.</p>}
-
-    </section>
-
-    {scannerOpen && <MobileBarcodeScanner onClose={() => setScannerOpen(false)} onCode={value => { setScannerOpen(false); previewCode(value); }} />}
-
-  </main>;
-
-}
-
-
-
 function OutInvoicePro({ lookups, notify }) {
 
   const inputRef = React.useRef(null);
@@ -2354,229 +1915,15 @@ function OutInvoicePro({ lookups, notify }) {
 
   const [editing, setEditing] = useState(false);
 
-  const [mobileLoading, setMobileLoading] = useState(null);
-
-  const [printers, setPrinters] = useState([]);
-
-  const [reportPrinter, setReportPrinter] = useState(() => localStorage.getItem('operational-report-printer') || '');
-
-  const [printerLoading, setPrinterLoading] = useState(false);
-
-  const [saving, setSaving] = useState(false);
-
   const load = async () => setRows(await api('/out-invoice'));
 
   useEffect(() => { load(); api('/out-invoice/next-sanad').then(x => setForm(s => ({ ...s, sanad_no: x.sanad_number || '' }))).catch(() => {}); }, []);
 
-  const loadPrinters = async () => {
-
-    if (!LOCAL_MODE) return;
-
-    setPrinterLoading(true);
-
-    try {
-
-      const data = await api('/local/printers');
-
-      const available = data.printers || [];
-
-      setPrinters(available);
-
-      if (reportPrinter && !available.some(item => item.name === reportPrinter)) {
-
-        setReportPrinter('');
-
-        localStorage.removeItem('operational-report-printer');
-
-      }
-
-    } catch (err) {
-
-      notify(err.message);
-
-    } finally {
-
-      setPrinterLoading(false);
-
-    }
-
-  };
-
-  useEffect(() => { if (LOCAL_MODE) loadPrinters(); }, []);
-
-  const selectReportPrinter = name => {
-
-    setReportPrinter(name);
-
-    if (name) localStorage.setItem('operational-report-printer', name);
-
-    else localStorage.removeItem('operational-report-printer');
-
-  };
-
-  const invoiceValidationError = invoice => {
-
-    const missing = [];
-
-    if (!String(invoice.invoice_no || '').trim()) missing.push('شماره فاکتور');
-
-    if (!String(invoice.customer || '').trim()) missing.push('مشتری');
-
-    if (!String(invoice.kala || '').trim()) missing.push('نام کالا');
-
-    if (!(invoice.items || []).length) missing.push('حداقل یک طاقه');
-
-    return missing.length ? `اطلاعات فاکتور کامل نیست: ${missing.join('، ')}` : '';
-
-  };
-
-  const printOutgoingInvoice = async (invoice, existingWindow = null) => {
-
-    const validationError = invoiceValidationError(invoice);
-
-    if (validationError) {
-
-      if (existingWindow) existingWindow.close();
-
-      notify(validationError);
-
-      return false;
-
-    }
-
-    if (printAfterSave && LOCAL_MODE && !reportPrinter) {
-
-      if (existingWindow) existingWindow.close();
-
-      notify('ابتدا چاپگر گزارش را انتخاب کنید تا فاکتور به لیبل‌پرینتر ارسال نشود');
-
-      return false;
-
-    }
-
-    const printWindow = existingWindow || window.open('', '_blank', 'width=1100,height=800');
-
-    if (!printWindow) {
-
-      notify('مرورگر پنجره چاپ را مسدود کرده است');
-
-      return false;
-
-    }
-
-    if (!existingWindow) {
-
-      printWindow.document.write('<!doctype html><html lang="fa" dir="rtl"><meta charset="UTF-8"><body style="font-family:Tahoma;padding:30px">در حال آماده‌سازی فاکتور...</body></html>');
-
-      printWindow.document.close();
-
-    }
-
-    let previousPrinter = '';
-
-    try {
-
-      if (LOCAL_MODE) {
-
-        const result = await api('/local/printers', { method: 'POST', body: { name: reportPrinter } });
-
-        previousPrinter = result.previous_printer || '';
-
-      }
-
-      printInvoiceTaghes(invoice, printWindow);
-
-      if (LOCAL_MODE && previousPrinter && previousPrinter !== reportPrinter) {
-
-        window.setTimeout(() => {
-
-          api('/local/printers', { method: 'POST', body: { name: previousPrinter } }).catch(() => {});
-
-        }, 20000);
-
-      }
-
-      return true;
-
-    } catch (err) {
-
-      printWindow.close();
-
-      notify(`آماده‌سازی چاپ انجام نشد: ${err.message}`);
-
-      return false;
-
-    }
-
-  };
-
-  const printOutgoingReport = async (title, rowsOrLoader, columns) => {
-
-    if (LOCAL_MODE && !reportPrinter) {
-
-      notify('ابتدا چاپگر گزارش را انتخاب کنید تا چاپ به لیبل‌پرینتر ارسال نشود');
-
-      return;
-
-    }
-
-    const printWindow = printAfterSave ? window.open('', '_blank', 'width=1100,height=800') : null;
-
-    if (printAfterSave && !printWindow) {
-
-      notify('مرورگر پنجره چاپ را مسدود کرده است');
-
-      return;
-
-    }
-
-    printWindow.document.write('<!doctype html><html lang="fa" dir="rtl"><meta charset="UTF-8"><body style="font-family:Tahoma;padding:30px">در حال آماده‌سازی چاپ...</body></html>');
-
-    printWindow.document.close();
-
-    let previousPrinter = '';
-
-    try {
-
-      const reportRows = typeof rowsOrLoader === 'function' ? await rowsOrLoader() : rowsOrLoader;
-
-      if (LOCAL_MODE) {
-
-        const result = await api('/local/printers', { method: 'POST', body: { name: reportPrinter } });
-
-        previousPrinter = result.previous_printer || '';
-
-      }
-
-      printReport(title, reportRows, columns, printWindow);
-
-      notify(LOCAL_MODE ? `چاپگر گزارش آماده شد: ${reportPrinter}` : 'پنجره چاپ آماده شد');
-
-      if (LOCAL_MODE && previousPrinter && previousPrinter !== reportPrinter) {
-
-        window.setTimeout(() => {
-
-          api('/local/printers', { method: 'POST', body: { name: previousPrinter } }).catch(() => {});
-
-        }, 20000);
-
-      }
-
-    } catch (err) {
-
-      printWindow.close();
-
-      notify(err.message);
-
-    }
-
-  };
-
   const set = (k, v) => setForm(s => ({ ...s, [k]: v }));
 
-  const addTaghe = async (scannedCode = '') => {
+  const addTaghe = async () => {
 
-    const code = String(scannedCode || form.taghe_code || '').trim();
+    const code = String(form.taghe_code || '').trim();
 
     if (!code) return;
 
@@ -2607,82 +1954,6 @@ function OutInvoicePro({ lookups, notify }) {
     }
 
     setTimeout(() => inputRef.current?.focus(), 30);
-
-  };
-
-  const startMobileLoading = async () => {
-
-    try {
-
-      const data = await api('/out-invoice/mobile-sessions', { method: 'POST', body: { invoice_no: form.invoice_no, customer: form.customer, kala: form.kala } });
-
-      const origin = String(window.ERP_LAN_ORIGIN || window.location.origin).replace(/\/$/, '');
-
-      const url = `${origin}/operational/mobile-load?token=${encodeURIComponent(data.token)}`;
-
-      const qrImage = await QRCode.toDataURL(url, { width: 380, margin: 2, errorCorrectionLevel: 'M' });
-
-      setMobileLoading({ ...data, url, qrImage, count: 0 });
-
-    } catch (err) {
-
-      notify(err.message);
-
-    }
-
-  };
-
-  useEffect(() => {
-
-    if (!mobileLoading?.token) return undefined;
-
-    let active = true;
-
-    const poll = async () => {
-
-      try {
-
-        const data = await api(`/mobile-loading/${encodeURIComponent(mobileLoading.token)}`);
-
-        if (!active) return;
-
-        setMobileLoading(current => current ? { ...current, count: data.count || 0 } : current);
-
-        setForm(current => {
-
-          const known = new Set(current.items.map(item => String(item.id)));
-
-          const received = (data.items || []).filter(item => !known.has(String(item.id)));
-
-          if (!received.length) return current;
-
-          return { ...current, kala: current.kala || data.kala || received[0]?.kala || '', items: [...current.items, ...received] };
-
-        });
-
-      } catch (err) {
-
-        if (active && /منقضی|بسته/.test(err.message)) setMobileLoading(null);
-
-      }
-
-    };
-
-    poll();
-
-    const timer = window.setInterval(poll, 1200);
-
-    return () => { active = false; window.clearInterval(timer); };
-
-  }, [mobileLoading?.token]);
-
-  const closeMobileLoading = async () => {
-
-    const token = mobileLoading?.token;
-
-    setMobileLoading(null);
-
-    if (token) await api(`/mobile-loading/${encodeURIComponent(token)}`, { method: 'DELETE' }).catch(() => {});
 
   };
 
@@ -2732,79 +2003,17 @@ function OutInvoicePro({ lookups, notify }) {
 
   const save = async () => {
 
-    if (saving) return;
+    await api('/out-invoice', { method: 'POST', body: { invoice_no: form.invoice_no, sanad_no: form.sanad_no, customer: form.customer, kala: form.kala, items: form.items.map(x => String(x.id)), old_invoice_no: form.old_invoice_no } });
 
-    const snapshot = { ...form, items: form.items.map(item => ({ ...item })) };
+    clearInvoice();
 
-    const validationError = invoiceValidationError(snapshot);
+    const next = await api('/out-invoice/next-sanad').catch(() => null);
 
-    if (validationError) {
+    if (next?.sanad_number) setForm(s => ({ ...s, sanad_no: next.sanad_number }));
 
-      notify(validationError);
+    await load();
 
-      return;
-
-    }
-
-    if (LOCAL_MODE && !reportPrinter) {
-
-      notify('ابتدا چاپگر گزارش را انتخاب کنید؛ سپس فاکتور ذخیره و چاپ می‌شود');
-
-      return;
-
-    }
-
-    const printWindow = window.open('', '_blank', 'width=1100,height=800');
-
-    if (!printWindow) {
-
-      notify('مرورگر پنجره چاپ را مسدود کرده است؛ اجازه Pop-up را فعال کنید');
-
-      return;
-
-    }
-
-    if (printWindow) printWindow.document.write('<!doctype html><html lang="fa" dir="rtl"><meta charset="UTF-8"><body style="font-family:Tahoma;padding:30px">در حال ذخیره فاکتور و آماده‌سازی چاپ...</body></html>');
-
-    if (printWindow) printWindow.document.close();
-
-    const wasEditing = editing;
-
-    setSaving(true);
-
-    try {
-
-      const saved = await api('/out-invoice', { method: 'POST', body: { invoice_no: snapshot.invoice_no, sanad_no: snapshot.sanad_no, customer: snapshot.customer, kala: snapshot.kala, items: snapshot.items.map(x => String(x.id)), old_invoice_no: snapshot.old_invoice_no } });
-
-      const printed = printAfterSave ? await printOutgoingInvoice({ ...snapshot, tarikh: saved.tarikh || snapshot.tarikh }, printWindow) : false;
-
-      const token = mobileLoading?.token;
-
-      if (token) await api(`/mobile-loading/${encodeURIComponent(token)}`, { method: 'DELETE' }).catch(() => {});
-
-      setMobileLoading(null);
-
-      clearInvoice();
-
-      const next = await api('/out-invoice/next-sanad').catch(() => null);
-
-      if (next?.sanad_number) setForm(s => ({ ...s, sanad_no: next.sanad_number }));
-
-      await load();
-
-      notify(printAfterSave ? (printed ? (wasEditing ? 'فاکتور ویرایش، ذخیره و برای چاپ آماده شد' : 'فاکتور ذخیره و برای چاپ آماده شد') : 'فاکتور ذخیره شد؛ چاپ انجام نشد') : (wasEditing ? 'ویرایش فاکتور با موفقیت ذخیره شد' : 'فاکتور با موفقیت ذخیره شد'));
-
-    } catch (err) {
-
-      if (printWindow) printWindow.close();
-
-      notify(`ذخیره فاکتور انجام نشد: ${err.message}`);
-
-    } finally {
-
-      setSaving(false);
-
-    }
+    notify(editing ? 'فاکتور خروج ویرایش شد' : 'فاکتور خروج ثبت شد');
 
   };
 
@@ -2834,9 +2043,7 @@ function OutInvoicePro({ lookups, notify }) {
 
         <label><span>کد طاقه / بارکد</span><input ref={inputRef} value={form.taghe_code} onChange={e => set('taghe_code', e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTaghe(); } }} /></label>
 
-        <label><span>&nbsp;</span><button type="button" onClick={() => addTaghe()}>افزودن طاقه</button></label>
-
-        <label><span>بارگیری با موبایل</span><button type="button" className="mobile-load-button" onClick={startMobileLoading}>ساخت QR بارگیری با موبایل</button></label>
+        <label><span>&nbsp;</span><button type="button" onClick={addTaghe}>افزودن طاقه</button></label>
 
       </div>
 
@@ -2850,41 +2057,19 @@ function OutInvoicePro({ lookups, notify }) {
 
       </section>
 
-      {LOCAL_MODE && <section className="report-printer-picker">
-
-        <div><strong>چاپگر گزارش و فاکتور</strong><span>این انتخاب از چاپگر لیبل جداست و فقط برای چاپ‌های همین صفحه استفاده می‌شود.</span></div>
-
-        <label><span>چاپگر معمولی</span><select value={reportPrinter} onChange={event => selectReportPrinter(event.target.value)}>
-
-          <option value="">انتخاب چاپگر گزارش</option>
-
-          {printers.map(printer => <option key={printer.name} value={printer.name}>{printer.name}{printer.is_default ? ' (پیش‌فرض فعلی)' : ''}</option>)}
-
-        </select></label>
-
-        <button type="button" className="ghost" disabled={printerLoading} onClick={loadPrinters}>{printerLoading ? 'در حال دریافت...' : 'به‌روزرسانی چاپگرها'}</button>
-
-        <small>پنجره چاپ مرورگر نیز باز می‌شود؛ قبل از تأیید نهایی، نام همین چاپگر را کنترل کنید. چاپگر پیش‌فرض قبلی ویندوز پس از چاپ بازگردانده می‌شود.</small>
-
-      </section>}
-
       <div className="actions-row invoice-actions">
 
-        <button onClick={() => printOutgoingReport('موجودی طاقه‌های خروج‌نخورده', () => api('/out-invoice/stock'), [['id','کد طاقه'],['tarikh','تاریخ'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['machine','ماشین'],['shom_chelle','چله']])}>گزارش موجودی انبار</button>
+        <button onClick={async () => printReport('موجودی طاقه‌های خروج‌نخورده', await api('/out-invoice/stock'), [['id','کد طاقه'],['tarikh','تاریخ'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['machine','ماشین'],['shom_chelle','چله']])}>گزارش موجودی انبار</button>
 
-        <button onClick={() => printOutgoingInvoice(form)}>چاپ لیست طاقه‌ها</button>
+        <button onClick={() => printReport('لیست طاقه‌های خروجی', form.items.map((x, i) => ({ ...x, row: i + 1 })), [['row','ردیف'],['id','کد طاقه'],['metr','متراژ'],['weight','وزن'],['ham_chelle','همبافت تار'],['ham_pod','همبافت پود'],['shom_chelle','شماره چله'],['kala','کالا']])}>چاپ لیست طاقه‌ها</button>
 
-        <button onClick={() => printOutgoingReport('گزارش فاکتور خروج', visible, invoiceCols)}>گزارش فاکتورها</button>
+        <button onClick={() => printReport('گزارش فاکتور خروج', visible, invoiceCols)}>گزارش فاکتورها</button>
 
-        <button className="primary" disabled={saving} onClick={() => save(true)}>{saving ? 'در حال ذخیره...' : 'اتمام فاکتور، ذخیره و چاپ'}</button>
-
-        <button className="ghost" disabled={saving} onClick={() => save(false)}>فقط ذخیره</button>
+        <button className="primary" onClick={save}>اتمام فاکتور و ذخیره</button>
 
         <button className="ghost" onClick={clearInvoice}>پاک کردن فاکتور</button>
 
       </div>
-
-      {mobileLoading && <MobileLoadingDialog session={mobileLoading} onClose={closeMobileLoading} />}
 
     </section>
 
@@ -2892,7 +2077,7 @@ function OutInvoicePro({ lookups, notify }) {
 
       <h2>فاکتورهای ثبت شده قبلی</h2>
 
-      <Filters filters={[['invoice_no','شماره فاکتور'],['mosh','مشتری'],['kala','نام کالا'],['sanad','شماره سند']]} rows={rows} values={filters} setValues={setFilters} onPrint={() => printOutgoingReport('فاکتورهای ثبت شده قبلی', visible, invoiceCols)} />
+      <Filters filters={[['invoice_no','شماره فاکتور'],['mosh','مشتری'],['kala','نام کالا'],['sanad','شماره سند']]} rows={rows} values={filters} setValues={setFilters} onPrint={() => printReport('فاکتورهای ثبت شده قبلی', visible, invoiceCols)} />
 
       <Table rows={visible} columns={invoiceCols} onEdit={edit} onDelete={del} />
 
@@ -3621,7 +2806,7 @@ tr.big td.value-cell { font-size: 20px; } .barcode-box { flex: 1; min-height: 19
 
 
 
-function printReport(title, rows, columns, targetWindow = null) {
+function printReport(title, rows, columns) {
 
   const head = columns.map(c => `<th>${safe(c[1])}</th>`).join('');
 
@@ -3629,17 +2814,7 @@ function printReport(title, rows, columns, targetWindow = null) {
 
   const html = `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><title>${safe(title)}</title><style>body{font-family:Tahoma;padding:20px;color:#111}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #999;padding:8px;text-align:right}th{background:#e5e7eb}@media print{button{display:none}}</style></head><body><button onclick="window.print()">چاپ</button><h1>${safe(title)}</h1><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></body></html>`;
 
-  const win = targetWindow || window.open('', '_blank', 'width=1100,height=800');
-
-  if (!win) {
-
-    alert('مرورگر پنجره چاپ را مسدود کرده است');
-
-    return;
-
-  }
-
-  win.document.open();
+  const win = window.open('', '_blank', 'width=1100,height=800');
 
   win.document.write(html);
 
@@ -3651,7 +2826,7 @@ function printReport(title, rows, columns, targetWindow = null) {
 
 
 
-function printInvoiceTaghes(form, targetWindow = null) {
+function printInvoiceTaghes(form) {
 
   const rows = (form.items || []).map((x, i) => ({ ...x, row: i + 1 }));
 
@@ -3671,33 +2846,21 @@ function printInvoiceTaghes(form, targetWindow = null) {
 
     ['شماره فاکتور', form.invoice_no],
 
-    ['تاریخ فاکتور', form.tarikh || 'روز جاری'],
-
     ['مشتری', form.customer],
 
     ['نام کالا', form.kala],
 
     ['تعداد طاقه', rows.length],
 
-    ['جمع متراژ', `${display(totalMetr)} متر`],
+    ['جمع متراژ', totalMetr],
 
-    ['جمع وزن', `${display(totalWeight)} کیلوگرم`]
+    ['جمع وزن', totalWeight]
 
   ];
 
   const html = `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><title>لیست طاقه‌های خروجی</title><style>body{font-family:Tahoma;padding:20px;color:#111}h1{text-align:center}.meta{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:16px 0}.meta div{border:1px solid #999;padding:8px;border-radius:6px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #999;padding:8px;text-align:center}th{background:#e5e7eb}.total{background:#dcfce7;font-weight:900}@media print{button{display:none}}</style></head><body><button onclick="window.print()">چاپ</button><h1>لیست طاقه‌های خروجی</h1><div class="meta">${meta.map(([k,v]) => `<div><b>${safe(k)}:</b> ${safe(display(v))}</div>`).join('')}</div><table><thead><tr>${head}</tr></thead><tbody>${body}<tr class="total"><td colspan="2">جمع کل</td><td>${safe(display(totalMetr))}</td><td>${safe(display(totalWeight))}</td><td colspan="4">${safe(display(rows.length))} عدد طاقه</td></tr></tbody></table></body></html>`;
 
-  const win = targetWindow || window.open('', '_blank', 'width=1100,height=800');
-
-  if (!win) {
-
-    alert('مرورگر پنجره چاپ را مسدود کرده است');
-
-    return;
-
-  }
-
-  win.document.open();
+  const win = window.open('', '_blank', 'width=1100,height=800');
 
   win.document.write(html);
 
@@ -3797,6 +2960,4 @@ function safe(value) {
 
 
 
-const isMobileLoadingPage = /\/(operational\/)?mobile-load\/?$/.test(window.location.pathname);
-
-createRoot(document.getElementById('root')).render(isMobileLoadingPage ? <MobileLoadingPage /> : <App />);
+createRoot(document.getElementById('root')).render(<App />);

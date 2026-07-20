@@ -3,12 +3,10 @@ package main
 import (
 	"archive/zip"
 	"bytes"
-	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,40 +16,61 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 	_ "modernc.org/sqlite"
 )
 
 type app struct {
-	db                  *sql.DB
-	conn                *sql.Conn
-	dialect             string
-	dbLabel             string
-	companyID           int64
-	sessionSecret       string
-	portalSessionSecret string
+	db            *sql.DB
+	dialect       string
+	dbLabel       string
+	defaultSchema string
+	portalSecret  string
+	sessions      map[string]sessionInfo
+	mu            sync.Mutex
+	dbMu          sync.Mutex
 }
 
 type sessionInfo struct {
-	UserID    int64    `json:"user_id"`
-	CompanyID int64    `json:"company_id"`
-	Username  string   `json:"username"`
-	Role      string   `json:"role"`
-	Portal    bool     `json:"portal,omitempty"`
-	MenuKeys  []string `json:"menu_keys,omitempty"`
-	CanManage bool     `json:"can_manage,omitempty"`
-	ExpiresAt int64    `json:"exp"`
+	UserID    int64
+	CompanyID int64
+	Schema    string
+	Username  string
+	Role      string
 }
 
-type appHandler func(*app, http.ResponseWriter, *http.Request)
+type loadingSession struct {
+	ID                string
+	TokenHash         string
+	InvoiceNo         string
+	SanadNo           string
+	Customer          string
+	Kala              string
+	Status            string
+	CreatedBy         int64
+	CreatedByUsername string
+	CreatedAt         string
+	ExpiresAt         string
+}
+
+type tagheData struct {
+	ID         int64
+	Metr       float64
+	Weight     float64
+	Machine    string
+	Kala       string
+	HamPod     string
+	HamChelle  string
+	ShomChelle string
+}
 
 func openOperationalDB() (*sql.DB, string, string, error) {
 	if dsn := strings.TrimSpace(os.Getenv("OPERATIONAL_DATABASE_URL")); dsn != "" {
@@ -100,31 +119,15 @@ func openOperationalDB() (*sql.DB, string, string, error) {
 }
 
 func (a *app) exec(q string, args ...any) (sql.Result, error) {
-	if a.conn != nil {
-		return a.conn.ExecContext(context.Background(), rebind(a.dialect, q), args...)
-	}
 	return a.db.Exec(rebind(a.dialect, q), args...)
 }
 
 func (a *app) query(q string, args ...any) (*sql.Rows, error) {
-	if a.conn != nil {
-		return a.conn.QueryContext(context.Background(), rebind(a.dialect, q), args...)
-	}
 	return a.db.Query(rebind(a.dialect, q), args...)
 }
 
 func (a *app) queryRow(q string, args ...any) *sql.Row {
-	if a.conn != nil {
-		return a.conn.QueryRowContext(context.Background(), rebind(a.dialect, q), args...)
-	}
 	return a.db.QueryRow(rebind(a.dialect, q), args...)
-}
-
-func (a *app) begin() (*sql.Tx, error) {
-	if a.conn != nil {
-		return a.conn.BeginTx(context.Background(), nil)
-	}
-	return a.db.Begin()
 }
 
 func txExec(dialect string, tx *sql.Tx, q string, args ...any) (sql.Result, error) {
@@ -199,24 +202,29 @@ type record map[string]any
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	validateOperationalProductionConfig()
 	db, dialect, label, err := openOperationalDB()
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
-	if dialect == "sqlite" {
-		db.SetMaxOpenConns(1)
-	}
+	db.SetMaxOpenConns(1)
 
 	a := &app{
-		db:                  db,
-		dialect:             dialect,
-		dbLabel:             label,
-		sessionSecret:       env("OPERATIONAL_SESSION_SECRET", env("PORTAL_OPERATIONAL_SECRET", "textile-operational-local-session-secret")),
-		portalSessionSecret: env("PORTAL_OPERATIONAL_SECRET", "textile-operational-local-portal-secret"),
+		db:            db,
+		dialect:       dialect,
+		dbLabel:       label,
+		defaultSchema: "public",
+		portalSecret:  strings.TrimSpace(os.Getenv("OPERATIONAL_PORTAL_SECRET")),
+		sessions:      map[string]sessionInfo{},
 	}
-	if err := a.migrate(); err != nil {
+	if dialect == "postgres" {
+		if err := a.initializeTenancy(); err != nil {
+			log.Fatal(err)
+		}
+		if err := a.migrateAllTenants(); err != nil {
+			log.Fatal(err)
+		}
+	} else if err := a.migrate(); err != nil {
 		log.Fatal(err)
 	}
 	if a.dialect == "postgres" {
@@ -232,106 +240,252 @@ func main() {
 	log.Printf("Operational cycle Go server started on :%s", port)
 	log.Printf("operational_db=%s", label)
 	log.Printf("operational_db_driver=%s", dialect)
-	log.Fatal(http.ListenAndServe(":"+port, withCORS(mux)))
+	log.Fatal(http.ListenAndServe(":"+port, withCORS(a.serializeDatabaseAccess(mux))))
 }
 
-func validateOperationalProductionConfig() {
-	if !strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
-		return
+var operationalTenantTables = []string{
+	"mosh_name", "nakh_name", "kala_name", "chellepich", "kod_navard", "gerezan",
+	"nakh_vor", "nakh_khor", "empty_beam_out", "chelle", "gere", "nakh_salon", "salon",
+	"machine_consumption", "machine_formul", "f_khor", "hazine", "operator_name", "driver_name",
+	"weaver_name", "h_rozmare", "service_type", "spare_part", "spare_parts_inventory",
+	"machinery_service", "users", "menu_items", "user_menu_access", "loading_sessions",
+	"loading_session_items", "loading_reservations", "v_kh_moto",
+}
+
+func (a *app) setSearchPath(schema string) error {
+	if a.dialect != "postgres" {
+		return nil
 	}
-	driver := strings.ToLower(strings.TrimSpace(env("OPERATIONAL_DB_DRIVER", "postgres")))
-	if driver != "postgres" && driver != "postgresql" && driver != "pg" && strings.TrimSpace(os.Getenv("OPERATIONAL_DATABASE_URL")) == "" {
-		log.Fatal("PostgreSQL is required for production multi-tenant isolation")
+	schema = strings.TrimSpace(schema)
+	if schema == "" {
+		schema = a.defaultSchema
 	}
-	for _, key := range []string{"DB_PASSWORD", "OPERATIONAL_ADMIN_PASSWORD", "OPERATIONAL_SESSION_SECRET", "PORTAL_OPERATIONAL_SECRET"} {
-		value := strings.TrimSpace(os.Getenv(key))
-		if len(value) < 12 || value == "change_me" || value == "admin123" {
-			log.Fatalf("%s must be configured securely for production", key)
+	_, err := a.db.Exec(`SET search_path TO ` + quoteIdent(schema) + `, public`)
+	return err
+}
+
+func (a *app) initializeTenancy() error {
+	if a.dialect != "postgres" {
+		return nil
+	}
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS public.operational_tenants (
+			id BIGSERIAL PRIMARY KEY, external_company_id BIGINT UNIQUE,
+			company_name TEXT NOT NULL, schema_name TEXT NOT NULL UNIQUE,
+			active INTEGER NOT NULL DEFAULT 1, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS public.operational_platform_users (
+			id BIGSERIAL PRIMARY KEY,
+			tenant_id BIGINT NOT NULL REFERENCES public.operational_tenants(id) ON DELETE CASCADE,
+			local_user_id BIGINT NOT NULL, portal_access_id BIGINT,
+			username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
+			active INTEGER NOT NULL DEFAULT 1, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(tenant_id, local_user_id)
+		)`,
+		`ALTER TABLE public.operational_platform_users ADD COLUMN IF NOT EXISTS portal_access_id BIGINT`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS operational_platform_users_portal_access_udx ON public.operational_platform_users(tenant_id,portal_access_id) WHERE portal_access_id IS NOT NULL`,
+	}
+	for _, stmt := range stmts {
+		if _, err := a.db.Exec(stmt); err != nil {
+			return err
 		}
 	}
-	if len(strings.TrimSpace(os.Getenv("OPERATIONAL_SESSION_SECRET"))) < 32 || len(strings.TrimSpace(os.Getenv("PORTAL_OPERATIONAL_SECRET"))) < 32 {
-		log.Fatal("operational session secrets must contain at least 32 characters in production")
+	var tenantCount int64
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM public.operational_tenants`).Scan(&tenantCount); err != nil {
+		return err
 	}
+	if tenantCount == 0 {
+		const defaultSchema = "tenant_textile_default"
+		tx, err := a.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec(`CREATE SCHEMA IF NOT EXISTS ` + quoteIdent(defaultSchema)); err != nil {
+			return err
+		}
+		for _, table := range operationalTenantTables {
+			var exists int
+			if err := tx.QueryRow(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name=$1`, table).Scan(&exists); err != nil {
+				return err
+			}
+			if exists == 1 {
+				if _, err := tx.Exec(`ALTER TABLE public.` + quoteIdent(table) + ` SET SCHEMA ` + quoteIdent(defaultSchema)); err != nil {
+					return fmt.Errorf("move operational table %s: %w", table, err)
+				}
+			}
+		}
+		if _, err := tx.Exec(`INSERT INTO public.operational_tenants(external_company_id,company_name,schema_name,active) VALUES(NULL,'Internal / legacy',$1,1)`, defaultSchema); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	if err := a.db.QueryRow(`SELECT schema_name FROM public.operational_tenants WHERE external_company_id IS NULL AND active=1 ORDER BY id LIMIT 1`).Scan(&a.defaultSchema); err != nil {
+		return err
+	}
+	return a.setSearchPath(a.defaultSchema)
+}
+
+func (a *app) migrateAllTenants() error {
+	rows, err := a.db.Query(`SELECT id,schema_name FROM public.operational_tenants WHERE active=1 ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	type tenant struct {
+		id     int64
+		schema string
+	}
+	tenants := []tenant{}
+	for rows.Next() {
+		var item tenant
+		if err := rows.Scan(&item.id, &item.schema); err != nil {
+			rows.Close()
+			return err
+		}
+		tenants = append(tenants, item)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range tenants {
+		if err := a.setSearchPath(item.schema); err != nil {
+			return err
+		}
+		if err := a.migrate(); err != nil {
+			return fmt.Errorf("migrate tenant %s: %w", item.schema, err)
+		}
+		if err := a.syncTenantUsers(item.id); err != nil {
+			return fmt.Errorf("sync tenant users %s: %w", item.schema, err)
+		}
+	}
+	return a.setSearchPath(a.defaultSchema)
+}
+
+func (a *app) syncTenantUsers(tenantID int64) error {
+	rows, err := a.query(`SELECT id_user,username,password_hash,COALESCE(is_active,1) FROM users WHERE COALESCE(username,'')<>''`)
+	if err != nil {
+		return err
+	}
+	type user struct {
+		id             int64
+		username, hash string
+		active         int64
+	}
+	users := []user{}
+	for rows.Next() {
+		var item user
+		if err := rows.Scan(&item.id, &item.username, &item.hash, &item.active); err != nil {
+			rows.Close()
+			return err
+		}
+		users = append(users, item)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range users {
+		if _, err := a.exec(`INSERT INTO public.operational_platform_users(tenant_id,local_user_id,username,password_hash,active)
+			VALUES(?,?,?,?,?) ON CONFLICT(tenant_id,local_user_id) DO UPDATE SET username=excluded.username,password_hash=excluded.password_hash,active=excluded.active`, tenantID, item.id, item.username, item.hash, item.active); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *app) serializeDatabaseAccess(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a.dialect != "postgres" || !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		a.dbMu.Lock()
+		defer a.dbMu.Unlock()
+		_ = a.setSearchPath(a.defaultSchema)
+		if session, ok := a.currentSession(r); ok && strings.TrimSpace(session.Schema) != "" {
+			if err := a.setSearchPath(session.Schema); err != nil {
+				fail(w, http.StatusInternalServerError, "tenant database is unavailable")
+				return
+			}
+		}
+		defer func() { _ = a.setSearchPath(a.defaultSchema) }()
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (a *app) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health", a.health)
+	mux.HandleFunc("/api/portal/provision", a.portalProvision)
+	mux.HandleFunc("/api/portal/deprovision", a.portalDeprovision)
+	mux.HandleFunc("/api/portal/session", a.portalSession)
 	mux.HandleFunc("/api/login", a.login)
-	mux.HandleFunc("/api/portal-session", a.portalSession)
 	mux.HandleFunc("/api/logout", a.logout)
-	mux.HandleFunc("/api/session", a.requireAuth((*app).sessionStatus))
-	mux.HandleFunc("/api/dashboard", a.requireMenu("dashboard", (*app).dashboard))
-	mux.HandleFunc("/api/lookups", a.requireAuth((*app).lookups))
-	mux.HandleFunc("/api/basic/", a.requireMenu("initial", (*app).basic))
-	mux.HandleFunc("/api/nakh-vor", a.requireMenu("nakh-vor", (*app).nakhVor))
-	mux.HandleFunc("/api/nakh-vor/", a.requireMenu("nakh-vor", (*app).nakhVorByID))
-	mux.HandleFunc("/api/chelle", a.requireMenu("chelle", (*app).chelle))
-	mux.HandleFunc("/api/chelle/", a.requireMenu("chelle", (*app).chelleByID))
-	mux.HandleFunc("/api/gere", a.requireMenu("gere", (*app).gere))
-	mux.HandleFunc("/api/gere/", a.requireMenu("gere", (*app).gereByID))
-	mux.HandleFunc("/api/nakh-salon", a.requireMenu("nakh-salon", (*app).nakhSalon))
-	mux.HandleFunc("/api/nakh-salon/", a.requireMenu("nakh-salon", (*app).nakhSalonByID))
-	mux.HandleFunc("/api/nakh-khor", a.requireMenuWithReadFallback("yarn-out", "reports", (*app).nakhKhor))
-	mux.HandleFunc("/api/nakh-khor/", a.requireMenuWithReadFallback("yarn-out", "reports", (*app).nakhKhorByID))
-	mux.HandleFunc("/api/warper-yarn-balance", a.requireMenu("yarn-out", (*app).warperYarnBalance))
-	mux.HandleFunc("/api/empty-beam-out", a.requireMenu("empty-beam-out", (*app).emptyBeamOut))
-	mux.HandleFunc("/api/empty-beam-out/", a.requireMenu("empty-beam-out", (*app).emptyBeamOutByID))
-	mux.HandleFunc("/api/salon", a.requireMenu("salon", (*app).salon))
-	mux.HandleFunc("/api/salon/", a.requireMenu("salon", (*app).salonByPath))
-	mux.HandleFunc("/api/out-invoice", a.requireMenuWithReadFallback("out-invoice", "reports", (*app).outInvoice))
-	mux.HandleFunc("/api/out-invoice/mobile-sessions", a.requireMenu("out-invoice", (*app).createMobileLoadingSession))
-	mux.HandleFunc("/api/local/printers", a.requireMenu("out-invoice", (*app).localPrinters))
-	mux.HandleFunc("/api/out-invoice/", a.requireMenuWithReadFallback("out-invoice", "reports", (*app).outInvoiceByPath))
-	mux.HandleFunc("/api/mobile-loading/", a.mobileLoadingPublic)
-	mux.HandleFunc("/api/expenses", a.requireMenuWithReadFallback("expenses", "reports", (*app).expenses))
-	mux.HandleFunc("/api/expenses/", a.requireMenuWithReadFallback("expenses", "reports", (*app).expenseByID))
-	mux.HandleFunc("/api/formulas", a.requireMenu("formulas", (*app).formulas))
-	mux.HandleFunc("/api/formulas/", a.requireMenu("formulas", (*app).formulaByID))
-	mux.HandleFunc("/api/database/", a.requireAdmin((*app).databaseTools))
-	mux.HandleFunc("/api/spare-parts", a.requireMenu("spare-parts", (*app).spareParts))
-	mux.HandleFunc("/api/spare-parts/", a.requireMenu("spare-parts", (*app).sparePartByID))
-	mux.HandleFunc("/api/machinery-services", a.requireMenu("machinery-services", (*app).machineryServices))
-	mux.HandleFunc("/api/machinery-services/", a.requireMenu("machinery-services", (*app).machineryServiceByID))
-	mux.HandleFunc("/api/menus", a.requireAdmin((*app).menus))
-	mux.HandleFunc("/api/users", a.requireAdmin((*app).users))
-	mux.HandleFunc("/api/users/", a.requireAdmin((*app).userByID))
-	mux.HandleFunc("/api/next-salon-id", a.requireMenu("salon", (*app).nextSalonID))
-	mux.HandleFunc("/api/consumption/machines", a.requireMenu("consumption", (*app).consumptionMachines))
-	mux.HandleFunc("/api/reset-cycle", a.requireAdmin((*app).resetCycle))
+	mux.HandleFunc("/api/session", a.requireAuth(a.sessionStatus))
+	mux.HandleFunc("/api/dashboard", a.requireMenu("dashboard", a.dashboard))
+	mux.HandleFunc("/api/lookups", a.requireAuth(a.lookups))
+	mux.HandleFunc("/api/basic/", a.requireMenu("initial", a.basic))
+	mux.HandleFunc("/api/nakh-vor", a.requireMenu("nakh-vor", a.nakhVor))
+	mux.HandleFunc("/api/nakh-vor/", a.requireMenu("nakh-vor", a.nakhVorByID))
+	mux.HandleFunc("/api/chelle", a.requireMenu("chelle", a.chelle))
+	mux.HandleFunc("/api/chelle/", a.requireMenu("chelle", a.chelleByID))
+	mux.HandleFunc("/api/gere", a.requireMenu("gere", a.gere))
+	mux.HandleFunc("/api/gere/", a.requireMenu("gere", a.gereByID))
+	mux.HandleFunc("/api/nakh-salon", a.requireMenu("nakh-salon", a.nakhSalon))
+	mux.HandleFunc("/api/nakh-salon/", a.requireMenu("nakh-salon", a.nakhSalonByID))
+	mux.HandleFunc("/api/nakh-khor", a.requireMenu("yarn-out", a.nakhKhor))
+	mux.HandleFunc("/api/nakh-khor/", a.requireMenu("yarn-out", a.nakhKhorByID))
+	mux.HandleFunc("/api/warper-yarn-balance", a.requireMenu("yarn-out", a.warperYarnBalance))
+	mux.HandleFunc("/api/empty-beam-out", a.requireMenu("empty-beam-out", a.emptyBeamOut))
+	mux.HandleFunc("/api/empty-beam-out/", a.requireMenu("empty-beam-out", a.emptyBeamOutByID))
+	mux.HandleFunc("/api/salon", a.requireMenu("salon", a.salon))
+	mux.HandleFunc("/api/salon/", a.requireMenu("salon", a.salonByPath))
+	mux.HandleFunc("/api/out-invoice", a.requireMenu("out-invoice", a.outInvoice))
+	mux.HandleFunc("/api/out-invoice/", a.requireMenu("out-invoice", a.outInvoiceByPath))
+	mux.HandleFunc("/api/loading/", a.loadingMobile)
+	mux.HandleFunc("/api/expenses", a.requireMenu("reports", a.expenses))
+	mux.HandleFunc("/api/expenses/", a.requireMenu("reports", a.expenseByID))
+	mux.HandleFunc("/api/formulas", a.requireMenu("formulas", a.formulas))
+	mux.HandleFunc("/api/formulas/", a.requireMenu("formulas", a.formulaByID))
+	mux.HandleFunc("/api/database/", a.requireMenu("database", a.databaseTools))
+	mux.HandleFunc("/api/spare-parts", a.requireMenu("spare-parts", a.spareParts))
+	mux.HandleFunc("/api/spare-parts/", a.requireMenu("spare-parts", a.sparePartByID))
+	mux.HandleFunc("/api/machinery-services", a.requireMenu("machinery-services", a.machineryServices))
+	mux.HandleFunc("/api/machinery-services/", a.requireMenu("machinery-services", a.machineryServiceByID))
+	mux.HandleFunc("/api/menus", a.requireMenu("users", a.menus))
+	mux.HandleFunc("/api/users", a.requireMenu("users", a.users))
+	mux.HandleFunc("/api/users/", a.requireMenu("users", a.userByID))
+	mux.HandleFunc("/api/next-salon-id", a.requireMenu("salon", a.nextSalonID))
+	mux.HandleFunc("/api/consumption/machines", a.requireMenu("consumption", a.consumptionMachines))
+	mux.HandleFunc("/api/reset-cycle", a.requireMenu("initial", a.resetCycle))
 	mux.HandleFunc("/", staticHandler())
 }
 
-func (a *app) requireAuth(next appHandler) http.HandlerFunc {
+func (a *app) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		session, ok := a.currentSession(r)
 		if !ok {
 			fail(w, http.StatusUnauthorized, "نشست شما معتبر نیست. دوباره وارد شوید.")
 			return
 		}
-		tenant, closeTenant, err := a.forCompany(r.Context(), session.CompanyID)
-		if err != nil {
-			fail(w, http.StatusServiceUnavailable, "اتصال امن به داده‌های شرکت برقرار نشد.")
+		var active int64
+		if err := a.queryRow(`SELECT COALESCE(is_active,1) FROM users WHERE id_user=?`, session.UserID).Scan(&active); err != nil || active != 1 {
+			a.clearSession(w, r)
+			fail(w, http.StatusUnauthorized, "حساب کاربری غیرفعال است")
 			return
 		}
-		defer closeTenant()
-		next(tenant, w, r)
+		next(w, r)
 	}
 }
 
-func (a *app) requireMenu(menuKey string, next appHandler) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+func (a *app) requireMenu(menuKey string, next http.HandlerFunc) http.HandlerFunc {
+	return a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		session, ok := a.currentSession(r)
 		if !ok {
 			fail(w, http.StatusUnauthorized, "نشست شما معتبر نیست. دوباره وارد شوید.")
 			return
 		}
-		tenant, closeTenant, err := a.forCompany(r.Context(), session.CompanyID)
-		if err != nil {
-			fail(w, http.StatusServiceUnavailable, "اتصال امن به داده‌های شرکت برقرار نشد.")
-			return
-		}
-		defer closeTenant()
-		allowed, err := tenant.userHasMenuAccess(session, menuKey)
+		allowed, err := a.userHasMenuAccess(session.UserID, session.Role, menuKey)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, err.Error())
 			return
@@ -340,72 +494,18 @@ func (a *app) requireMenu(menuKey string, next appHandler) http.HandlerFunc {
 			fail(w, http.StatusForbidden, "شما به این بخش دسترسی ندارید.")
 			return
 		}
-		next(tenant, w, r)
-	}
-}
-
-func (a *app) requireMenuWithReadFallback(menuKey, readFallback string, next appHandler) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		session, ok := a.currentSession(r)
-		if !ok {
-			fail(w, http.StatusUnauthorized, "نشست شما معتبر نیست. دوباره وارد شوید.")
-			return
-		}
-		tenant, closeTenant, err := a.forCompany(r.Context(), session.CompanyID)
-		if err != nil {
-			fail(w, http.StatusServiceUnavailable, "اتصال امن به داده‌های شرکت برقرار نشد.")
-			return
-		}
-		defer closeTenant()
-		allowed, err := tenant.userHasMenuAccess(session, menuKey)
-		if err == nil && !allowed && (r.Method == http.MethodGet || r.Method == http.MethodHead) && readFallback != "" {
-			allowed, err = tenant.userHasMenuAccess(session, readFallback)
-		}
-		if err != nil {
-			fail(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if !allowed {
-			fail(w, http.StatusForbidden, "شما به این بخش دسترسی ندارید.")
-			return
-		}
-		next(tenant, w, r)
-	}
-}
-
-func (a *app) requireAdmin(next appHandler) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		session, ok := a.currentSession(r)
-		if !ok {
-			fail(w, http.StatusUnauthorized, "نشست شما معتبر نیست. دوباره وارد شوید.")
-			return
-		}
-		role := strings.ToLower(strings.TrimSpace(session.Role))
-		if role != "admin" && role != "owner" {
-			fail(w, http.StatusForbidden, "این عملیات فقط برای مدیر اصلی مجاز است.")
-			return
-		}
-		tenant, closeTenant, err := a.forCompany(r.Context(), session.CompanyID)
-		if err != nil {
-			fail(w, http.StatusServiceUnavailable, "اتصال امن به داده‌های شرکت برقرار نشد.")
-			return
-		}
-		defer closeTenant()
-		next(tenant, w, r)
-	}
+		next(w, r)
+	})
 }
 
 func (a *app) createSession(w http.ResponseWriter, r *http.Request, session sessionInfo) error {
-	if session.CompanyID <= 0 {
-		session.CompanyID = 1
-	}
-	if session.ExpiresAt <= time.Now().Unix() {
-		session.ExpiresAt = time.Now().Add(8 * time.Hour).Unix()
-	}
-	token, err := a.signSession(session)
+	token, err := randomSessionToken()
 	if err != nil {
 		return err
 	}
+	a.mu.Lock()
+	a.sessions[token] = session
+	a.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{
 		Name:     "operational_session",
 		Value:    token,
@@ -413,13 +513,17 @@ func (a *app) createSession(w http.ResponseWriter, r *http.Request, session sess
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Secure:   isSecureRequest(r),
-		Expires:  time.Unix(session.ExpiresAt, 0),
-		MaxAge:   int(time.Until(time.Unix(session.ExpiresAt, 0)).Seconds()),
 	})
 	return nil
 }
 
 func (a *app) clearSession(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("operational_session")
+	if err == nil && cookie.Value != "" {
+		a.mu.Lock()
+		delete(a.sessions, cookie.Value)
+		a.mu.Unlock()
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "operational_session",
 		Value:    "",
@@ -437,36 +541,24 @@ func (a *app) currentSession(r *http.Request) (sessionInfo, bool) {
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
 		return sessionInfo{}, false
 	}
-	session, err := a.verifySession(cookie.Value)
-	if err != nil || session.CompanyID <= 0 || session.UserID <= 0 || session.ExpiresAt <= time.Now().Unix() {
+	a.mu.Lock()
+	session, ok := a.sessions[cookie.Value]
+	a.mu.Unlock()
+	if !ok {
 		return sessionInfo{}, false
 	}
 	return session, true
 }
 
-func (a *app) userHasMenuAccess(session sessionInfo, menuKey string) (bool, error) {
-	role := strings.ToLower(strings.TrimSpace(session.Role))
-	if role == "admin" || role == "owner" || (role == "manager" && !session.Portal) {
+func (a *app) userHasMenuAccess(userID int64, role, menuKey string) (bool, error) {
+	if strings.EqualFold(strings.TrimSpace(role), "admin") {
 		return true, nil
-	}
-	if session.Portal {
-		for _, key := range session.MenuKeys {
-			if key == menuKey || key == "*" {
-				return true, nil
-			}
-		}
-		var restricted int64
-		err := a.queryRow(`SELECT COALESCE(is_restricted,0) FROM menu_items WHERE menu_key=?`, menuKey).Scan(&restricted)
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return restricted == 0, err
 	}
 	var hasAccess int64
 	err := a.queryRow(`SELECT COALESCE(uma.has_access, CASE WHEN COALESCE(m.is_restricted,0)=1 THEN 0 ELSE 1 END)
 		FROM menu_items m
 		LEFT JOIN user_menu_access uma ON uma.menu_key=m.menu_key AND uma.user_id=?
-		WHERE m.menu_key=?`, session.UserID, menuKey).Scan(&hasAccess)
+		WHERE m.menu_key=?`, userID, menuKey).Scan(&hasAccess)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -474,107 +566,6 @@ func (a *app) userHasMenuAccess(session sessionInfo, menuKey string) (bool, erro
 		return false, err
 	}
 	return hasAccess == 1, nil
-}
-
-func (a *app) forCompany(ctx context.Context, companyID int64) (*app, func(), error) {
-	if companyID <= 0 {
-		return nil, func() {}, errors.New("invalid company id")
-	}
-	clone := *a
-	clone.companyID = companyID
-	if a.dialect != "postgres" {
-		return &clone, func() {}, nil
-	}
-	conn, err := a.db.Conn(ctx)
-	if err != nil {
-		return nil, func() {}, err
-	}
-	if _, err := conn.ExecContext(ctx, `SELECT set_config('app.company_id', $1, false)`, strconv.FormatInt(companyID, 10)); err != nil {
-		_ = conn.Close()
-		return nil, func() {}, err
-	}
-	clone.conn = conn
-	closeFn := func() {
-		_, _ = conn.ExecContext(context.Background(), `RESET app.company_id`)
-		_ = conn.Close()
-	}
-	return &clone, closeFn, nil
-}
-
-func (a *app) signSession(session sessionInfo) (string, error) {
-	payload, err := json.Marshal(session)
-	if err != nil {
-		return "", err
-	}
-	body := base64.RawURLEncoding.EncodeToString(payload)
-	mac := hmac.New(sha256.New, []byte(a.sessionSecret))
-	_, _ = mac.Write([]byte(body))
-	return body + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
-}
-
-func (a *app) verifySession(token string) (sessionInfo, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 2 {
-		return sessionInfo{}, errors.New("invalid session")
-	}
-	mac := hmac.New(sha256.New, []byte(a.sessionSecret))
-	_, _ = mac.Write([]byte(parts[0]))
-	expected := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(expected), []byte(parts[1])) {
-		return sessionInfo{}, errors.New("invalid session signature")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return sessionInfo{}, err
-	}
-	var session sessionInfo
-	if err := json.Unmarshal(payload, &session); err != nil {
-		return sessionInfo{}, err
-	}
-	return session, nil
-}
-
-type portalSessionClaims struct {
-	UserID           int64    `json:"user_id"`
-	CompanyID        int64    `json:"company_id"`
-	Username         string   `json:"username"`
-	Role             string   `json:"role"`
-	MenuKeys         []string `json:"menu_keys,omitempty"`
-	CanManage        bool     `json:"can_manage_team,omitempty"`
-	AllowOperational bool     `json:"allow_operational"`
-	ExpiresAt        int64    `json:"exp"`
-}
-
-func (a *app) verifyPortalSession(token string) (portalSessionClaims, error) {
-	parts := strings.Split(strings.TrimSpace(token), ".")
-	if len(parts) != 2 {
-		return portalSessionClaims{}, errors.New("invalid portal token")
-	}
-	mac := hmac.New(sha256.New, []byte(a.portalSessionSecret))
-	_, _ = mac.Write([]byte(parts[0]))
-	expected := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(expected), []byte(parts[1])) {
-		return portalSessionClaims{}, errors.New("invalid portal token signature")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return portalSessionClaims{}, err
-	}
-	var claims portalSessionClaims
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return portalSessionClaims{}, err
-	}
-	if claims.ExpiresAt <= time.Now().Unix() {
-		return portalSessionClaims{}, errors.New("portal token expired")
-	}
-	return claims, nil
-}
-
-func minInt64(a, b int64) int64 {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func randomSessionToken() (string, error) {
@@ -596,13 +587,6 @@ func isSecureRequest(r *http.Request) bool {
 }
 
 func (a *app) migrate() error {
-	if a.dialect == "postgres" {
-		if _, err := a.exec(`CREATE OR REPLACE FUNCTION operational_current_company_id() RETURNS BIGINT AS $$
-			SELECT COALESCE(NULLIF(current_setting('app.company_id', true), '')::BIGINT, 1)
-		$$ LANGUAGE SQL STABLE`); err != nil {
-			return err
-		}
-	}
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS mosh_name (id_mosh_name INTEGER PRIMARY KEY AUTOINCREMENT, name_mosh TEXT UNIQUE)`,
 		`CREATE TABLE IF NOT EXISTS nakh_name (id_nakh_name INTEGER PRIMARY KEY AUTOINCREMENT, name_nakh_name TEXT UNIQUE)`,
@@ -629,11 +613,15 @@ func (a *app) migrate() error {
 		`CREATE TABLE IF NOT EXISTS spare_part (id_spare_part INTEGER PRIMARY KEY AUTOINCREMENT, name_spare_part TEXT NOT NULL, part_number_spare_part TEXT, tozih_spare_part TEXT)`,
 		`CREATE TABLE IF NOT EXISTS spare_parts_inventory (id_spare_inventory INTEGER PRIMARY KEY AUTOINCREMENT, spare_part_id INTEGER UNIQUE, part_name TEXT NOT NULL, part_number TEXT, quantity INTEGER DEFAULT 0, condition_status TEXT, vendor_name TEXT, used_machine TEXT, receiver_name TEXT, description TEXT, created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT)`,
 		`CREATE TABLE IF NOT EXISTS machinery_service (id_machinery_service INTEGER PRIMARY KEY AUTOINCREMENT, machinery_name TEXT, service_date TEXT, service_type_id INTEGER, spare_part_id INTEGER, quantity_spare INTEGER DEFAULT 1, description_service TEXT, operator_name TEXT)`,
+		`CREATE TABLE IF NOT EXISTS v_kh_moto (id INTEGER PRIMARY KEY AUTOINCREMENT, tarikh_v_kh_moto TEXT, operation_type TEXT, name_kala TEXT, shomare_kala TEXT, from_location TEXT, to_location TEXT, person TEXT, status TEXT, tozih_v_kh_moto TEXT, tarikh_bazgasht TEXT)`,
 		`CREATE TABLE IF NOT EXISTS users (id_user INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT DEFAULT 'viewer', is_active INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now','localtime')))`,
 		`CREATE TABLE IF NOT EXISTS menu_items (id_menu INTEGER PRIMARY KEY AUTOINCREMENT, menu_key TEXT UNIQUE, menu_name TEXT, path TEXT, icon TEXT, is_restricted INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0)`,
 		`CREATE TABLE IF NOT EXISTS user_menu_access (id_access INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, menu_key TEXT, has_access INTEGER DEFAULT 1, granted_by INTEGER, granted_at TEXT DEFAULT (datetime('now','localtime')), UNIQUE(user_id, menu_key))`,
-		`CREATE TABLE IF NOT EXISTS mobile_loading_sessions (id_mobile_session INTEGER PRIMARY KEY AUTOINCREMENT, token_hash TEXT NOT NULL UNIQUE, company_id INTEGER NOT NULL, created_by INTEGER, invoice_no TEXT, customer TEXT, kala TEXT, created_at TEXT DEFAULT (datetime('now','localtime')), expires_at TEXT NOT NULL, closed_at TEXT)`,
-		`CREATE TABLE IF NOT EXISTS mobile_loading_items (id_mobile_item INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, taghe_code TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now','localtime')), UNIQUE(session_id, taghe_code))`,
+		`CREATE TABLE IF NOT EXISTS loading_sessions (id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, invoice_no TEXT NOT NULL, sanad_no TEXT, customer TEXT NOT NULL, kala TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_by INTEGER NOT NULL, created_by_username TEXT, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, completed_at TEXT)`,
+		`CREATE TABLE IF NOT EXISTS loading_session_items (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, taghe_code TEXT NOT NULL, confirmed_by INTEGER NOT NULL, confirmed_by_username TEXT, confirmed_at TEXT NOT NULL, UNIQUE(session_id, taghe_code))`,
+		`CREATE TABLE IF NOT EXISTS loading_reservations (taghe_code TEXT PRIMARY KEY, session_id TEXT NOT NULL, reserved_at TEXT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_loading_sessions_status_expires ON loading_sessions(status, expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_loading_items_session ON loading_session_items(session_id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := a.exec(ddl(a.dialect, stmt)); err != nil {
@@ -642,9 +630,19 @@ func (a *app) migrate() error {
 	}
 	for _, col := range []struct{ table, name, typ string }{
 		{"gere", "tarikh_gere", "TEXT"},
-		{"empty_beam_out", "returned_at", "TEXT"},
-		{"empty_beam_out", "returned_chelle_no", "TEXT"},
 		{"f_khor", "kala_name_f_khor", "TEXT"},
+		{"f_khor", "barcode_code", "TEXT"},
+		{"gerezan", "tozih_gerezan", "TEXT"},
+		{"hazine", "tozih_hazine", "TEXT"},
+		{"kala_name", "tozih_kala_name", "TEXT"},
+		{"kod_navard", "tozih_kod_navard", "TEXT"},
+		{"machine_formul", "tarikh_formul", "TEXT"},
+		{"mosh_name", "add_mosh", "TEXT"},
+		{"mosh_name", "phon_mosh", "TEXT"},
+		{"nakh_name", "tozih_nakh_name", "TEXT"},
+		{"operator_name", "tozih_operator", "TEXT"},
+		{"salon", "barcode_code", "TEXT"},
+		{"weaver_name", "tozih_weaver", "TEXT"},
 		{"h_rozmare", "weaver_name", "TEXT"},
 		{"h_rozmare", "shomare_sanad", "TEXT"},
 		{"spare_parts_inventory", "spare_part_id", "INTEGER"},
@@ -661,15 +659,6 @@ func (a *app) migrate() error {
 			return err
 		}
 	}
-	companyType := "INTEGER NOT NULL DEFAULT 1"
-	if a.dialect == "postgres" {
-		companyType = "BIGINT NOT NULL DEFAULT operational_current_company_id()"
-	}
-	for _, table := range operationalTenantTables() {
-		if err := a.ensureColumn(table, "company_id", companyType); err != nil {
-			return fmt.Errorf("add company_id to %s: %w", table, err)
-		}
-	}
 	var userCount int64
 	_ = a.queryRow(`SELECT COUNT(*) FROM users`).Scan(&userCount)
 	if userCount == 0 {
@@ -684,83 +673,6 @@ func (a *app) migrate() error {
 	}
 	if err := a.seedMenus(); err != nil {
 		return err
-	}
-	if a.dialect == "postgres" {
-		if err := a.configurePostgresTenantIsolation(); err != nil {
-			return err
-		}
-	} else {
-		for _, statement := range []string{
-			`CREATE UNIQUE INDEX IF NOT EXISTS uq_machine_formul_company_machine ON machine_formul (company_id, machine)`,
-			`CREATE UNIQUE INDEX IF NOT EXISTS uq_operational_users_company_username ON users (company_id, username)`,
-		} {
-			if _, err := a.exec(statement); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func operationalTenantTables() []string {
-	return []string{
-		"mosh_name", "nakh_name", "kala_name", "chellepich", "kod_navard", "gerezan",
-		"nakh_vor", "nakh_khor", "empty_beam_out", "chelle", "gere", "nakh_salon", "salon",
-		"machine_consumption", "machine_formul", "f_khor", "hazine", "operator_name", "driver_name",
-		"weaver_name", "h_rozmare", "service_type", "spare_part", "spare_parts_inventory",
-		"machinery_service", "users", "user_menu_access",
-	}
-}
-
-func (a *app) configurePostgresTenantIsolation() error {
-	for _, constraint := range []struct{ table, name string }{
-		{"mosh_name", "mosh_name_name_mosh_key"},
-		{"nakh_name", "nakh_name_name_nakh_name_key"},
-		{"kala_name", "kala_name_name_kala_name_key"},
-		{"chellepich", "chellepich_name_chellepich_key"},
-		{"kod_navard", "kod_navard_kod_kod_navard_key"},
-		{"gerezan", "gerezan_name_gerezan_key"},
-		{"machine_formul", "machine_formul_machine_key"},
-		{"spare_parts_inventory", "spare_parts_inventory_spare_part_id_key"},
-		{"users", "users_username_key"},
-	} {
-		if _, err := a.exec(`ALTER TABLE ` + quoteIdent(constraint.table) + ` DROP CONSTRAINT IF EXISTS ` + quoteIdent(constraint.name)); err != nil {
-			return err
-		}
-	}
-	uniqueIndexes := []struct {
-		name, table, columns string
-	}{
-		{"uq_mosh_name_company_name", "mosh_name", "company_id, name_mosh"},
-		{"uq_nakh_name_company_name", "nakh_name", "company_id, name_nakh_name"},
-		{"uq_kala_name_company_name", "kala_name", "company_id, name_kala_name"},
-		{"uq_chellepich_company_name", "chellepich", "company_id, name_chellepich"},
-		{"uq_kod_navard_company_code", "kod_navard", "company_id, kod_kod_navard"},
-		{"uq_gerezan_company_name", "gerezan", "company_id, name_gerezan"},
-		{"uq_machine_formul_company_machine", "machine_formul", "company_id, machine"},
-		{"uq_spare_inventory_company_part", "spare_parts_inventory", "company_id, spare_part_id"},
-		{"uq_operational_users_company_username", "users", "company_id, username"},
-	}
-	for _, index := range uniqueIndexes {
-		if _, err := a.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ` + quoteIdent(index.name) + ` ON ` + quoteIdent(index.table) + ` (` + index.columns + `)`); err != nil {
-			return err
-		}
-	}
-	for _, table := range operationalTenantTables() {
-		policy := "tenant_isolation_" + table
-		statements := []string{
-			`ALTER TABLE ` + quoteIdent(table) + ` ALTER COLUMN company_id SET DEFAULT operational_current_company_id()`,
-			`ALTER TABLE ` + quoteIdent(table) + ` ENABLE ROW LEVEL SECURITY`,
-			`ALTER TABLE ` + quoteIdent(table) + ` FORCE ROW LEVEL SECURITY`,
-			`DROP POLICY IF EXISTS ` + quoteIdent(policy) + ` ON ` + quoteIdent(table),
-			`CREATE POLICY ` + quoteIdent(policy) + ` ON ` + quoteIdent(table) + ` USING (company_id = operational_current_company_id()) WITH CHECK (company_id = operational_current_company_id())`,
-			`CREATE INDEX IF NOT EXISTS ` + quoteIdent("idx_"+table+"_company_id") + ` ON ` + quoteIdent(table) + ` (company_id)`,
-		}
-		for _, statement := range statements {
-			if _, err := a.exec(statement); err != nil {
-				return fmt.Errorf("tenant isolation %s: %w", table, err)
-			}
-		}
 	}
 	return nil
 }
@@ -926,7 +838,7 @@ func (a *app) refreshPostgresSequence(table string, cols []string) error {
 func (a *app) ensureColumn(table, column, typ string) error {
 	if a.dialect == "postgres" {
 		var n int
-		if err := a.queryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name=? AND column_name=?`, table, column).Scan(&n); err != nil {
+		if err := a.queryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? AND column_name=?`, table, column).Scan(&n); err != nil {
 			return err
 		}
 		if n > 0 {
@@ -992,6 +904,377 @@ func (a *app) seedMenus() error {
 	return nil
 }
 
+func (a *app) portalSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	provided := strings.TrimSpace(r.Header.Get("X-Operational-Portal-Secret"))
+	expected := strings.TrimSpace(a.portalSecret)
+	if expected == "" || !hmac.Equal([]byte(provided), []byte(expected)) {
+		fail(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var payload struct {
+		CompanyID int64  `json:"company_id"`
+		AccessID  int64  `json:"access_id"`
+		Username  string `json:"username"`
+		Role      string `json:"role"`
+	}
+	if !decode(w, r, &payload) {
+		return
+	}
+	payload.Username = strings.TrimSpace(payload.Username)
+	if payload.CompanyID <= 0 || payload.AccessID <= 0 || payload.Username == "" {
+		fail(w, http.StatusBadRequest, "company, access, and username are required")
+		return
+	}
+
+	var localUserID int64
+	var companyID int64
+	var schemaName string
+	err := a.queryRow(`SELECT u.local_user_id,t.external_company_id,t.schema_name
+		FROM public.operational_platform_users u
+		JOIN public.operational_tenants t ON t.id=u.tenant_id
+		WHERE u.portal_access_id=? AND t.external_company_id=? AND u.active=1 AND t.active=1`, payload.AccessID, payload.CompanyID).Scan(&localUserID, &companyID, &schemaName)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusUnauthorized, "operational access is not provisioned")
+		return
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "operational session could not be created")
+		return
+	}
+	role := "viewer"
+	if strings.EqualFold(strings.TrimSpace(payload.Role), "admin") {
+		role = "admin"
+	}
+	if err := a.createSession(w, r, sessionInfo{
+		UserID:    localUserID,
+		CompanyID: companyID,
+		Schema:    schemaName,
+		Username:  payload.Username,
+		Role:      role,
+	}); err != nil {
+		fail(w, http.StatusInternalServerError, "operational session could not be created")
+		return
+	}
+	writeJSON(w, record{
+		"success": true,
+		"user": record{
+			"id":       localUserID,
+			"username": payload.Username,
+			"role":     role,
+		},
+	})
+}
+
+func (a *app) portalProvision(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	provided := strings.TrimSpace(r.Header.Get("X-Operational-Portal-Secret"))
+	expected := strings.TrimSpace(a.portalSecret)
+	if expected == "" || !hmac.Equal([]byte(provided), []byte(expected)) {
+		fail(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var payload struct {
+		CompanyID int64  `json:"company_id"`
+		AccessID  int64  `json:"access_id"`
+		Company   string `json:"company_name"`
+		Contact   string `json:"contact_name"`
+		Username  string `json:"username"`
+		Password  string `json:"password"`
+		Role      string `json:"role"`
+	}
+	if !decode(w, r, &payload) {
+		return
+	}
+	payload.Company = strings.TrimSpace(payload.Company)
+	payload.Username = strings.TrimSpace(payload.Username)
+	if payload.AccessID <= 0 || payload.Company == "" || payload.Username == "" || payload.Password == "" {
+		fail(w, http.StatusBadRequest, "access, company, username, and password are required")
+		return
+	}
+	allocatedCompany := false
+	if payload.CompanyID <= 0 {
+		companyID, err := a.allocateFinancialCompany(payload.Company)
+		if err != nil {
+			log.Printf("financial company allocation failed for access=%d: %v", payload.AccessID, err)
+			fail(w, http.StatusBadRequest, "financial company could not be allocated")
+			return
+		}
+		payload.CompanyID = companyID
+		allocatedCompany = true
+	}
+	if err := a.provisionTenantAccess(payload.CompanyID, payload.AccessID, payload.Company, payload.Contact, payload.Username, payload.Password, payload.Role); err != nil {
+		if allocatedCompany {
+			_, _ = a.db.Exec(`DELETE FROM public.companies c WHERE c.id=$1 AND NOT EXISTS (SELECT 1 FROM public.operational_tenants t WHERE t.external_company_id=c.id)`, payload.CompanyID)
+		}
+		log.Printf("operational tenant provisioning failed for company=%d access=%d: %v", payload.CompanyID, payload.AccessID, err)
+		fail(w, http.StatusBadRequest, "tenant access could not be provisioned")
+		return
+	}
+	writeJSON(w, record{"success": true, "company_id": payload.CompanyID})
+}
+
+func (a *app) portalDeprovision(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	provided := strings.TrimSpace(r.Header.Get("X-Operational-Portal-Secret"))
+	expected := strings.TrimSpace(a.portalSecret)
+	if expected == "" || !hmac.Equal([]byte(provided), []byte(expected)) {
+		fail(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var payload struct{ Username string `json:"username"` }
+	if !decode(w, r, &payload) {
+		return
+	}
+	username := strings.TrimSpace(payload.Username)
+	if username == "" {
+		fail(w, http.StatusBadRequest, "username is required")
+		return
+	}
+	var tenantID, companyID int64
+	var schemaName string
+	err := a.db.QueryRow(`SELECT t.id,t.external_company_id,t.schema_name FROM public.operational_platform_users u JOIN public.operational_tenants t ON t.id=u.tenant_id WHERE u.username=$1`, username).Scan(&tenantID, &companyID, &schemaName)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, record{"success": true, "already_deleted": true})
+		return
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "tenant lookup failed")
+		return
+	}
+	if tenantID <= 0 || companyID <= 0 || !strings.HasPrefix(schemaName, "tenant_textile_") || schemaName == a.defaultSchema {
+		fail(w, http.StatusConflict, "refusing to delete an invalid tenant boundary")
+		return
+	}
+
+	tx, err := a.db.Begin()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "could not start tenant deletion")
+		return
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`DROP SCHEMA IF EXISTS ` + quoteIdent(schemaName) + ` CASCADE`); err != nil {
+		fail(w, http.StatusConflict, "operational schema deletion failed")
+		return
+	}
+	if _, err = tx.Exec(`DELETE FROM public.operational_tenants WHERE id=$1 AND external_company_id=$2`, tenantID, companyID); err != nil {
+		fail(w, http.StatusConflict, "operational tenant deletion failed")
+		return
+	}
+
+	rows, err := tx.Query(`SELECT DISTINCT table_name FROM information_schema.columns WHERE table_schema='public' AND column_name='company_id' AND table_name<>'companies' ORDER BY table_name`)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "could not inspect financial tenant tables")
+		return
+	}
+	var pending []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			rows.Close()
+			fail(w, http.StatusInternalServerError, "could not inspect financial tenant tables")
+			return
+		}
+		pending = append(pending, table)
+	}
+	rows.Close()
+	for len(pending) > 0 {
+		progress := false
+		next := make([]string, 0, len(pending))
+		for i, table := range pending {
+			sp := fmt.Sprintf("tenant_purge_%d", i)
+			if _, err = tx.Exec("SAVEPOINT " + sp); err != nil {
+				fail(w, http.StatusInternalServerError, "could not create deletion savepoint")
+				return
+			}
+			_, deleteErr := tx.Exec(`DELETE FROM public.`+quoteIdent(table)+` WHERE company_id=$1`, companyID)
+			if deleteErr == nil {
+				_, _ = tx.Exec("RELEASE SAVEPOINT " + sp)
+				progress = true
+				continue
+			}
+			_, _ = tx.Exec("ROLLBACK TO SAVEPOINT " + sp)
+			_, _ = tx.Exec("RELEASE SAVEPOINT " + sp)
+			var pqErr *pq.Error
+			if errors.As(deleteErr, &pqErr) && string(pqErr.Code) == "23503" {
+				next = append(next, table)
+				continue
+			}
+			fail(w, http.StatusConflict, "financial tenant deletion failed")
+			return
+		}
+		if !progress {
+			fail(w, http.StatusConflict, "financial tenant deletion blocked by an unscoped foreign key")
+			return
+		}
+		pending = next
+	}
+	if result, err := tx.Exec(`DELETE FROM public.companies WHERE id=$1`, companyID); err != nil {
+		fail(w, http.StatusConflict, "financial tenant root deletion failed")
+		return
+	} else if affected, _ := result.RowsAffected(); affected != 1 {
+		fail(w, http.StatusConflict, "financial tenant root changed during deletion")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		fail(w, http.StatusInternalServerError, "tenant deletion could not be committed")
+		return
+	}
+	a.mu.Lock()
+	for token, session := range a.sessions {
+		if session.CompanyID == companyID {
+			delete(a.sessions, token)
+		}
+	}
+	a.mu.Unlock()
+	writeJSON(w, record{"success": true, "company_id": companyID})
+}
+
+func (a *app) allocateFinancialCompany(companyName string) (int64, error) {
+	companyName = strings.TrimSpace(companyName)
+	if a.dialect != "postgres" || companyName == "" {
+		return 0, errors.New("postgres and company name are required")
+	}
+	code := fmt.Sprintf("PANEL-AUTO-%d", time.Now().UnixNano())
+	var companyID int64
+	if err := a.db.QueryRow(`INSERT INTO public.companies(code,name,is_active) VALUES($1,$2,TRUE) RETURNING id`, code, companyName).Scan(&companyID); err != nil {
+		return 0, err
+	}
+	return companyID, nil
+}
+
+func (a *app) ensureFinancialCompany(companyID int64, companyName string) error {
+	companyName = strings.TrimSpace(companyName)
+	var existingName string
+	err := a.queryRow(`SELECT name FROM public.companies WHERE id=?`, companyID).Scan(&existingName)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err := a.exec(`INSERT INTO public.companies(id,code,name,is_active) VALUES(?,?,?,TRUE)`, companyID, "PANEL-"+strconv.FormatInt(companyID, 10), companyName); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	} else if !strings.EqualFold(strings.TrimSpace(existingName), companyName) {
+		return fmt.Errorf("company id %d belongs to a different tenant", companyID)
+	}
+	_, err = a.db.Exec(`SELECT setval(pg_get_serial_sequence('public.companies','id'), GREATEST((SELECT COALESCE(MAX(id),1) FROM public.companies),1), true)`)
+	return err
+}
+
+func (a *app) provisionTenantAccess(companyID, accessID int64, companyName, contactName, username, password, role string) error {
+	if a.dialect != "postgres" {
+		return errors.New("tenant provisioning requires postgres")
+	}
+	companyName = strings.TrimSpace(companyName)
+	contactName = strings.TrimSpace(contactName)
+	username = strings.TrimSpace(username)
+	if companyID <= 0 || accessID <= 0 || companyName == "" || username == "" || password == "" {
+		return errors.New("company, access, username, and password are required")
+	}
+	if !strings.EqualFold(strings.TrimSpace(role), "admin") {
+		role = "viewer"
+	} else {
+		role = "admin"
+	}
+	passwordHash, err := hashPassword(password)
+	if err != nil {
+		return err
+	}
+	if err := a.ensureFinancialCompany(companyID, companyName); err != nil {
+		return err
+	}
+
+	var tenantID int64
+	var schemaName string
+	err = a.queryRow(`SELECT id,schema_name FROM public.operational_tenants WHERE external_company_id=? AND active=1`, companyID).Scan(&tenantID, &schemaName)
+	newTenant := errors.Is(err, sql.ErrNoRows)
+	if err != nil && !newTenant {
+		return err
+	}
+	if newTenant {
+		schemaName = "tenant_textile_" + strconv.FormatInt(companyID, 10)
+		tx, err := a.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec(`CREATE SCHEMA IF NOT EXISTS ` + quoteIdent(schemaName)); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(`INSERT INTO public.operational_tenants(external_company_id,company_name,schema_name,active) VALUES($1,$2,$3,1) RETURNING id`, companyID, companyName, schemaName).Scan(&tenantID); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	provisioned := false
+	if newTenant {
+		defer func() {
+			if provisioned {
+				return
+			}
+			_ = a.setSearchPath(a.defaultSchema)
+			_, _ = a.exec(`DELETE FROM public.operational_platform_users WHERE tenant_id=?`, tenantID)
+			_, _ = a.db.Exec(`DROP SCHEMA IF EXISTS ` + quoteIdent(schemaName) + ` CASCADE`)
+			_, _ = a.exec(`DELETE FROM public.operational_tenants WHERE id=?`, tenantID)
+		}()
+	}
+	if err := a.setSearchPath(schemaName); err != nil {
+		return err
+	}
+	if newTenant {
+		if err := a.migrate(); err != nil {
+			return err
+		}
+	}
+	_, _ = a.exec(`UPDATE public.operational_tenants SET company_name=? WHERE id=?`, companyName, tenantID)
+
+	var localUserID int64
+	err = a.queryRow(`SELECT local_user_id FROM public.operational_platform_users WHERE tenant_id=? AND portal_access_id=?`, tenantID, accessID).Scan(&localUserID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		var mappedUsers int64
+		if err := a.queryRow(`SELECT COUNT(*) FROM public.operational_platform_users WHERE tenant_id=?`, tenantID).Scan(&mappedUsers); err != nil {
+			return err
+		}
+		if mappedUsers == 0 {
+			if err := a.queryRow(`SELECT id_user FROM users WHERE role='admin' ORDER BY id_user LIMIT 1`).Scan(&localUserID); err != nil {
+				return err
+			}
+			if _, err := a.exec(`UPDATE users SET username=?,password_hash=?,role=?,is_active=1 WHERE id_user=?`, username, passwordHash, role, localUserID); err != nil {
+				return err
+			}
+		} else {
+			if err := a.queryRow(`INSERT INTO users(username,password_hash,role,is_active) VALUES(?,?,?,1) RETURNING id_user`, username, passwordHash, role).Scan(&localUserID); err != nil {
+				return err
+			}
+		}
+		if _, err := a.exec(`INSERT INTO public.operational_platform_users(tenant_id,local_user_id,portal_access_id,username,password_hash,active) VALUES(?,?,?,?,?,1)`, tenantID, localUserID, accessID, username, passwordHash); err != nil {
+			return err
+		}
+	} else {
+		if _, err := a.exec(`UPDATE users SET username=?,password_hash=?,role=?,is_active=1 WHERE id_user=?`, username, passwordHash, role, localUserID); err != nil {
+			return err
+		}
+		if _, err := a.exec(`UPDATE public.operational_platform_users SET username=?,password_hash=?,active=1 WHERE tenant_id=? AND portal_access_id=?`, username, passwordHash, tenantID, accessID); err != nil {
+			return err
+		}
+	}
+	provisioned = true
+	return nil
+}
+
 func (a *app) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, record{"ok": true, "service": "operational-cycle-go", "date": jalaliToday()})
 }
@@ -1002,78 +1285,38 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var p struct {
-		Username  string `json:"username"`
-		Password  string `json:"password"`
-		CompanyID int64  `json:"company_id"`
+		Username string `json:"username"`
+		Password string `json:"password"`
 	}
 	if !decode(w, r, &p) {
 		return
 	}
-	if p.CompanyID <= 0 {
-		p.CompanyID = int64Env("OPERATIONAL_DEFAULT_COMPANY_ID", 1)
+	var id, active, companyID int64
+	var username, hash, role, schemaName string
+	var err error
+	if a.dialect == "postgres" {
+		err = a.queryRow(`SELECT pu.local_user_id,pu.username,pu.password_hash,pu.tenant_id,t.schema_name
+			FROM public.operational_platform_users pu JOIN public.operational_tenants t ON t.id=pu.tenant_id
+			WHERE pu.username=? AND pu.active=1 AND t.active=1`, strings.TrimSpace(p.Username)).Scan(&id, &username, &hash, &companyID, &schemaName)
+		if err == nil {
+			err = a.setSearchPath(schemaName)
+		}
+		if err == nil {
+			err = a.queryRow(`SELECT role,COALESCE(is_active,1) FROM users WHERE id_user=?`, id).Scan(&role, &active)
+		}
+	} else {
+		err = a.queryRow(`SELECT id_user, username, password_hash, role, COALESCE(is_active,1) FROM users WHERE username=?`, strings.TrimSpace(p.Username)).Scan(&id, &username, &hash, &role, &active)
 	}
-	tenant, closeTenant, err := a.forCompany(r.Context(), p.CompanyID)
-	if err != nil {
-		fail(w, http.StatusServiceUnavailable, "اتصال به اطلاعات شرکت برقرار نشد")
-		return
-	}
-	defer closeTenant()
-	var id, active int64
-	var username, hash, role string
-	err = tenant.queryRow(`SELECT id_user, username, password_hash, role, COALESCE(is_active,1) FROM users WHERE username=?`, strings.TrimSpace(p.Username)).Scan(&id, &username, &hash, &role, &active)
 	if err != nil || active != 1 || !verifyPassword(p.Password, hash) {
 		fail(w, http.StatusUnauthorized, "نام کاربری یا رمز عبور معتبر نیست")
 		return
 	}
-	session := sessionInfo{UserID: id, CompanyID: p.CompanyID, Username: username, Role: role, ExpiresAt: time.Now().Add(8 * time.Hour).Unix()}
-	if err := a.createSession(w, r, session); err != nil {
+	if err := a.createSession(w, r, sessionInfo{UserID: id, CompanyID: companyID, Schema: schemaName, Username: username, Role: role}); err != nil {
 		fail(w, http.StatusInternalServerError, "ایجاد نشست امکان‌پذیر نیست")
 		return
 	}
-	menus := tenant.userMenus(session)
-	writeJSON(w, record{"success": true, "user": record{"id": id, "company_id": p.CompanyID, "username": username, "role": role}, "menus": menus})
-}
-
-func (a *app) portalSession(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	var p struct {
-		Token string `json:"token"`
-	}
-	if !decode(w, r, &p) {
-		return
-	}
-	claims, err := a.verifyPortalSession(p.Token)
-	if err != nil || !claims.AllowOperational || claims.CompanyID <= 0 || claims.UserID <= 0 {
-		fail(w, http.StatusUnauthorized, "مجوز پورتال برای بخش عملیاتی معتبر نیست")
-		return
-	}
-	role := strings.ToLower(strings.TrimSpace(claims.Role))
-	if role == "" {
-		role = "customer"
-	}
-	session := sessionInfo{
-		UserID: claims.UserID, CompanyID: claims.CompanyID, Username: claims.Username,
-		Role: role, Portal: true, MenuKeys: claims.MenuKeys, CanManage: claims.CanManage,
-		ExpiresAt: minInt64(claims.ExpiresAt, time.Now().Add(8*time.Hour).Unix()),
-	}
-	if err := a.createSession(w, r, session); err != nil {
-		fail(w, http.StatusInternalServerError, "ایجاد نشست عملیاتی امکان‌پذیر نیست")
-		return
-	}
-	tenant, closeTenant, err := a.forCompany(r.Context(), claims.CompanyID)
-	if err != nil {
-		fail(w, http.StatusServiceUnavailable, "اتصال به اطلاعات شرکت برقرار نشد")
-		return
-	}
-	defer closeTenant()
-	writeJSON(w, record{
-		"success": true,
-		"user":    record{"id": session.UserID, "company_id": session.CompanyID, "username": session.Username, "role": session.Role},
-		"menus":   tenant.userMenus(session),
-	})
+	menus := a.userMenus(id, role)
+	writeJSON(w, record{"success": true, "user": record{"id": id, "username": username, "role": role}, "menus": menus})
 }
 
 func (a *app) logout(w http.ResponseWriter, r *http.Request) {
@@ -1095,10 +1338,10 @@ func (a *app) sessionStatus(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnauthorized, "نشست شما معتبر نیست. دوباره وارد شوید.")
 		return
 	}
-	menus := a.userMenus(session)
+	menus := a.userMenus(session.UserID, session.Role)
 	writeJSON(w, record{
 		"success": true,
-		"user":    record{"id": session.UserID, "company_id": session.CompanyID, "username": session.Username, "role": session.Role},
+		"user":    record{"id": session.UserID, "username": session.Username, "role": session.Role},
 		"menus":   menus,
 	})
 }
@@ -1114,12 +1357,12 @@ func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 		"nakh_khor_count":   a.count("nakh_khor"),
 		"chelle_count":      a.count("chelle"),
 		"gere_count":        a.count("gere"),
-		"nakh_salon_net":    a.scalarFloat("SELECT COALESCE(SUM(w_nakh_salon),0) FROM nakh_salon"),
+		"nakh_salon_net":    scalarFloat(a.db, "SELECT COALESCE(SUM(w_nakh_salon),0) FROM nakh_salon"),
 		"salon_count":       a.count("salon"),
-		"salon_metr":        a.scalarFloat("SELECT COALESCE(SUM(metr_salon),0) FROM salon"),
-		"salon_weight":      a.scalarFloat("SELECT COALESCE(SUM(w_salon),0) FROM salon"),
+		"salon_metr":        scalarFloat(a.db, "SELECT COALESCE(SUM(metr_salon),0) FROM salon"),
+		"salon_weight":      scalarFloat(a.db, "SELECT COALESCE(SUM(w_salon),0) FROM salon"),
 		"out_invoice_count": a.count("f_khor"),
-		"expense_total":     a.scalarFloat("SELECT COALESCE(SUM(mablagh_h_rozmare),0) FROM h_rozmare"),
+		"expense_total":     scalarFloat(a.db, "SELECT COALESCE(SUM(mablagh_h_rozmare),0) FROM h_rozmare"),
 		"today":             a.productionSummary("tarikh_salon = ?", today),
 		"today_by_machine":  a.productionByMachine(today),
 		"month":             a.productionSummary("SUBSTR(tarikh_salon,1,7) = ?", month),
@@ -1165,8 +1408,8 @@ func (a *app) lookups(w http.ResponseWriter, r *http.Request) {
 		"weavers":      a.lookup("weaver_name", "id_weaver", "name_weaver"),
 		"serviceTypes": a.lookup("service_type", "id_service_type", "name_service_type"),
 		"spareParts":   a.lookup("spare_part", "id_spare_part", "name_spare_part"),
-		"hambaftYarn":  a.distinct("SELECT DISTINCT hambaft_nakh_vor FROM nakh_vor WHERE COALESCE(hambaft_nakh_vor,'')<>'' ORDER BY hambaft_nakh_vor"),
-		"hamPod":       a.distinct("SELECT DISTINCT ham_nakh_salon FROM nakh_salon WHERE COALESCE(ham_nakh_salon,'')<>'' ORDER BY ham_nakh_salon"),
+		"hambaftYarn":  distinct(a.db, "SELECT DISTINCT hambaft_nakh_vor FROM nakh_vor WHERE COALESCE(hambaft_nakh_vor,'')<>'' ORDER BY hambaft_nakh_vor"),
+		"hamPod":       distinct(a.db, "SELECT DISTINCT ham_nakh_salon FROM nakh_salon WHERE COALESCE(ham_nakh_salon,'')<>'' ORDER BY ham_nakh_salon"),
 	})
 }
 
@@ -1291,26 +1534,13 @@ func (a *app) chelle(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "اطلاعات چله کامل نیست")
 			return
 		}
-		tx, err := a.begin()
-		if err != nil {
-			fail(w, 500, err.Error())
-			return
-		}
+		var err error
 		if p.ID > 0 {
-			_, err = txExec(a.dialect, tx, `UPDATE chelle SET shom_chelle=?, nakh_chelle=?, w_chelle=?, pich_chelle=?, mosh_chelle=?, hambaft_chelle=?, codnavard_chelle=? WHERE id_chelle=?`, p.ShomChelle, nakh, p.Weight, pich, mosh, p.Hambaft, kod, p.ID)
+			_, err = a.exec(`UPDATE chelle SET shom_chelle=?, nakh_chelle=?, w_chelle=?, pich_chelle=?, mosh_chelle=?, hambaft_chelle=?, codnavard_chelle=? WHERE id_chelle=?`, p.ShomChelle, nakh, p.Weight, pich, mosh, p.Hambaft, kod, p.ID)
 		} else {
-			_, err = txExec(a.dialect, tx, `INSERT INTO chelle (tarikh_chelle,shom_chelle,nakh_chelle,w_chelle,pich_chelle,mosh_chelle,hambaft_chelle,codnavard_chelle,machin_chelle) VALUES (?,?,?,?,?,?,?,?,?)`, jalaliToday(), p.ShomChelle, nakh, p.Weight, pich, mosh, p.Hambaft, kod, "")
+			_, err = a.exec(`INSERT INTO chelle (tarikh_chelle,shom_chelle,nakh_chelle,w_chelle,pich_chelle,mosh_chelle,hambaft_chelle,codnavard_chelle,machin_chelle) VALUES (?,?,?,?,?,?,?,?,?)`, jalaliToday(), p.ShomChelle, nakh, p.Weight, pich, mosh, p.Hambaft, kod, "")
 		}
-		if err == nil && strings.TrimSpace(kod) != "" {
-			_, err = txExec(a.dialect, tx, `UPDATE empty_beam_out SET returned_at=datetime('now','localtime'), returned_chelle_no=?
-				WHERE id_empty_beam_out=(SELECT id_empty_beam_out FROM empty_beam_out WHERE kod_navard=? AND chellepich_name=? AND COALESCE(returned_at,'')='' ORDER BY id_empty_beam_out DESC LIMIT 1)`, p.ShomChelle, kod, pich)
-		}
-		if err != nil {
-			_ = tx.Rollback()
-			writeSave(w, err)
-			return
-		}
-		writeSave(w, tx.Commit())
+		writeSave(w, err)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
@@ -1322,26 +1552,7 @@ func (a *app) chelleByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := strconv.Atoi(pathLast(r.URL.Path))
-	tx, err := a.begin()
-	if err != nil {
-		fail(w, 500, err.Error())
-		return
-	}
-	var shom, beam string
-	if err := txQueryRow(a.dialect, tx, `SELECT COALESCE(shom_chelle,''), COALESCE(codnavard_chelle,'') FROM chelle WHERE id_chelle=?`, id).Scan(&shom, &beam); err != nil {
-		_ = tx.Rollback()
-		fail(w, 404, "چله پیدا نشد")
-		return
-	}
-	if _, err := txExec(a.dialect, tx, `DELETE FROM chelle WHERE id_chelle=?`, id); err != nil {
-		_ = tx.Rollback()
-		writeSave(w, err)
-		return
-	}
-	if beam != "" {
-		_, _ = txExec(a.dialect, tx, `UPDATE empty_beam_out SET returned_at=NULL, returned_chelle_no=NULL WHERE kod_navard=? AND returned_chelle_no=?`, beam, shom)
-	}
-	writeSave(w, tx.Commit())
+	writeSave(w, execErr(a.exec(`DELETE FROM chelle WHERE id_chelle=?`, id)))
 }
 
 func (a *app) gere(w http.ResponseWriter, r *http.Request) {
@@ -1352,7 +1563,7 @@ func (a *app) gere(w http.ResponseWriter, r *http.Request) {
 			writeRows(w, rows, err, []string{"id", "shom_chelle", "weight", "hambaft"})
 			return
 		}
-		rows, err := a.query(`SELECT g.id_gere, g.tarikh_gere, g.name_gere, g.shom_chelle_gere, g.machin_gere, COALESCE(gr.id_gerezan,0), COALESCE(c.id_chelle,0) FROM gere g LEFT JOIN gerezan gr ON gr.name_gerezan=g.name_gere LEFT JOIN chelle c ON c.id_chelle=(SELECT MAX(c2.id_chelle) FROM chelle c2 WHERE c2.shom_chelle=g.shom_chelle_gere) ORDER BY COALESCE(g.tarikh_gere,'') DESC, g.id_gere DESC LIMIT 200`)
+		rows, err := a.query(`SELECT g.id_gere, g.tarikh_gere, g.name_gere, g.shom_chelle_gere, g.machin_gere, COALESCE(gr.id_gerezan,0), COALESCE(c.id_chelle,0) FROM gere g LEFT JOIN gerezan gr ON gr.name_gerezan=g.name_gere LEFT JOIN chelle c ON c.shom_chelle=g.shom_chelle_gere ORDER BY COALESCE(g.tarikh_gere,'') DESC, g.id_gere DESC LIMIT 200`)
 		writeRows(w, rows, err, []string{"id", "tarikh", "name_gere", "shom_chelle", "machine", "gerezan_id", "chelle_id"})
 	case http.MethodPost:
 		var p struct {
@@ -1378,7 +1589,7 @@ func (a *app) gere(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "چله معتبر نیست")
 			return
 		}
-		tx, err := a.begin()
+		tx, err := a.db.Begin()
 		if err != nil {
 			fail(w, 500, err.Error())
 			return
@@ -1413,7 +1624,7 @@ func (a *app) gereByID(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.Atoi(pathLast(r.URL.Path))
 	var shom string
 	_ = a.queryRow(`SELECT shom_chelle_gere FROM gere WHERE id_gere=?`, id).Scan(&shom)
-	tx, err := a.begin()
+	tx, err := a.db.Begin()
 	if err == nil {
 		_, err = txExec(a.dialect, tx, `DELETE FROM gere WHERE id_gere=?`, id)
 	}
@@ -1436,7 +1647,7 @@ func (a *app) nakhSalon(w http.ResponseWriter, r *http.Request) {
 			writeRows(w, rows, err, []string{"id", "shom_chelle", "machine", "weight", "hambaft"})
 			return
 		}
-		rows, err := a.query(`SELECT ns.id_nakh_salon, ns.tarikh_nakh_salon, ns.shom_machin_nakh_salon, ns.ham_nakh_salon, ns.w_nakh_salon, ns.shom_chelle_nakh_salon, ns.mosh_name_nakh_salon, ns.vor_khor_nakh_salon, COALESCE(c.id_chelle,0) FROM nakh_salon ns LEFT JOIN chelle c ON c.id_chelle=(SELECT MAX(c2.id_chelle) FROM chelle c2 WHERE c2.shom_chelle=ns.shom_chelle_nakh_salon) ORDER BY ns.id_nakh_salon DESC LIMIT 200`)
+		rows, err := a.query(`SELECT ns.id_nakh_salon, ns.tarikh_nakh_salon, ns.shom_machin_nakh_salon, ns.ham_nakh_salon, ns.w_nakh_salon, ns.shom_chelle_nakh_salon, ns.mosh_name_nakh_salon, ns.vor_khor_nakh_salon, COALESCE(c.id_chelle,0) FROM nakh_salon ns LEFT JOIN chelle c ON c.shom_chelle=ns.shom_chelle_nakh_salon ORDER BY ns.id_nakh_salon DESC LIMIT 200`)
 		writeRows(w, rows, err, []string{"id", "tarikh", "machine", "ham_nakh", "weight", "shom_chelle", "mosh_name", "vor_khor", "chelle_id"})
 	case http.MethodPost:
 		var p struct {
@@ -1533,8 +1744,14 @@ func (a *app) emptyBeamOut(w http.ResponseWriter, r *http.Request) {
 			SELECT e.id_empty_beam_out, COALESCE(e.tarikh_empty_beam_out,''), COALESCE(e.kod_navard,''),
 			       COALESCE(e.chellepich_name,''), COALESCE(e.description,''),
 			       COALESCE(k.id_kod_navard,0), COALESCE(cp.id_chellepich,0),
-			       COALESCE(e.returned_at,'') AS return_date,
-			       COALESCE(e.returned_chelle_no,'') AS return_chelle
+			       COALESCE((SELECT c.tarikh_chelle FROM chelle c
+			         WHERE c.codnavard_chelle=e.kod_navard AND c.pich_chelle=e.chellepich_name
+			           AND COALESCE(c.tarikh_chelle,'')>=COALESCE(e.tarikh_empty_beam_out,'')
+			         ORDER BY c.tarikh_chelle DESC, c.id_chelle DESC LIMIT 1),'') AS return_date,
+			       COALESCE((SELECT c.shom_chelle FROM chelle c
+			         WHERE c.codnavard_chelle=e.kod_navard AND c.pich_chelle=e.chellepich_name
+			           AND COALESCE(c.tarikh_chelle,'')>=COALESCE(e.tarikh_empty_beam_out,'')
+			         ORDER BY c.tarikh_chelle DESC, c.id_chelle DESC LIMIT 1),'') AS return_chelle
 			FROM empty_beam_out e
 			LEFT JOIN kod_navard k ON k.kod_kod_navard=e.kod_navard
 			LEFT JOIN chellepich cp ON cp.name_chellepich=e.chellepich_name
@@ -1588,22 +1805,8 @@ func (a *app) emptyBeamOut(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "اطلاعات خروج نورد خالی کامل نیست")
 			return
 		}
-		var unresolved int64
 		if p.ID > 0 {
-			err = a.queryRow(`SELECT COUNT(*) FROM empty_beam_out WHERE kod_navard=? AND id_empty_beam_out<>? AND COALESCE(returned_at,'')=''`, beam, p.ID).Scan(&unresolved)
-		} else {
-			err = a.queryRow(`SELECT COUNT(*) FROM empty_beam_out WHERE kod_navard=? AND COALESCE(returned_at,'')=''`, beam).Scan(&unresolved)
-		}
-		if err != nil {
-			fail(w, 500, err.Error())
-			return
-		}
-		if unresolved > 0 {
-			fail(w, http.StatusConflict, "این نورد هنوز نزد چله‌پیچ است و خروج دوباره آن مجاز نیست")
-			return
-		}
-		if p.ID > 0 {
-			_, err = a.exec(`UPDATE empty_beam_out SET kod_navard=?, chellepich_name=?, description=?, returned_at=NULL, returned_chelle_no=NULL WHERE id_empty_beam_out=?`, beam, warper, strings.TrimSpace(p.Description), p.ID)
+			_, err = a.exec(`UPDATE empty_beam_out SET kod_navard=?, chellepich_name=?, description=? WHERE id_empty_beam_out=?`, beam, warper, strings.TrimSpace(p.Description), p.ID)
 		} else {
 			_, err = a.exec(`INSERT INTO empty_beam_out (tarikh_empty_beam_out,kod_navard,chellepich_name,description) VALUES (?,?,?,?)`, jalaliToday(), beam, warper, strings.TrimSpace(p.Description))
 		}
@@ -1673,12 +1876,13 @@ func (a *app) outInvoice(w http.ResponseWriter, r *http.Request) {
 		a.writeOutInvoices(w, 200)
 	case http.MethodPost:
 		var p struct {
-			InvoiceNo string   `json:"invoice_no"`
-			SanadNo   string   `json:"sanad_no"`
-			Customer  string   `json:"customer"`
-			Kala      string   `json:"kala"`
-			Items     []string `json:"items"`
-			OldNo     string   `json:"old_invoice_no"`
+			InvoiceNo           string   `json:"invoice_no"`
+			SanadNo             string   `json:"sanad_no"`
+			Customer            string   `json:"customer"`
+			Kala                string   `json:"kala"`
+			Items               []string `json:"items"`
+			OldNo               string   `json:"old_invoice_no"`
+			LoadingSessionToken string   `json:"loading_session_token"`
 		}
 		if !decode(w, r, &p) {
 			return
@@ -1688,403 +1892,102 @@ func (a *app) outInvoice(w http.ResponseWriter, r *http.Request) {
 		p.Customer = strings.TrimSpace(p.Customer)
 		p.Kala = strings.TrimSpace(p.Kala)
 		p.OldNo = strings.TrimSpace(p.OldNo)
-		uniqueItems := make([]string, 0, len(p.Items))
-		seenItems := make(map[string]bool, len(p.Items))
-		for _, rawCode := range p.Items {
-			code := strings.TrimSpace(rawCode)
-			if code == "" || seenItems[code] {
-				continue
-			}
-			seenItems[code] = true
-			uniqueItems = append(uniqueItems, code)
-		}
-		p.Items = uniqueItems
+		p.LoadingSessionToken = strings.TrimSpace(p.LoadingSessionToken)
+		p.Items = uniqueCodes(p.Items)
 		if p.InvoiceNo == "" || p.Customer == "" || p.Kala == "" || len(p.Items) == 0 {
 			fail(w, 400, "اطلاعات فاکتور خروج کامل نیست")
 			return
 		}
-		tx, err := a.begin()
+		var loading *loadingSession
+		if p.LoadingSessionToken != "" {
+			s, err := a.loadingSessionByToken(p.LoadingSessionToken)
+			if err != nil || !a.loadingSessionIsActive(s) {
+				fail(w, http.StatusBadRequest, "جلسه بارگیری معتبر یا فعال نیست")
+				return
+			}
+			if s.InvoiceNo != p.InvoiceNo || !sameText(s.Customer, p.Customer) || !sameText(s.Kala, p.Kala) {
+				fail(w, http.StatusBadRequest, "مشخصات جلسه بارگیری با فاکتور جاری یکسان نیست")
+				return
+			}
+			loading = &s
+		}
+		tx, err := a.db.Begin()
 		if err != nil {
 			fail(w, 500, err.Error())
 			return
 		}
-		defer tx.Rollback()
-		var duplicateInvoice int
-		if p.OldNo == "" {
-			err = txQueryRow(a.dialect, tx, `SELECT COUNT(*) FROM f_khor WHERE shom_f_khor=?`, p.InvoiceNo).Scan(&duplicateInvoice)
-		} else if p.InvoiceNo != p.OldNo {
-			err = txQueryRow(a.dialect, tx, `SELECT COUNT(*) FROM f_khor WHERE shom_f_khor=? AND shom_f_khor<>?`, p.InvoiceNo, p.OldNo).Scan(&duplicateInvoice)
-		}
-		if err != nil {
-			fail(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if duplicateInvoice > 0 {
-			fail(w, http.StatusConflict, "شماره فاکتور "+p.InvoiceNo+" قبلاً ثبت شده است")
-			return
-		}
+		sort.Strings(p.Items)
 		for _, code := range p.Items {
-			var exists int
-			if err = txQueryRow(a.dialect, tx, `SELECT COUNT(*) FROM salon WHERE CAST(id_salon AS TEXT)=?`, code).Scan(&exists); err != nil {
-				fail(w, http.StatusInternalServerError, err.Error())
-				return
+			taghe, lockErr := a.tagheForUpdate(tx, code)
+			if lockErr != nil {
+				err = fmt.Errorf("طاقه %s در دیتابیس موجود نیست", code)
+				break
 			}
-			if exists == 0 {
-				fail(w, http.StatusBadRequest, "طاقه با کد "+code+" در سالن تولید یافت نشد")
-				return
+			if !sameText(taghe.Kala, p.Kala) {
+				err = fmt.Errorf("کالای طاقه %s با کالای فاکتور مغایرت دارد", code)
+				break
 			}
 			var existingInvoice string
-			if p.OldNo == "" {
-				err = txQueryRow(a.dialect, tx, `SELECT COALESCE(shom_f_khor,'') FROM f_khor WHERE taghe_cod_f_khor=? LIMIT 1`, code).Scan(&existingInvoice)
-			} else {
-				err = txQueryRow(a.dialect, tx, `SELECT COALESCE(shom_f_khor,'') FROM f_khor WHERE taghe_cod_f_khor=? AND shom_f_khor<>? LIMIT 1`, code, p.OldNo).Scan(&existingInvoice)
+			existingErr := txQueryRow(a.dialect, tx, `SELECT shom_f_khor FROM f_khor WHERE taghe_cod_f_khor=? AND (?='' OR shom_f_khor<>?) LIMIT 1`, code, p.OldNo, p.OldNo).Scan(&existingInvoice)
+			if existingErr == nil && existingInvoice != "" {
+				err = fmt.Errorf("طاقه %s قبلاً در فاکتور %s ثبت شده است", code, existingInvoice)
+				break
 			}
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				fail(w, http.StatusInternalServerError, err.Error())
-				return
+			if existingErr != nil && !errors.Is(existingErr, sql.ErrNoRows) {
+				err = existingErr
+				break
 			}
-			if existingInvoice != "" {
-				fail(w, http.StatusConflict, "طاقه "+code+" قبلاً در فاکتور "+existingInvoice+" ثبت شده است")
-				return
+			var reservationSession string
+			reservationErr := txQueryRow(a.dialect, tx, `SELECT session_id FROM loading_reservations WHERE taghe_code=?`, code).Scan(&reservationSession)
+			if reservationErr == nil && (loading == nil || reservationSession != loading.ID) {
+				err = fmt.Errorf("طاقه %s در یک بارگیری دیگر رزرو شده است", code)
+				break
 			}
-			err = nil
+			if reservationErr != nil && !errors.Is(reservationErr, sql.ErrNoRows) {
+				err = reservationErr
+				break
+			}
 		}
-		if p.OldNo != "" {
+		if err == nil && p.OldNo != "" {
 			_, err = txExec(a.dialect, tx, `DELETE FROM f_khor WHERE shom_f_khor=?`, p.OldNo)
 		}
-		invoiceDate := jalaliToday()
 		for _, code := range p.Items {
 			if err == nil {
-				_, err = txExec(a.dialect, tx, `INSERT INTO f_khor (tarikh_f_khor, shom_f_khor, taghe_cod_f_khor, mosh_f_khor, shomare_sanad, kala_name_f_khor) VALUES (?,?,?,?,?,?)`, invoiceDate, p.InvoiceNo, code, p.Customer, p.SanadNo, p.Kala)
+				_, err = txExec(a.dialect, tx, `INSERT INTO f_khor (tarikh_f_khor, shom_f_khor, taghe_cod_f_khor, mosh_f_khor, shomare_sanad, kala_name_f_khor) VALUES (?,?,?,?,?,?)`, jalaliToday(), p.InvoiceNo, code, p.Customer, p.SanadNo, p.Kala)
+			}
+		}
+		if err == nil && loading != nil {
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			_, err = txExec(a.dialect, tx, `UPDATE loading_sessions SET status='completed', completed_at=? WHERE id=? AND status='active'`, now, loading.ID)
+			if err == nil {
+				_, err = txExec(a.dialect, tx, `DELETE FROM loading_reservations WHERE session_id=?`, loading.ID)
 			}
 		}
 		if err != nil {
 			_ = tx.Rollback()
-			fail(w, 500, err.Error())
+			fail(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err = tx.Commit(); err != nil {
+		if err := tx.Commit(); err != nil {
 			fail(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, record{"success": true, "invoice_no": p.InvoiceNo, "sanad_no": p.SanadNo, "tarikh": invoiceDate, "item_count": len(p.Items)})
+		writeJSON(w, record{"success": true})
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
-}
-
-type mobileLoadingSession struct {
-	ID        int64
-	CompanyID int64
-	InvoiceNo string
-	Customer  string
-	Kala      string
-	ExpiresAt string
-	ClosedAt  sql.NullString
-}
-
-type localPrinterInfo struct {
-	Name      string `json:"name"`
-	IsDefault bool   `json:"is_default"`
-}
-
-func (a *app) localPrinters(w http.ResponseWriter, r *http.Request) {
-	if strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))) != "local" || runtime.GOOS != "windows" {
-		fail(w, http.StatusNotFound, "انتخاب چاپگر فقط در نسخه لوکال ویندوز فعال است")
-		return
-	}
-	printers, err := installedWindowsPrinters()
-	if err != nil {
-		fail(w, http.StatusServiceUnavailable, "دریافت چاپگرهای ویندوز انجام نشد: "+err.Error())
-		return
-	}
-	defaultName := ""
-	for _, printer := range printers {
-		if printer.IsDefault {
-			defaultName = printer.Name
-			break
-		}
-	}
-	switch r.Method {
-	case http.MethodGet:
-		writeJSON(w, record{"success": true, "printers": printers, "default_printer": defaultName})
-	case http.MethodPost:
-		var payload struct {
-			Name string `json:"name"`
-		}
-		if !decode(w, r, &payload) {
-			return
-		}
-		name := strings.TrimSpace(payload.Name)
-		if name == "" {
-			fail(w, http.StatusBadRequest, "چاپگر انتخاب نشده است")
-			return
-		}
-		found := false
-		for _, printer := range printers {
-			if printer.Name == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			fail(w, http.StatusBadRequest, "چاپگر انتخاب‌شده در ویندوز یافت نشد")
-			return
-		}
-		if err := setDefaultWindowsPrinter(name); err != nil {
-			fail(w, http.StatusInternalServerError, "انتخاب چاپگر در ویندوز انجام نشد: "+err.Error())
-			return
-		}
-		writeJSON(w, record{"success": true, "printer": name, "previous_printer": defaultName})
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	}
-}
-
-func installedWindowsPrinters() ([]localPrinterInfo, error) {
-	const script = `$utf8 = New-Object System.Text.UTF8Encoding($false); [Console]::OutputEncoding = $utf8; $OutputEncoding = $utf8; $items = @(Get-CimInstance Win32_Printer | Sort-Object Name | ForEach-Object { [pscustomobject]@{ name = [string]$_.Name; is_default = [bool]$_.Default } }); ConvertTo-Json -Compress -InputObject @($items)`
-	cmd := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script)
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	output = bytes.TrimPrefix(bytes.TrimSpace(output), []byte{0xef, 0xbb, 0xbf})
-	printers := []localPrinterInfo{}
-	if len(output) == 0 {
-		return printers, nil
-	}
-	if err := json.Unmarshal(output, &printers); err != nil {
-		return nil, err
-	}
-	return printers, nil
-}
-
-func setDefaultWindowsPrinter(name string) error {
-	const script = `$name = $env:TEXTILE_PRINTER_NAME; $printer = Get-CimInstance Win32_Printer | Where-Object { $_.Name -eq $name } | Select-Object -First 1; if ($null -eq $printer) { throw 'Printer not found' }; $network = New-Object -ComObject WScript.Network; $network.SetDefaultPrinter($name)`
-	cmd := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script)
-	cmd.Env = append(os.Environ(), "TEXTILE_PRINTER_NAME="+name)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		message := strings.TrimSpace(string(output))
-		if message != "" {
-			return fmt.Errorf("%s", message)
-		}
-		return err
-	}
-	return nil
-}
-
-func mobileLoadingTokenHash(token string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
-	return hex.EncodeToString(sum[:])
-}
-
-func (a *app) createMobileLoadingSession(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	var payload struct {
-		InvoiceNo string `json:"invoice_no"`
-		Customer  string `json:"customer"`
-		Kala      string `json:"kala"`
-	}
-	if r.Body != nil && r.ContentLength != 0 && !decode(w, r, &payload) {
-		return
-	}
-	session, ok := a.currentSession(r)
-	if !ok {
-		fail(w, http.StatusUnauthorized, "نشست کاربری معتبر نیست")
-		return
-	}
-	token, err := randomSessionToken()
-	if err != nil {
-		fail(w, http.StatusInternalServerError, "ساخت کد اتصال موبایل انجام نشد")
-		return
-	}
-	expiresAt := time.Now().UTC().Add(30 * time.Minute).Format(time.RFC3339Nano)
-	_, _ = a.exec(`DELETE FROM mobile_loading_sessions WHERE expires_at < ? OR closed_at IS NOT NULL`, time.Now().UTC().Add(-24*time.Hour).Format(time.RFC3339Nano))
-	_, err = a.exec(`INSERT INTO mobile_loading_sessions (token_hash,company_id,created_by,invoice_no,customer,kala,expires_at) VALUES (?,?,?,?,?,?,?)`,
-		mobileLoadingTokenHash(token), normalizedCompanyID(a.companyID), session.UserID,
-		strings.TrimSpace(payload.InvoiceNo), strings.TrimSpace(payload.Customer), strings.TrimSpace(payload.Kala), expiresAt)
-	if err != nil {
-		fail(w, http.StatusInternalServerError, "ذخیره نشست بارگیری موبایل انجام نشد")
-		return
-	}
-	writeJSON(w, record{"success": true, "token": token, "expires_at": expiresAt})
-}
-
-func (a *app) loadMobileLoadingSession(token string) (mobileLoadingSession, error) {
-	var session mobileLoadingSession
-	err := a.queryRow(`SELECT id_mobile_session,company_id,COALESCE(invoice_no,''),COALESCE(customer,''),COALESCE(kala,''),expires_at,closed_at FROM mobile_loading_sessions WHERE token_hash=?`, mobileLoadingTokenHash(token)).Scan(
-		&session.ID, &session.CompanyID, &session.InvoiceNo, &session.Customer, &session.Kala, &session.ExpiresAt, &session.ClosedAt)
-	if err != nil {
-		return mobileLoadingSession{}, err
-	}
-	expiresAt, err := time.Parse(time.RFC3339Nano, session.ExpiresAt)
-	if err != nil || time.Now().UTC().After(expiresAt) || session.ClosedAt.Valid {
-		return mobileLoadingSession{}, errors.New("mobile loading session expired")
-	}
-	return session, nil
-}
-
-func (a *app) mobileLoadingPublic(w http.ResponseWriter, r *http.Request) {
-	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/mobile-loading/"), "/")
-	parts := strings.Split(path, "/")
-	if len(parts) == 0 || len(strings.TrimSpace(parts[0])) < 32 {
-		fail(w, http.StatusNotFound, "کد اتصال موبایل معتبر نیست")
-		return
-	}
-	token := parts[0]
-	if len(parts) == 1 {
-		switch r.Method {
-		case http.MethodGet:
-			a.writeMobileLoadingSession(w, r, token)
-		case http.MethodDelete:
-			_, _ = a.exec(`UPDATE mobile_loading_sessions SET closed_at=? WHERE token_hash=?`, time.Now().UTC().Format(time.RFC3339Nano), mobileLoadingTokenHash(token))
-			writeJSON(w, record{"success": true})
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-		}
-		return
-	}
-	if len(parts) == 2 && parts[1] == "items" && r.Method == http.MethodPost {
-		a.addMobileLoadingItem(w, r, token)
-		return
-	}
-	if len(parts) == 2 && parts[1] == "preview" && r.Method == http.MethodPost {
-		a.previewMobileLoadingItem(w, r, token)
-		return
-	}
-	http.NotFound(w, r)
-}
-
-func (a *app) writeMobileLoadingSession(w http.ResponseWriter, r *http.Request, token string) {
-	session, err := a.loadMobileLoadingSession(token)
-	if err != nil {
-		fail(w, http.StatusGone, "نشست بارگیری موبایل منقضی یا بسته شده است")
-		return
-	}
-	tenant, closeTenant, err := a.forCompany(r.Context(), session.CompanyID)
-	if err != nil {
-		fail(w, http.StatusServiceUnavailable, "دسترسی به اطلاعات شرکت برقرار نشد")
-		return
-	}
-	defer closeTenant()
-	rows, err := tenant.query(`SELECT m.taghe_code,COALESCE(s.metr_salon,0),COALESCE(s.w_salon,0),COALESCE(s.machin_salon,''),COALESCE(s.kala_salon,''),COALESCE(s.ham_pod_salon,''),COALESCE(s.ham_chelle_salon,''),COALESCE(s.shom_chelle_salon,'') FROM mobile_loading_items m LEFT JOIN salon s ON s.id_salon=CAST(m.taghe_code AS INTEGER) WHERE m.session_id=? ORDER BY m.id_mobile_item`, session.ID)
-	if err != nil {
-		fail(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	defer rows.Close()
-	items := []record{}
-	var totalMetr, totalWeight float64
-	for rows.Next() {
-		var code, machine, kala, hamPod, hamChelle, shom string
-		var metr, weight float64
-		if err := rows.Scan(&code, &metr, &weight, &machine, &kala, &hamPod, &hamChelle, &shom); err != nil {
-			continue
-		}
-		totalMetr += metr
-		totalWeight += weight
-		items = append(items, record{"id": code, "metr": metr, "weight": weight, "machine": machine, "kala": kala, "ham_pod": hamPod, "ham_chelle": hamChelle, "shom_chelle": shom})
-	}
-	writeJSON(w, record{"success": true, "invoice_no": session.InvoiceNo, "customer": session.Customer, "kala": session.Kala, "expires_at": session.ExpiresAt, "items": items, "count": len(items), "total_metr": totalMetr, "total_weight": totalWeight})
-}
-
-func (a *app) addMobileLoadingItem(w http.ResponseWriter, r *http.Request, token string) {
-	session, err := a.loadMobileLoadingSession(token)
-	if err != nil {
-		fail(w, http.StatusGone, "نشست بارگیری موبایل منقضی یا بسته شده است")
-		return
-	}
-	var payload struct {
-		Code string `json:"code"`
-	}
-	if !decode(w, r, &payload) {
-		return
-	}
-	code := strings.TrimSpace(payload.Code)
-	if code == "" {
-		fail(w, http.StatusBadRequest, "کد طاقه وارد نشده است")
-		return
-	}
-	tenant, closeTenant, err := a.forCompany(r.Context(), session.CompanyID)
-	if err != nil {
-		fail(w, http.StatusServiceUnavailable, "دسترسی به اطلاعات شرکت برقرار نشد")
-		return
-	}
-	defer closeTenant()
-	item, err := tenant.availableTaghe(code)
-	if err != nil {
-		fail(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if _, err := a.exec(`INSERT INTO mobile_loading_items (session_id,taghe_code) VALUES (?,?)`, session.ID, code); err != nil {
-		fail(w, http.StatusConflict, "این طاقه قبلاً در همین بارگیری ثبت شده است")
-		return
-	}
-	writeJSON(w, record{"success": true, "item": item})
-}
-
-func (a *app) previewMobileLoadingItem(w http.ResponseWriter, r *http.Request, token string) {
-	session, err := a.loadMobileLoadingSession(token)
-	if err != nil {
-		fail(w, http.StatusGone, "نشست بارگیری موبایل منقضی یا بسته شده است")
-		return
-	}
-	var payload struct {
-		Code string `json:"code"`
-	}
-	if !decode(w, r, &payload) {
-		return
-	}
-	code := strings.TrimSpace(payload.Code)
-	if code == "" {
-		fail(w, http.StatusBadRequest, "کد طاقه وارد نشده است")
-		return
-	}
-	var duplicate int
-	if err := a.queryRow(`SELECT 1 FROM mobile_loading_items WHERE session_id=? AND taghe_code=? LIMIT 1`, session.ID, code).Scan(&duplicate); err == nil {
-		fail(w, http.StatusConflict, "این طاقه قبلاً در همین بارگیری ثبت شده است")
-		return
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		fail(w, http.StatusInternalServerError, "بررسی سابقه طاقه انجام نشد")
-		return
-	}
-	tenant, closeTenant, err := a.forCompany(r.Context(), session.CompanyID)
-	if err != nil {
-		fail(w, http.StatusServiceUnavailable, "دسترسی به اطلاعات شرکت برقرار نشد")
-		return
-	}
-	defer closeTenant()
-	item, err := tenant.availableTaghe(code)
-	if err != nil {
-		fail(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	writeJSON(w, record{"success": true, "item": item})
-}
-
-func (a *app) availableTaghe(code string) (record, error) {
-	var id int64
-	var metr, weight float64
-	var machine, kala, hamPod, hamChelle, shom string
-	err := a.queryRow(`SELECT id_salon,COALESCE(metr_salon,0),COALESCE(w_salon,0),COALESCE(machin_salon,''),COALESCE(kala_salon,''),COALESCE(ham_pod_salon,''),COALESCE(ham_chelle_salon,''),COALESCE(shom_chelle_salon,'') FROM salon WHERE id_salon=?`, code).Scan(&id, &metr, &weight, &machine, &kala, &hamPod, &hamChelle, &shom)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, errors.New("کد طاقه یافت نشد")
-	}
-	if err != nil {
-		return nil, err
-	}
-	var existing string
-	if err := a.queryRow(`SELECT shom_f_khor FROM f_khor WHERE taghe_cod_f_khor=? LIMIT 1`, code).Scan(&existing); err == nil && existing != "" {
-		return nil, errors.New("این طاقه قبلاً در فاکتور " + existing + " ثبت شده است")
-	}
-	return record{"id": id, "metr": metr, "weight": weight, "machine": machine, "kala": kala, "ham_pod": hamPod, "ham_chelle": hamChelle, "shom_chelle": shom}, nil
 }
 
 func (a *app) outInvoiceByPath(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/out-invoice/"), "/")
+	if path == "loading" {
+		a.createLoadingSession(w, r)
+		return
+	}
+	if strings.HasPrefix(path, "loading/") {
+		a.cancelLoadingSession(w, r, strings.TrimPrefix(path, "loading/"))
+		return
+	}
 	if strings.HasPrefix(path, "taghe/") {
 		code := strings.TrimPrefix(path, "taghe/")
 		a.tagheInfo(w, code)
@@ -2108,6 +2011,444 @@ func (a *app) outInvoiceByPath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNotFound)
+}
+
+func uniqueCodes(items []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		code := strings.TrimSpace(item)
+		if code == "" || seen[code] {
+			continue
+		}
+		seen[code] = true
+		out = append(out, code)
+	}
+	return out
+}
+
+func sameText(left, right string) bool {
+	return strings.EqualFold(strings.TrimSpace(left), strings.TrimSpace(right))
+}
+
+func loadingTokenHash(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return hex.EncodeToString(sum[:])
+}
+
+func loadingSessionTTL() time.Duration {
+	minutes, err := strconv.Atoi(strings.TrimSpace(env("LOADING_SESSION_TTL_MINUTES", "480")))
+	if err != nil || minutes < 15 || minutes > 1440 {
+		minutes = 480
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
+func loadingPublicBase(r *http.Request) string {
+	if configured := strings.TrimSpace(os.Getenv("LOADING_PUBLIC_BASE")); configured != "" {
+		return strings.TrimRight(configured, "/")
+	}
+	scheme := "http"
+	if isSecureRequest(r) {
+		scheme = "https"
+	}
+	host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(r.Host)
+	}
+	prefix := strings.TrimRight(strings.TrimSpace(r.Header.Get("X-Forwarded-Prefix")), "/")
+	return scheme + "://" + host + prefix
+}
+
+func (a *app) cleanupExpiredLoadingSessions() {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, _ = a.exec(`UPDATE loading_sessions SET status='expired' WHERE status='active' AND expires_at<=?`, now)
+	_, _ = a.exec(`DELETE FROM loading_reservations WHERE session_id IN (SELECT id FROM loading_sessions WHERE status<>'active' OR expires_at<=?)`, now)
+}
+
+func (a *app) createLoadingSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var payload struct {
+		InvoiceNo string `json:"invoice_no"`
+		SanadNo   string `json:"sanad_no"`
+		Customer  string `json:"customer"`
+		Kala      string `json:"kala"`
+	}
+	if !decode(w, r, &payload) {
+		return
+	}
+	payload.InvoiceNo = strings.TrimSpace(payload.InvoiceNo)
+	payload.SanadNo = strings.TrimSpace(payload.SanadNo)
+	payload.Customer = strings.TrimSpace(payload.Customer)
+	payload.Kala = strings.TrimSpace(payload.Kala)
+	if payload.InvoiceNo == "" || payload.Customer == "" || payload.Kala == "" {
+		fail(w, http.StatusBadRequest, "شماره فاکتور، مشتری و نام کالا برای شروع بارگیری الزامی است")
+		return
+	}
+	employee, ok := a.currentSession(r)
+	if !ok {
+		fail(w, http.StatusUnauthorized, "نشست کارمند معتبر نیست")
+		return
+	}
+	token, err := randomSessionToken()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	id, err := randomSessionToken()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(loadingSessionTTL())
+	a.cleanupExpiredLoadingSessions()
+	tx, err := a.db.Begin()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_, err = txExec(a.dialect, tx, `UPDATE loading_sessions SET status='cancelled', completed_at=? WHERE created_by=? AND status='active'`, now.Format(time.RFC3339Nano), employee.UserID)
+	if err == nil {
+		_, err = txExec(a.dialect, tx, `DELETE FROM loading_reservations WHERE session_id IN (SELECT id FROM loading_sessions WHERE created_by=? AND status='cancelled')`, employee.UserID)
+	}
+	if err == nil {
+		_, err = txExec(a.dialect, tx, `INSERT INTO loading_sessions (id,token_hash,invoice_no,sanad_no,customer,kala,status,created_by,created_by_username,created_at,expires_at) VALUES (?,?,?,?,?,?,'active',?,?,?,?)`, id, loadingTokenHash(token), payload.InvoiceNo, payload.SanadNo, payload.Customer, payload.Kala, employee.UserID, employee.Username, now.Format(time.RFC3339Nano), expiresAt.Format(time.RFC3339Nano))
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, record{
+		"success":    true,
+		"token":      token,
+		"url":        loadingPublicBase(r) + "/loading/" + token,
+		"expires_at": expiresAt.Format(time.RFC3339),
+	})
+}
+
+func (a *app) cancelLoadingSession(w http.ResponseWriter, r *http.Request, token string) {
+	if r.Method != http.MethodDelete || strings.Contains(token, "/") {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	s, err := a.loadingSessionByToken(token)
+	if err != nil {
+		fail(w, http.StatusNotFound, "جلسه بارگیری پیدا نشد")
+		return
+	}
+	employee, ok := a.currentSession(r)
+	if !ok {
+		fail(w, http.StatusUnauthorized, "نشست کارمند معتبر نیست")
+		return
+	}
+	if employee.UserID != s.CreatedBy && !strings.EqualFold(employee.Role, "admin") {
+		fail(w, http.StatusForbidden, "فقط ایجادکننده یا مدیر می‌تواند جلسه را لغو کند")
+		return
+	}
+	tx, err := a.db.Begin()
+	if err == nil {
+		_, err = txExec(a.dialect, tx, `UPDATE loading_sessions SET status='cancelled', completed_at=? WHERE id=? AND status='active'`, time.Now().UTC().Format(time.RFC3339Nano), s.ID)
+	}
+	if err == nil {
+		_, err = txExec(a.dialect, tx, `DELETE FROM loading_reservations WHERE session_id=?`, s.ID)
+	}
+	if err != nil {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, record{"success": true})
+}
+
+func (a *app) loadingSessionByToken(token string) (loadingSession, error) {
+	var session loadingSession
+	err := a.queryRow(`SELECT id,token_hash,invoice_no,COALESCE(sanad_no,''),customer,kala,status,created_by,COALESCE(created_by_username,''),created_at,expires_at FROM loading_sessions WHERE token_hash=?`, loadingTokenHash(token)).Scan(
+		&session.ID, &session.TokenHash, &session.InvoiceNo, &session.SanadNo, &session.Customer, &session.Kala, &session.Status, &session.CreatedBy, &session.CreatedByUsername, &session.CreatedAt, &session.ExpiresAt,
+	)
+	return session, err
+}
+
+func (a *app) loadingSessionIsActive(session loadingSession) bool {
+	if session.Status != "active" {
+		return false
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, session.ExpiresAt)
+	return err == nil && time.Now().UTC().Before(expiresAt)
+}
+
+func (a *app) loadingEmployee(w http.ResponseWriter, r *http.Request) (sessionInfo, bool) {
+	employee, ok := a.currentSession(r)
+	if !ok {
+		fail(w, http.StatusUnauthorized, "برای استفاده از بارکدخوان با حساب کارمند وارد شوید")
+		return sessionInfo{}, false
+	}
+	allowed, err := a.userHasMenuAccess(employee.UserID, employee.Role, "out-invoice")
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return sessionInfo{}, false
+	}
+	if !allowed {
+		fail(w, http.StatusForbidden, "این کارمند به فاکتور خروج دسترسی ندارد")
+		return sessionInfo{}, false
+	}
+	return employee, true
+}
+
+func (a *app) loadingMobile(w http.ResponseWriter, r *http.Request) {
+	employee, ok := a.loadingEmployee(w, r)
+	if !ok {
+		return
+	}
+	a.cleanupExpiredLoadingSessions()
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/loading/"), "/")
+	parts := strings.Split(path, "/")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	token := parts[0]
+	session, err := a.loadingSessionByToken(token)
+	if err != nil {
+		fail(w, http.StatusNotFound, "جلسه بارگیری پیدا نشد")
+		return
+	}
+	if !a.loadingSessionIsActive(session) {
+		fail(w, http.StatusGone, "زمان جلسه بارگیری پایان یافته یا جلسه بسته شده است")
+		return
+	}
+	if len(parts) == 1 && r.Method == http.MethodGet {
+		a.writeLoadingState(w, session)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "scan" && r.Method == http.MethodPost {
+		a.scanLoadingTaghe(w, r, session)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "confirm" && r.Method == http.MethodPost {
+		a.confirmLoadingTaghe(w, r, session, employee)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "items" && r.Method == http.MethodDelete {
+		a.removeLoadingTaghe(w, session, parts[2])
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func (a *app) writeLoadingState(w http.ResponseWriter, session loadingSession) {
+	items, err := a.loadingSessionItems(session.ID)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var totalMetr, totalWeight float64
+	for _, item := range items {
+		totalMetr += item["metr"].(float64)
+		totalWeight += item["weight"].(float64)
+	}
+	writeJSON(w, record{
+		"success": true,
+		"session": record{
+			"invoice_no": session.InvoiceNo, "sanad_no": session.SanadNo, "customer": session.Customer,
+			"kala": session.Kala, "status": session.Status, "created_by": session.CreatedByUsername, "expires_at": session.ExpiresAt,
+		},
+		"items":  items,
+		"totals": record{"count": len(items), "metr": totalMetr, "weight": totalWeight},
+	})
+}
+
+func (a *app) loadingSessionItems(sessionID string) ([]record, error) {
+	rows, err := a.query(`SELECT i.taghe_code,COALESCE(s.metr_salon,0),COALESCE(s.w_salon,0),COALESCE(s.machin_salon,''),COALESCE(s.kala_salon,''),COALESCE(s.ham_pod_salon,''),COALESCE(s.ham_chelle_salon,''),COALESCE(s.shom_chelle_salon,''),COALESCE(i.confirmed_by_username,''),i.confirmed_at
+		FROM loading_session_items i LEFT JOIN salon s ON CAST(s.id_salon AS TEXT)=i.taghe_code WHERE i.session_id=? ORDER BY i.id`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []record{}
+	for rows.Next() {
+		var code, machine, kala, hamPod, hamChelle, shomChelle, confirmedBy, confirmedAt string
+		var metr, weight float64
+		if err := rows.Scan(&code, &metr, &weight, &machine, &kala, &hamPod, &hamChelle, &shomChelle, &confirmedBy, &confirmedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, record{"id": code, "metr": metr, "weight": weight, "machine": machine, "kala": kala, "ham_pod": hamPod, "ham_chelle": hamChelle, "shom_chelle": shomChelle, "confirmed_by": confirmedBy, "confirmed_at": confirmedAt})
+	}
+	return items, rows.Err()
+}
+
+func (a *app) scanLoadingTaghe(w http.ResponseWriter, r *http.Request, session loadingSession) {
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if !decode(w, r, &payload) {
+		return
+	}
+	code := strings.TrimSpace(payload.Code)
+	taghe, err := a.findTaghe(code)
+	if err != nil {
+		fail(w, http.StatusNotFound, "کد طاقه در دیتابیس پیدا نشد")
+		return
+	}
+	if invoice, err := a.invoiceForTaghe(code); err == nil && invoice != "" {
+		fail(w, http.StatusConflict, "این طاقه قبلاً در فاکتور "+invoice+" ثبت شده است")
+		return
+	}
+	var reservedBy string
+	reservationErr := a.queryRow(`SELECT session_id FROM loading_reservations WHERE taghe_code=?`, code).Scan(&reservedBy)
+	if reservationErr == nil && reservedBy != session.ID {
+		fail(w, http.StatusConflict, "این طاقه در یک بارگیری دیگر رزرو شده است")
+		return
+	}
+	matches := sameText(taghe.Kala, session.Kala)
+	reason := ""
+	if !matches {
+		reason = "نام کالای طاقه با کالای فاکتور یکسان نیست"
+	}
+	item := taghe.record()
+	item["matches"] = matches
+	item["mismatch_reason"] = reason
+	item["already_confirmed"] = reservationErr == nil && reservedBy == session.ID
+	writeJSON(w, record{"success": true, "item": item})
+}
+
+func (a *app) confirmLoadingTaghe(w http.ResponseWriter, r *http.Request, session loadingSession, employee sessionInfo) {
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if !decode(w, r, &payload) {
+		return
+	}
+	code := strings.TrimSpace(payload.Code)
+	if code == "" {
+		fail(w, http.StatusBadRequest, "کد طاقه وارد نشده است")
+		return
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	taghe, err := a.tagheForUpdate(tx, code)
+	if err != nil {
+		_ = tx.Rollback()
+		fail(w, http.StatusNotFound, "کد طاقه در دیتابیس پیدا نشد")
+		return
+	}
+	if !sameText(taghe.Kala, session.Kala) {
+		_ = tx.Rollback()
+		fail(w, http.StatusConflict, "مشخصات کالای طاقه با فاکتور مغایرت دارد")
+		return
+	}
+	var existingInvoice string
+	existingErr := txQueryRow(a.dialect, tx, `SELECT shom_f_khor FROM f_khor WHERE taghe_cod_f_khor=? LIMIT 1`, code).Scan(&existingInvoice)
+	if existingErr == nil && existingInvoice != "" {
+		_ = tx.Rollback()
+		fail(w, http.StatusConflict, "این طاقه قبلاً در فاکتور "+existingInvoice+" ثبت شده است")
+		return
+	}
+	if existingErr != nil && !errors.Is(existingErr, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		fail(w, http.StatusInternalServerError, existingErr.Error())
+		return
+	}
+	var reservedBy string
+	reservationErr := txQueryRow(a.dialect, tx, `SELECT session_id FROM loading_reservations WHERE taghe_code=?`, code).Scan(&reservedBy)
+	if reservationErr == nil && reservedBy != session.ID {
+		_ = tx.Rollback()
+		fail(w, http.StatusConflict, "این طاقه در یک بارگیری دیگر رزرو شده است")
+		return
+	}
+	if reservationErr != nil && !errors.Is(reservationErr, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		fail(w, http.StatusInternalServerError, reservationErr.Error())
+		return
+	}
+	if errors.Is(reservationErr, sql.ErrNoRows) {
+		_, err = txExec(a.dialect, tx, `INSERT INTO loading_reservations (taghe_code,session_id,reserved_at) VALUES (?,?,?)`, code, session.ID, time.Now().UTC().Format(time.RFC3339Nano))
+	}
+	if err == nil && errors.Is(reservationErr, sql.ErrNoRows) {
+		_, err = txExec(a.dialect, tx, `INSERT INTO loading_session_items (session_id,taghe_code,confirmed_by,confirmed_by_username,confirmed_at) VALUES (?,?,?,?,?)`, session.ID, code, employee.UserID, employee.Username, time.Now().UTC().Format(time.RFC3339Nano))
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		fail(w, http.StatusConflict, "این طاقه قبلاً تأیید شده یا هم‌زمان رزرو شده است")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	item := taghe.record()
+	item["confirmed_by"] = employee.Username
+	writeJSON(w, record{"success": true, "item": item})
+}
+
+func (a *app) removeLoadingTaghe(w http.ResponseWriter, session loadingSession, code string) {
+	code = strings.TrimSpace(code)
+	tx, err := a.db.Begin()
+	if err == nil {
+		_, err = txExec(a.dialect, tx, `DELETE FROM loading_session_items WHERE session_id=? AND taghe_code=?`, session.ID, code)
+	}
+	if err == nil {
+		_, err = txExec(a.dialect, tx, `DELETE FROM loading_reservations WHERE session_id=? AND taghe_code=?`, session.ID, code)
+	}
+	if err != nil {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.writeLoadingState(w, session)
+}
+
+func (a *app) findTaghe(code string) (tagheData, error) {
+	var taghe tagheData
+	err := a.queryRow(`SELECT id_salon,metr_salon,w_salon,COALESCE(machin_salon,''),COALESCE(kala_salon,''),COALESCE(ham_pod_salon,''),COALESCE(ham_chelle_salon,''),COALESCE(shom_chelle_salon,'') FROM salon WHERE id_salon=?`, strings.TrimSpace(code)).Scan(
+		&taghe.ID, &taghe.Metr, &taghe.Weight, &taghe.Machine, &taghe.Kala, &taghe.HamPod, &taghe.HamChelle, &taghe.ShomChelle,
+	)
+	return taghe, err
+}
+
+func (a *app) tagheForUpdate(tx *sql.Tx, code string) (tagheData, error) {
+	query := `SELECT id_salon,metr_salon,w_salon,COALESCE(machin_salon,''),COALESCE(kala_salon,''),COALESCE(ham_pod_salon,''),COALESCE(ham_chelle_salon,''),COALESCE(shom_chelle_salon,'') FROM salon WHERE id_salon=?`
+	if a.dialect == "postgres" {
+		query += " FOR UPDATE"
+	}
+	var taghe tagheData
+	err := txQueryRow(a.dialect, tx, query, strings.TrimSpace(code)).Scan(
+		&taghe.ID, &taghe.Metr, &taghe.Weight, &taghe.Machine, &taghe.Kala, &taghe.HamPod, &taghe.HamChelle, &taghe.ShomChelle,
+	)
+	return taghe, err
+}
+
+func (a *app) invoiceForTaghe(code string) (string, error) {
+	var invoice string
+	err := a.queryRow(`SELECT shom_f_khor FROM f_khor WHERE taghe_cod_f_khor=? LIMIT 1`, strings.TrimSpace(code)).Scan(&invoice)
+	return invoice, err
+}
+
+func (taghe tagheData) record() record {
+	return record{"id": taghe.ID, "metr": taghe.Metr, "weight": taghe.Weight, "machine": taghe.Machine, "kala": taghe.Kala, "ham_pod": taghe.HamPod, "ham_chelle": taghe.HamChelle, "shom_chelle": taghe.ShomChelle}
 }
 
 func (a *app) expenses(w http.ResponseWriter, r *http.Request) {
@@ -2185,7 +2526,7 @@ func (a *app) formulas(w http.ResponseWriter, r *http.Request) {
 			_, err = a.exec(`UPDATE machine_formul SET machine=?, tar_percent=?, pod_percent=?, tozih_formul=? WHERE id_formul=?`, p.Machine, p.TarPercent, p.PodPercent, p.Tozih, p.ID)
 		} else {
 			_, err = a.exec(`INSERT INTO machine_formul (machine, tar_percent, pod_percent, tozih_formul) VALUES (?,?,?,?)
-				ON CONFLICT(company_id, machine) DO UPDATE SET tar_percent=excluded.tar_percent, pod_percent=excluded.pod_percent, tozih_formul=excluded.tozih_formul`, p.Machine, p.TarPercent, p.PodPercent, p.Tozih)
+				ON CONFLICT(machine) DO UPDATE SET tar_percent=excluded.tar_percent, pod_percent=excluded.pod_percent, tozih_formul=excluded.tozih_formul`, p.Machine, p.TarPercent, p.PodPercent, p.Tozih)
 		}
 		writeSave(w, err)
 	default:
@@ -2299,9 +2640,12 @@ type backupTable struct {
 
 func (a *app) backupDir() string {
 	if a.dialect == "postgres" {
-		return filepath.Join(env("OPERATIONAL_BACKUP_DIR", "/app/backups"), fmt.Sprintf("company_%d", normalizedCompanyID(a.companyID)))
+		schema := a.defaultSchema
+		_ = a.queryRow(`SELECT current_schema()`).Scan(&schema)
+		schema = regexp.MustCompile(`[^a-zA-Z0-9_]+`).ReplaceAllString(schema, "_")
+		return filepath.Join(env("OPERATIONAL_BACKUP_DIR", "/app/backups"), schema)
 	}
-	return filepath.Join(filepath.Dir(dbPath()), "backups", fmt.Sprintf("company_%d", normalizedCompanyID(a.companyID)))
+	return filepath.Join(filepath.Dir(dbPath()), "backups")
 }
 
 func (a *app) writeJSONBackup(target string) error {
@@ -2348,7 +2692,7 @@ func (a *app) restoreJSONBackup(source string) error {
 	for _, table := range tableList {
 		existing[table] = true
 	}
-	tx, err := a.begin()
+	tx, err := a.db.Begin()
 	if err != nil {
 		return err
 	}
@@ -2386,13 +2730,24 @@ func (a *app) restoreJSONBackup(source string) error {
 }
 
 func (a *app) tableNames() ([]string, error) {
-	out := make([]string, 0, len(operationalTenantTables())+1)
-	for _, table := range operationalTenantTables() {
-		if a.tableExists(table) {
-			out = append(out, table)
-		}
+	q := `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+	if a.dialect == "postgres" {
+		q = `SELECT tablename FROM pg_tables WHERE schemaname=current_schema() ORDER BY tablename`
 	}
-	return out, nil
+	rows, err := a.query(q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
 }
 
 func (a *app) exportXLSX(w http.ResponseWriter) error {
@@ -2443,7 +2798,7 @@ func (a *app) exportXLSX(w http.ResponseWriter) error {
 func (a *app) readTable(table string) ([]string, [][]string, error) {
 	cols := []string{}
 	if a.dialect == "postgres" {
-		colRows, err := a.query(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=? ORDER BY ordinal_position`, table)
+		colRows, err := a.query(`SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? ORDER BY ordinal_position`, table)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -2527,7 +2882,7 @@ func (a *app) importXLSX(r *http.Request) error {
 	for _, table := range tableList {
 		existingTables[table] = true
 	}
-	tx, err := a.begin()
+	tx, err := a.db.Begin()
 	if err != nil {
 		return err
 	}
@@ -2569,7 +2924,7 @@ func (a *app) importXLSX(r *http.Request) error {
 func (a *app) tableExists(table string) bool {
 	var n int
 	if a.dialect == "postgres" {
-		_ = a.queryRow(`SELECT COUNT(*) FROM pg_tables WHERE schemaname='public' AND tablename=?`, table).Scan(&n)
+		_ = a.queryRow(`SELECT COUNT(*) FROM pg_tables WHERE schemaname=current_schema() AND tablename=?`, table).Scan(&n)
 	} else {
 		_ = a.queryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&n)
 	}
@@ -2683,7 +3038,7 @@ func (a *app) machineryServices(w http.ResponseWriter, r *http.Request) {
 		if p.Quantity <= 0 {
 			p.Quantity = 1
 		}
-		tx, err := a.begin()
+		tx, err := a.db.Begin()
 		if err != nil {
 			fail(w, 500, err.Error())
 			return
@@ -2736,7 +3091,7 @@ func (a *app) machineryServiceByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := strconv.Atoi(pathLast(r.URL.Path))
-	tx, err := a.begin()
+	tx, err := a.db.Begin()
 	if err != nil {
 		fail(w, 500, err.Error())
 		return
@@ -2777,26 +3132,40 @@ func (a *app) users(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &p) {
 			return
 		}
-		p.Username = strings.TrimSpace(p.Username)
-		p.Role = strings.ToLower(strings.TrimSpace(p.Role))
 		if p.Username == "" || p.Password == "" {
 			fail(w, 400, "نام کاربری و رمز عبور الزامی است")
-			return
-		}
-		if len([]rune(p.Password)) < 10 {
-			fail(w, 400, "رمز عبور باید حداقل ۱۰ کاراکتر داشته باشد")
 			return
 		}
 		if p.Role == "" {
 			p.Role = "viewer"
 		}
-		if p.Role != "manager" && p.Role != "operator" && p.Role != "viewer" {
-			fail(w, 400, "نقش کاربر معتبر نیست")
-			return
-		}
 		hash, err := hashPassword(p.Password)
 		if err != nil {
 			fail(w, 500, err.Error())
+			return
+		}
+		if a.dialect == "postgres" {
+			session, ok := a.currentSession(r)
+			if !ok || session.CompanyID <= 0 {
+				fail(w, http.StatusUnauthorized, "نشست معتبر نیست")
+				return
+			}
+			tx, err := a.db.Begin()
+			if err != nil {
+				fail(w, 500, err.Error())
+				return
+			}
+			defer tx.Rollback()
+			var userID int64
+			if err := txQueryRow(a.dialect, tx, `INSERT INTO users (username,password_hash,role,is_active) VALUES (?,?,?,1) RETURNING id_user`, p.Username, hash, p.Role).Scan(&userID); err != nil {
+				fail(w, 500, err.Error())
+				return
+			}
+			if _, err := txExec(a.dialect, tx, `INSERT INTO public.operational_platform_users(tenant_id,local_user_id,username,password_hash,active) VALUES(?,?,?,?,1)`, session.CompanyID, userID, p.Username, hash); err != nil {
+				fail(w, 500, err.Error())
+				return
+			}
+			writeSave(w, tx.Commit())
 			return
 		}
 		writeSave(w, execErr(a.exec(`INSERT INTO users (username,password_hash,role,is_active) VALUES (?,?,?,1)`, p.Username, hash, p.Role)))
@@ -2823,13 +3192,28 @@ func (a *app) userByID(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasSuffix(path, "/toggle") {
 		id, _ := strconv.Atoi(strings.TrimSuffix(path, "/toggle"))
-		var role string
-		if err := a.queryRow(`SELECT role FROM users WHERE id_user=?`, id).Scan(&role); err != nil {
-			fail(w, http.StatusNotFound, "کاربر پیدا نشد")
-			return
-		}
-		if strings.EqualFold(role, "admin") || strings.EqualFold(role, "owner") {
-			fail(w, http.StatusBadRequest, "حساب مدیر اصلی قابل غیرفعال‌سازی نیست")
+		if a.dialect == "postgres" {
+			session, ok := a.currentSession(r)
+			if !ok || session.CompanyID <= 0 {
+				fail(w, http.StatusUnauthorized, "نشست معتبر نیست")
+				return
+			}
+			tx, err := a.db.Begin()
+			if err != nil {
+				fail(w, 500, err.Error())
+				return
+			}
+			defer tx.Rollback()
+			var active int64
+			if err := txQueryRow(a.dialect, tx, `UPDATE users SET is_active=CASE WHEN COALESCE(is_active,1)=1 THEN 0 ELSE 1 END WHERE id_user=? RETURNING is_active`, id).Scan(&active); err != nil {
+				fail(w, 500, err.Error())
+				return
+			}
+			if _, err := txExec(a.dialect, tx, `UPDATE public.operational_platform_users SET active=? WHERE tenant_id=? AND local_user_id=?`, active, session.CompanyID, id); err != nil {
+				fail(w, 500, err.Error())
+				return
+			}
+			writeSave(w, tx.Commit())
 			return
 		}
 		_, err := a.exec(`UPDATE users SET is_active=CASE WHEN COALESCE(is_active,1)=1 THEN 0 ELSE 1 END WHERE id_user=?`, id)
@@ -2841,13 +3225,31 @@ func (a *app) userByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := strconv.Atoi(pathLast(r.URL.Path))
-	var role string
-	if err := a.queryRow(`SELECT role FROM users WHERE id_user=?`, id).Scan(&role); err != nil {
-		fail(w, http.StatusNotFound, "کاربر پیدا نشد")
+	if id == 1 {
+		fail(w, 400, "ادمین اصلی قابل حذف نیست")
 		return
 	}
-	if strings.EqualFold(role, "admin") || strings.EqualFold(role, "owner") {
-		fail(w, 400, "ادمین اصلی قابل حذف نیست")
+	if a.dialect == "postgres" {
+		session, ok := a.currentSession(r)
+		if !ok || session.CompanyID <= 0 {
+			fail(w, http.StatusUnauthorized, "نشست معتبر نیست")
+			return
+		}
+		tx, err := a.db.Begin()
+		if err != nil {
+			fail(w, 500, err.Error())
+			return
+		}
+		defer tx.Rollback()
+		if _, err := txExec(a.dialect, tx, `DELETE FROM public.operational_platform_users WHERE tenant_id=? AND local_user_id=?`, session.CompanyID, id); err != nil {
+			fail(w, 500, err.Error())
+			return
+		}
+		if _, err := txExec(a.dialect, tx, `DELETE FROM users WHERE id_user=?`, id); err != nil {
+			fail(w, 500, err.Error())
+			return
+		}
+		writeSave(w, tx.Commit())
 		return
 	}
 	writeSave(w, execErr(a.exec(`DELETE FROM users WHERE id_user=?`, id)))
@@ -2863,9 +3265,8 @@ func (a *app) userMenuAccess(w http.ResponseWriter, userID int64) {
 	writeRows(w, rows, err, []string{"id", "menu_key", "menu_name", "path", "icon", "is_restricted", "sort_order", "has_access"})
 }
 
-func (a *app) userMenus(session sessionInfo) []record {
-	role := strings.ToLower(strings.TrimSpace(session.Role))
-	if role == "admin" || role == "owner" || role == "manager" {
+func (a *app) userMenus(userID int64, role string) []record {
+	if role == "admin" {
 		rows, err := a.query(`SELECT menu_key, menu_name, path, COALESCE(icon,''), COALESCE(is_restricted,0)
 			FROM menu_items WHERE COALESCE(path,'')<>'' ORDER BY sort_order, id_menu`)
 		if err != nil {
@@ -2877,29 +3278,6 @@ func (a *app) userMenus(session sessionInfo) []record {
 			var key, name, path, icon string
 			var restricted int64
 			_ = rows.Scan(&key, &name, &path, &icon, &restricted)
-			out = append(out, record{"menu_key": key, "menu_name": name, "path": path, "icon": icon, "is_restricted": restricted, "has_access": 1})
-		}
-		return out
-	}
-	if session.Portal {
-		rows, err := a.query(`SELECT menu_key, menu_name, path, COALESCE(icon,''), COALESCE(is_restricted,0)
-			FROM menu_items WHERE COALESCE(path,'')<>'' ORDER BY sort_order, id_menu`)
-		if err != nil {
-			return []record{}
-		}
-		defer rows.Close()
-		allowed := map[string]bool{}
-		for _, key := range session.MenuKeys {
-			allowed[key] = true
-		}
-		out := []record{}
-		for rows.Next() {
-			var key, name, path, icon string
-			var restricted int64
-			_ = rows.Scan(&key, &name, &path, &icon, &restricted)
-			if restricted == 1 && !allowed[key] && !allowed["*"] {
-				continue
-			}
 			out = append(out, record{"menu_key": key, "menu_name": name, "path": path, "icon": icon, "is_restricted": restricted, "has_access": 1})
 		}
 		return out
@@ -2909,7 +3287,7 @@ func (a *app) userMenus(session sessionInfo) []record {
 		FROM menu_items m
 		LEFT JOIN user_menu_access uma ON uma.menu_key=m.menu_key AND uma.user_id=?
 		WHERE COALESCE(m.path,'')<>''
-		ORDER BY m.sort_order, m.id_menu`, session.UserID)
+		ORDER BY m.sort_order, m.id_menu`, userID)
 	if err != nil {
 		return []record{}
 	}
@@ -2933,7 +3311,7 @@ func (a *app) saveUserMenuAccess(w http.ResponseWriter, r *http.Request, userID 
 	if !decode(w, r, &p) {
 		return
 	}
-	tx, err := a.begin()
+	tx, err := a.db.Begin()
 	if err != nil {
 		fail(w, 500, err.Error())
 		return
@@ -3010,7 +3388,7 @@ func (a *app) podCarryover(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, record{"success": true, "leftover_pod": 0})
 		return
 	}
-	tx, err := a.begin()
+	tx, err := a.db.Begin()
 	if err != nil {
 		fail(w, 500, err.Error())
 		return
@@ -3479,46 +3857,13 @@ func (a *app) notifications() []record {
 	items := []record{}
 	for _, y := range a.yarnInventory() {
 		inv, _ := y["inventory"].(float64)
-		if inv < -0.01 {
-			items = append(items, record{"type": "critical", "title": "کسری موجودی نخ", "message": fmt.Sprintf("موجودی همبافت %v برای %v منفی و برابر %.1f کیلو است", y["hambaft"], y["mosh"], inv)})
-		} else if inv > 0 && inv < 10 {
+		if inv > 0 && inv < 10 {
 			items = append(items, record{"type": "warning", "title": "موجودی نخ کم", "message": fmt.Sprintf("همبافت %v برای %v فقط %.1f کیلو موجودی دارد", y["hambaft"], y["mosh"], inv)})
 		}
 	}
 	stock := a.stockSummary()
 	if total, ok := stock["total_taghe"].(int64); ok && total > 30 {
 		items = append(items, record{"type": "info", "title": "طاقه‌های خروج نخورده", "message": fmt.Sprintf("%d طاقه در انبار موجود است که هنوز فاکتور خروج نخورده‌اند", total)})
-	}
-	rows, err := a.query(`SELECT COALESCE(part_name,''), COALESCE(quantity,0) FROM spare_parts_inventory WHERE COALESCE(quantity,0)<=0 ORDER BY id_spare_inventory DESC LIMIT 10`)
-	if err == nil {
-		for rows.Next() {
-			var name string
-			var quantity float64
-			_ = rows.Scan(&name, &quantity)
-			items = append(items, record{"type": "warning", "title": "اتمام موجودی قطعه", "message": fmt.Sprintf("موجودی قطعه %s برابر %.0f است", name, quantity)})
-		}
-		_ = rows.Close()
-	}
-	rows, err = a.query(`SELECT machine, shom_chelle, COALESCE(remaining_weight,0) FROM machine_consumption WHERE COALESCE(remaining_weight,0)<0 ORDER BY id_consumption DESC LIMIT 10`)
-	if err == nil {
-		for rows.Next() {
-			var machine, chelle string
-			var remaining float64
-			_ = rows.Scan(&machine, &chelle, &remaining)
-			items = append(items, record{"type": "critical", "title": "مصرف بیش از موجودی چله", "message": fmt.Sprintf("ماشین %s برای چله %s دارای مانده منفی %.1f کیلو است", machine, chelle, remaining)})
-		}
-		_ = rows.Close()
-	}
-	rows, err = a.query(`SELECT e.kod_navard, COALESCE(e.chellepich_name,'') FROM empty_beam_out e
-		WHERE COALESCE(e.kod_navard,'')<>'' AND COALESCE(e.returned_at,'')=''
-		ORDER BY e.id_empty_beam_out DESC LIMIT 10`)
-	if err == nil {
-		for rows.Next() {
-			var beam, warper string
-			_ = rows.Scan(&beam, &warper)
-			items = append(items, record{"type": "info", "title": "نورد خالی نزد چله‌پیچ", "message": fmt.Sprintf("نورد %s هنوز از %s بازنگشته است", beam, warper)})
-		}
-		_ = rows.Close()
 	}
 	return items
 }
@@ -3778,11 +4123,25 @@ func fail(w http.ResponseWriter, code int, msg string) {
 }
 
 func withCORS(next http.Handler) http.Handler {
+	allowed := map[string]bool{}
+	for _, origin := range strings.Split(os.Getenv("ALLOWED_ORIGINS"), ",") {
+		if origin = strings.TrimSpace(origin); origin != "" {
+			allowed[origin] = true
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
+		origin := r.Header.Get("Origin")
+		if allowed[origin] {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
+		}
 		if r.Method == http.MethodOptions {
+			if origin != "" && !allowed[origin] {
+				http.Error(w, "origin not allowed", http.StatusForbidden)
+				return
+			}
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -4072,14 +4431,14 @@ func stripXML(s string) string {
 	return regexp.MustCompile(`<[^>]+>`).ReplaceAllString(s, "")
 }
 
-func (a *app) scalarFloat(q string) float64 {
+func scalarFloat(db *sql.DB, q string) float64 {
 	var n float64
-	_ = a.queryRow(q).Scan(&n)
+	_ = db.QueryRow(q).Scan(&n)
 	return n
 }
 
-func (a *app) distinct(q string) []string {
-	rows, err := a.query(q)
+func distinct(db *sql.DB, q string) []string {
+	rows, err := db.Query(q)
 	if err != nil {
 		return []string{}
 	}
@@ -4165,19 +4524,4 @@ func env(k, def string) string {
 		return v
 	}
 	return def
-}
-
-func int64Env(key string, fallback int64) int64 {
-	value, err := strconv.ParseInt(strings.TrimSpace(os.Getenv(key)), 10, 64)
-	if err != nil || value <= 0 {
-		return fallback
-	}
-	return value
-}
-
-func normalizedCompanyID(companyID int64) int64 {
-	if companyID > 0 {
-		return companyID
-	}
-	return 1
 }

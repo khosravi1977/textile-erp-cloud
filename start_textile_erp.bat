@@ -4,11 +4,6 @@ title Textile ERP Launcher
 setlocal EnableExtensions
 
 set "ROOT=%~dp0"
-set "FINANCIAL_DIR=%ROOT%financial"
-set "LOCAL_COMPOSE_FILE=%FINANCIAL_DIR%\docker-compose.yml"
-set "PROD_COMPOSE_FILE=%FINANCIAL_DIR%\docker-compose.prod.yml"
-set "COMPOSE_FILE=%LOCAL_COMPOSE_FILE%"
-if not exist "%COMPOSE_FILE%" set "COMPOSE_FILE=%PROD_COMPOSE_FILE%"
 
 if not defined DB_HOST set "DB_HOST=localhost"
 if not defined DB_PORT set "DB_PORT=5433"
@@ -26,11 +21,15 @@ set "PORT=8091"
 if /I "%~1"=="prod" goto production
 
 echo Starting Textile ERP stack...
-call :ensure_docker_ready
-if errorlevel 1 exit /b 1
+where docker >nul 2>nul
+if errorlevel 1 (
+  echo Docker is not installed or not on PATH.
+  pause
+  exit /b 1
+)
 call :stop_legacy_containers
 
-pushd "%FINANCIAL_DIR%"
+pushd "%ROOT%financial"
 echo Bringing up infrastructure...
 call :ensure_docker_service "textile-erp-db" "postgres"
 if errorlevel 1 (
@@ -46,21 +45,21 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-call :ensure_docker_service "textile-erp-db-replica" "postgres-replica" optional
+call :ensure_docker_service "textile-erp-db-replica" "postgres-replica"
 if errorlevel 1 (
   popd
   echo Failed to start Docker infrastructure.
   pause
   exit /b 1
 )
-call :ensure_docker_service "textile-erp-prometheus" "prometheus" optional
+call :ensure_docker_service "textile-erp-prometheus" "prometheus"
 if errorlevel 1 (
   popd
   echo Failed to start Prometheus.
   pause
   exit /b 1
 )
-call :ensure_docker_service "textile-erp-grafana" "grafana" optional
+call :ensure_docker_service "textile-erp-grafana" "grafana"
 if errorlevel 1 (
   popd
   echo Failed to start Grafana.
@@ -79,7 +78,7 @@ if errorlevel 1 (
 
 call :ensure_port 8091 "Operational Go" "%ROOT%run_operational_api.bat"
 
-pushd "%FINANCIAL_DIR%"
+pushd "%ROOT%financial"
 echo Running financial migrations...
 call go run ./cmd/migrate
 if errorlevel 1 (
@@ -104,12 +103,14 @@ exit /b 0
 
 :production
 echo Starting Textile ERP production Docker stack...
-set "COMPOSE_FILE=%PROD_COMPOSE_FILE%"
-if not exist "%COMPOSE_FILE%" set "COMPOSE_FILE=%LOCAL_COMPOSE_FILE%"
-call :ensure_docker_ready
-if errorlevel 1 exit /b 1
+where docker >nul 2>nul
+if errorlevel 1 (
+  echo Docker is not installed or not on PATH.
+  pause
+  exit /b 1
+)
 call :stop_legacy_containers
-pushd "%FINANCIAL_DIR%"
+pushd "%ROOT%financial"
 call :ensure_docker_service "textile-erp-db" "postgres"
 if errorlevel 1 (
   popd
@@ -124,14 +125,14 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-call :ensure_docker_service "textile-erp-db-replica" "postgres-replica" optional
+call :ensure_docker_service "textile-erp-db-replica" "postgres-replica"
 if errorlevel 1 (
   popd
   echo Production read replica failed to start.
   pause
   exit /b 1
 )
-docker compose -f "%COMPOSE_FILE%" up -d --build --no-deps api nginx prometheus grafana
+docker compose -f docker-compose.prod.yml up -d --build --no-deps api nginx prometheus grafana
 if errorlevel 1 (
   popd
   echo Production stack failed to start.
@@ -146,12 +147,6 @@ exit /b 0
 
 :open_menu
 cls
-set "HAS_GRAFANA="
-set "HAS_PROMETHEUS="
-powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
-if not errorlevel 1 set "HAS_GRAFANA=1"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-NetTCPConnection -LocalPort 9090 -State Listen -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
-if not errorlevel 1 set "HAS_PROMETHEUS=1"
 echo Textile ERP is ready.
 echo.
 echo Select what you want to open:
@@ -159,53 +154,20 @@ echo.
 echo   1. Portal        - http://127.0.0.1:8080
 echo   2. Financial API - http://127.0.0.1:8081/health
 echo   3. Metrics       - http://127.0.0.1:8081/metrics
-if defined HAS_GRAFANA echo   4. Grafana       - http://127.0.0.1:3000
-if defined HAS_PROMETHEUS echo   5. Prometheus    - http://127.0.0.1:9090
+echo   4. Grafana       - http://127.0.0.1:3000
+echo   5. Prometheus    - http://127.0.0.1:9090
 echo   0. Exit
 echo.
 set /p "MENU_CHOICE=Enter choice: "
-if not defined MENU_CHOICE exit /b 0
 if "%MENU_CHOICE%"=="1" start "" "http://127.0.0.1:8080" & goto open_menu
 if "%MENU_CHOICE%"=="2" start "" "http://127.0.0.1:8081/health" & goto open_menu
 if "%MENU_CHOICE%"=="3" start "" "http://127.0.0.1:8081/metrics" & goto open_menu
-if "%MENU_CHOICE%"=="4" if defined HAS_GRAFANA start "" "http://127.0.0.1:3000" & goto open_menu
-if "%MENU_CHOICE%"=="5" if defined HAS_PROMETHEUS start "" "http://127.0.0.1:9090" & goto open_menu
+if "%MENU_CHOICE%"=="4" start "" "http://127.0.0.1:3000" & goto open_menu
+if "%MENU_CHOICE%"=="5" start "" "http://127.0.0.1:9090" & goto open_menu
 if "%MENU_CHOICE%"=="0" exit /b 0
 echo Invalid choice.
 pause
 goto open_menu
-
-:ensure_docker_ready
-where docker >nul 2>nul
-if errorlevel 1 (
-  echo Docker is not installed or not on PATH.
-  pause
-  exit /b 1
-)
-docker version >nul 2>nul
-if not errorlevel 1 exit /b 0
-echo Docker daemon is not running. Trying to start Docker Desktop...
-call :start_docker_desktop
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$deadline=(Get-Date).AddMinutes(2); do { docker version >$null 2>$null; if($LASTEXITCODE -eq 0){ exit 0 }; Start-Sleep -Seconds 3 } until((Get-Date) -gt $deadline); exit 1"
-if errorlevel 1 (
-  echo Docker Desktop did not become ready. Start Docker Desktop manually, wait until it says 'Engine running', then run this file again.
-  pause
-  exit /b 1
-)
-exit /b 0
-
-:start_docker_desktop
-for %%P in (
-  "%ProgramFiles%\Docker\Docker\Docker Desktop.exe"
-  "%ProgramFiles(x86)%\Docker\Docker\Docker Desktop.exe"
-  "%LocalAppData%\Docker\Docker\Docker Desktop.exe"
-) do (
-  if exist %%~P (
-    start "" "%%~P"
-    exit /b 0
-  )
-)
-exit /b 0
 
 :stop_legacy_containers
 for %%C in (textile-backend textile-frontend textile-nginx textile-postgres textile-redis financial_postgres) do (
@@ -220,28 +182,13 @@ exit /b 0
 :ensure_docker_service
 set "CONTAINER_NAME=%~1"
 set "COMPOSE_SERVICE=%~2"
-set "SERVICE_MODE=%~3"
-call :compose_service_exists "%COMPOSE_SERVICE%"
-if errorlevel 1 (
-  if /I "%SERVICE_MODE%"=="optional" (
-    echo Skipping optional Docker service %COMPOSE_SERVICE% because it is not defined in "%COMPOSE_FILE%".
-    exit /b 0
-  )
-  echo Docker service %COMPOSE_SERVICE% is not defined in "%COMPOSE_FILE%".
-  exit /b 1
-)
-echo Applying Docker service %COMPOSE_SERVICE% from "%COMPOSE_FILE%"...
 docker container inspect "%CONTAINER_NAME%" >nul 2>nul
-if not errorlevel 1 (
-  echo Removing conflicting container %CONTAINER_NAME% so Docker Compose can recreate it...
-  docker rm -f "%CONTAINER_NAME%" >nul
-  if errorlevel 1 exit /b %ERRORLEVEL%
+if errorlevel 1 (
+  docker compose -f docker-compose.prod.yml up -d --no-deps "%COMPOSE_SERVICE%"
+  exit /b %ERRORLEVEL%
 )
-docker compose -f "%COMPOSE_FILE%" up -d --no-deps --force-recreate "%COMPOSE_SERVICE%"
-exit /b %ERRORLEVEL%
-
-:compose_service_exists
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$services = docker compose -f '%COMPOSE_FILE%' config --services 2>$null; if($services -contains '%~1'){ exit 0 } else { exit 1 }"
+echo Reusing existing Docker container %CONTAINER_NAME%...
+docker start "%CONTAINER_NAME%" >nul
 exit /b %ERRORLEVEL%
 
 :reset_grafana_password

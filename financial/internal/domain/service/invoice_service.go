@@ -25,9 +25,7 @@ func NewInvoiceService() *InvoiceService {
 		nextInvoiceNum: make(map[int64]int),
 	}
 
-	if demoDataEnabled() {
-		is.createSampleInvoicesForCompany(1)
-	}
+	is.createSampleInvoicesForCompany(1)
 	return is
 }
 
@@ -36,9 +34,6 @@ func (is *InvoiceService) createSampleInvoices() {
 }
 
 func (is *InvoiceService) createSampleInvoicesForCompany(companyID int64) {
-	if !demoDataEnabled() {
-		return
-	}
 	companyID = normalizedCompanyID(companyID)
 	is.mu.RLock()
 	seeded := len(is.invoices[companyID]) > 0

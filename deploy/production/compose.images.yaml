@@ -1,0 +1,10 @@
+services:
+  financial-api:
+    image: ${TEXTILE_FINANCIAL_API_IMAGE:?TEXTILE_FINANCIAL_API_IMAGE is required}
+  financial-web:
+    image: ${TEXTILE_FINANCIAL_WEB_IMAGE:?TEXTILE_FINANCIAL_WEB_IMAGE is required}
+  operational-app:
+    image: ${TEXTILE_OPERATIONAL_IMAGE:?TEXTILE_OPERATIONAL_IMAGE is required}
+  portal:
+    image: ${TEXTILE_PORTAL_IMAGE:?TEXTILE_PORTAL_IMAGE is required}
+

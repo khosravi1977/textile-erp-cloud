@@ -136,6 +136,78 @@ func TestVerifyAccessPasswordBackfillsLegacyHash(t *testing.T) {
 	}
 }
 
+func TestCustomerLoginUsesStableUsernameAndPassword(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	accessFile := filepath.Join(tempDir, "portal-access.db")
+	if err := os.WriteFile(accessFile, []byte("[]\n"), 0o644); err != nil {
+		t.Fatalf("write access file: %v", err)
+	}
+	app := &portalApp{
+		accessFile:    accessFile,
+		publicBase:    "https://textile.example.com",
+		sessionSecret: "login-secret",
+	}
+	access, err := app.createAccess(
+		"textile-erp",
+		"Customer",
+		"Owner",
+		"customer_user",
+		"Customer123!",
+		7,
+		time.Now().Add(48*time.Hour),
+		"",
+	)
+	if err != nil {
+		t.Fatalf("create access: %v", err)
+	}
+
+	form := url.Values{"username": {"customer_user"}, "password": {"Customer123!"}}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	app.customerLogin(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if location := rec.Header().Get("Location"); location != "https://textile.example.com/" {
+		t.Fatalf("unexpected redirect: %s", location)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != accessCookieName || cookies[0].Value != access.AccessToken {
+		t.Fatalf("expected portal access cookie, got %#v", cookies)
+	}
+}
+
+func TestCustomerLoginRejectsWrongPassword(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	accessFile := filepath.Join(tempDir, "portal-access.db")
+	if err := os.WriteFile(accessFile, []byte("[]\n"), 0o644); err != nil {
+		t.Fatalf("write access file: %v", err)
+	}
+	app := &portalApp{accessFile: accessFile, sessionSecret: "login-secret"}
+	if _, err := app.createAccess("textile-erp", "Customer", "Owner", "customer_user", "Customer123!", 7, time.Now().Add(48*time.Hour), ""); err != nil {
+		t.Fatalf("create access: %v", err)
+	}
+
+	form := url.Values{"username": {"customer_user"}, "password": {"wrong-password"}}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	app.customerLogin(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Fatal("wrong password must not create an access cookie")
+	}
+}
+
 func TestPortalFinancialSessionReturnsJWT(t *testing.T) {
 	t.Parallel()
 
@@ -250,27 +322,7 @@ func TestPortalOperationalSessionReturnsPortalUser(t *testing.T) {
 		t.Fatalf("write access file: %v", err)
 	}
 
-	const operationalSecret = "test-operational-secret-at-least-32-characters"
-	operationalAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/portal-session" || r.Method != http.MethodPost {
-			http.NotFound(w, r)
-			return
-		}
-		var request map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request["token"] == "" {
-			http.Error(w, "missing token", http.StatusBadRequest)
-			return
-		}
-		http.SetCookie(w, &http.Cookie{Name: "operational_session", Value: "op-session", Path: "/", HttpOnly: true})
-		respondJSON(w, http.StatusOK, map[string]any{
-			"success": true,
-			"user":    map[string]any{"id": 1, "username": "admin", "role": "admin"},
-			"menus":   operationalPortalMenus(),
-		})
-	}))
-	defer operationalAPI.Close()
-
-	app := &portalApp{accessFile: accessFile, operationalAPI: operationalAPI.URL, operationalSessionSecret: operationalSecret}
+	app := &portalApp{accessFile: accessFile, allowOperationalCustomerAccess: true}
 	req := httptest.NewRequest(http.MethodGet, "/api/portal/operational-session", nil)
 	req.AddCookie(&http.Cookie{Name: accessCookieName, Value: "session-token"})
 	rec := httptest.NewRecorder()
@@ -297,12 +349,9 @@ func TestPortalOperationalSessionReturnsPortalUser(t *testing.T) {
 	if len(body.Menus) == 0 {
 		t.Fatal("expected operational menus in response")
 	}
-	if rec.Result().Cookies()[0].Name != "operational_session" {
-		t.Fatalf("expected operational session cookie, got %#v", rec.Result().Cookies())
-	}
 }
 
-func TestPortalOperationalSessionRequiresOperationalAdminPassword(t *testing.T) {
+func TestPortalOperationalSessionDisabledByDefault(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -337,20 +386,16 @@ func TestPortalOperationalSessionRequiresOperationalAdminPassword(t *testing.T) 
 
 	app.portalOperationalSession(rec, req)
 
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestAccessEntryRequiresCredentialsAndSetsCookie(t *testing.T) {
+func TestAccessEntryAutoRedirectsAndSetsCookie(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
 	accessFile := filepath.Join(tempDir, "portal-access.db")
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte("ValidPass123!"), bcrypt.MinCost)
-	if err != nil {
-		t.Fatal(err)
-	}
 	payload := `[
   {
     "id": 7,
@@ -363,7 +408,7 @@ func TestAccessEntryRequiresCredentialsAndSetsCookie(t *testing.T) {
     "allow_operational": true,
     "expires_at": "2030-08-04T20:29:00Z",
     "access_token": "auto-token",
-    "password_hash": "` + string(passwordHash) + `",
+    "password_hash": "$2a$10$abcdefghijklmnopqrstuv",
     "notes": "",
     "is_active": true,
     "created_at": "2026-07-05T00:00:00Z",
@@ -385,20 +430,8 @@ func TestAccessEntryRequiresCredentialsAndSetsCookie(t *testing.T) {
 
 	app.accessEntry(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected login page, got %d", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "نام کاربری") {
-		t.Fatal("expected username and password login form")
-	}
-
-	form := url.Values{"username": {"demo_user"}, "password": {"ValidPass123!"}}
-	req = httptest.NewRequest(http.MethodPost, "/access/auto-token", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec = httptest.NewRecorder()
-	app.accessEntry(rec, req)
 	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("expected 303 after valid login, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 303, got %d", rec.Code)
 	}
 	if got := rec.Header().Get("Location"); got != "http://62.60.204.237/" {
 		t.Fatalf("unexpected redirect target: %s", got)

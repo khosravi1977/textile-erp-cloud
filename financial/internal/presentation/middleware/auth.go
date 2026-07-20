@@ -151,8 +151,7 @@ func resolveIdentity(r *http.Request) (resolvedIdentity, bool) {
 
 func authorizeRequest(r *http.Request, identity resolvedIdentity) bool {
 	if strings.EqualFold(identity.role, "mobile") {
-		return (strings.HasPrefix(r.URL.Path, "/api/mobile/") && r.URL.Path != "/api/mobile/pairing") ||
-			r.URL.Path == "/api/v1/hesabyar/sync"
+		return strings.HasPrefix(r.URL.Path, "/api/mobile/") && r.URL.Path != "/api/mobile/pairing"
 	}
 	if !identity.portal {
 		return true

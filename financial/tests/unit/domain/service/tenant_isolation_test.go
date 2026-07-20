@@ -26,7 +26,6 @@ func TestCostServiceKeepsCompanyDataIsolated(t *testing.T) {
 }
 
 func TestInventoryServiceKeepsCompanyStockIsolated(t *testing.T) {
-	t.Setenv("SEED_DEMO_DATA", "true")
 	svc := service.NewInventoryService()
 
 	if _, err := svc.StockOutForCompany(1, 1, 100, "C1", "company 1 sale", "main", "tester"); err != nil {
@@ -50,7 +49,6 @@ func TestInventoryServiceKeepsCompanyStockIsolated(t *testing.T) {
 }
 
 func TestInvoiceServiceKeepsCompanyInvoicesIsolated(t *testing.T) {
-	t.Setenv("SEED_DEMO_DATA", "true")
 	svc := service.NewInvoiceService()
 
 	inv := svc.CreateInvoiceForCompany(2, 99, "company 2 customer", []service.InvoiceLineRequest{

@@ -30,26 +30,6 @@ func randomPairingCode() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(value), nil
 }
 
-type mobileTransactionRequest struct {
-	ExternalID      string           `json:"external_id"`
-	Title           string           `json:"title"`
-	Direction       string           `json:"direction"`
-	AccountID       string           `json:"account_id"`
-	Group           string           `json:"group"`
-	Subgroup        string           `json:"subgroup"`
-	Customer        string           `json:"customer"`
-	Bank            string           `json:"bank"`
-	Sender          string           `json:"sender"`
-	Description     string           `json:"description"`
-	OccurredJalali  string           `json:"occurred_jalali"`
-	Amount          int64            `json:"amount"`
-	ReportedBalance *int64           `json:"reported_balance"`
-	TrackingNo      string           `json:"tracking_no"`
-	CounterAccount  string           `json:"counter_account"`
-	Groups          []map[string]any `json:"groups"`
-	BankRules       []map[string]any `json:"bank_rules"`
-}
-
 func mobileCanonicalBankName(value string) string {
 	original := strings.TrimSpace(value)
 	clean := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(original, " ", ""), "-", ""))
@@ -67,29 +47,6 @@ func mobileCanonicalBankName(value string) string {
 	default:
 		return original
 	}
-}
-
-func normalizeMobileDirection(direction, fallback string) string {
-	clean := strings.ToLower(strings.TrimSpace(direction + " " + fallback))
-	clean = strings.NewReplacer("ي", "ی", "ك", "ک", "‌", "", " ", "", "-", "", "_", "").Replace(clean)
-	switch {
-	case strings.Contains(clean, "in") || strings.Contains(clean, "income") || strings.Contains(clean, "credit") ||
-		strings.Contains(clean, "deposit") || strings.Contains(clean, "واریز") || strings.Contains(clean, "دریافت") ||
-		strings.Contains(clean, "بستانکار") || strings.Contains(clean, "درآمد"):
-		return "in"
-	case strings.Contains(clean, "out") || strings.Contains(clean, "expense") || strings.Contains(clean, "cost") ||
-		strings.Contains(clean, "debit") || strings.Contains(clean, "withdraw") || strings.Contains(clean, "برداشت") ||
-		strings.Contains(clean, "پرداخت") || strings.Contains(clean, "خرید") || strings.Contains(clean, "هزینه"):
-		return "out"
-	default:
-		return ""
-	}
-}
-
-func mobileIsTransferGroup(value string) bool {
-	clean := strings.ToLower(strings.TrimSpace(value))
-	clean = strings.NewReplacer("ي", "ی", "ك", "ک", "‌", "", " ", "", "-", "", "_", "").Replace(clean)
-	return strings.Contains(clean, "انتقال") || strings.Contains(clean, "transfer")
 }
 
 func mobileJalaliOrder(value string) string {
@@ -276,13 +233,26 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 		RespondError(w, http.StatusUnauthorized, "Device is not paired")
 		return
 	}
-	var req mobileTransactionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.ExternalID) == "" || req.Amount <= 0 {
-		RespondError(w, http.StatusBadRequest, "Invalid transaction")
-		return
+	var req struct {
+		ExternalID      string           `json:"external_id"`
+		Title           string           `json:"title"`
+		Direction       string           `json:"direction"`
+		AccountID       string           `json:"account_id"`
+		Group           string           `json:"group"`
+		Subgroup        string           `json:"subgroup"`
+		Customer        string           `json:"customer"`
+		Bank            string           `json:"bank"`
+		Sender          string           `json:"sender"`
+		Description     string           `json:"description"`
+		OccurredJalali  string           `json:"occurred_jalali"`
+		Amount          int64            `json:"amount"`
+		ReportedBalance *int64           `json:"reported_balance"`
+		TrackingNo      string           `json:"tracking_no"`
+		CounterAccount  string           `json:"counter_account"`
+		Groups          []map[string]any `json:"groups"`
+		BankRules       []map[string]any `json:"bank_rules"`
 	}
-	req.Direction = normalizeMobileDirection(req.Direction, "")
-	if req.Direction == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.ExternalID) == "" || req.Amount <= 0 {
 		RespondError(w, http.StatusBadRequest, "Invalid transaction")
 		return
 	}
@@ -340,7 +310,7 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 			accounts[accountIndex]["lastReportedJalali"] = strings.TrimSpace(req.OccurredJalali)
 			accounts[accountIndex]["lastMobileSyncAt"] = now
 		}
-		isTransfer := strings.TrimSpace(req.CounterAccount) != "" && mobileIsTransferGroup(req.Group)
+		isTransfer := strings.TrimSpace(req.CounterAccount) != "" && strings.TrimSpace(req.Group) == "انتقال"
 		counterAccountID := ""
 		if isTransfer {
 			for index, account := range accounts {
@@ -416,230 +386,6 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	RespondError(w, http.StatusConflict, "Workspace changed; retry sync")
-}
-
-func (h *APIHandler) HesabYarLegacySync(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		RespondError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		return
-	}
-	companyID := requestctx.CompanyID(r.Context())
-	if strings.EqualFold(requestctx.UserRole(r.Context()), "mobile") && !h.mobileDeviceActive(r, companyID) {
-		RespondError(w, http.StatusUnauthorized, "Device is not paired")
-		return
-	}
-	var raw map[string]any
-	decoder := json.NewDecoder(r.Body)
-	decoder.UseNumber()
-	if err := decoder.Decode(&raw); err != nil {
-		RespondError(w, http.StatusBadRequest, "Invalid HesabYar sync payload")
-		return
-	}
-	payload := raw
-	if nested, ok := raw["payload"].(map[string]any); ok {
-		payload = nested
-	}
-	transactions := rowsFrom(payload, "transactions")
-	if len(transactions) == 0 {
-		RespondJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "empty", "synced": 0})
-		return
-	}
-	var saved workspaceDocument
-	synced := 0
-	for attempt := 0; attempt < 3; attempt++ {
-		doc, err := loadWorkspace(r, companyID)
-		if err != nil {
-			RespondError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		state := decodeWorkspaceMap(doc.State)
-		now := time.Now().UTC().Format(time.RFC3339)
-		for _, row := range transactions {
-			if legacyReviewedValue(row["reviewed"]) == false {
-				continue
-			}
-			req := legacyHesabYarTransaction(row)
-			if strings.TrimSpace(req.ExternalID) == "" || req.Amount <= 0 || req.Direction == "" {
-				continue
-			}
-			if mobileTransactionExists(state, req.ExternalID) {
-				continue
-			}
-			appendMobileTransactionState(state, req, now)
-			synced++
-		}
-		if groups := rowsFrom(payload, "groups"); len(groups) > 0 {
-			state["smsGroups"] = mapsToAny(groups)
-		}
-		if groups := rowsFrom(payload, "category_groups"); len(groups) > 0 {
-			state["smsGroups"] = mapsToAny(groups)
-		}
-		if rules := rowsFrom(payload, "bank_rules"); len(rules) > 0 {
-			state["smsBankSenders"] = mapsToAny(rules)
-		}
-		rawState, _ := json.Marshal(state)
-		canonical, checksum, err := validateWorkspaceState(rawState)
-		if err != nil {
-			RespondError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		expected := doc.Revision
-		saved, err = saveWorkspace(r, companyID, requestctx.UserID(r.Context()), &expected, canonical, checksum, nil)
-		if err == nil {
-			RespondJSON(w, http.StatusCreated, map[string]any{"ok": true, "status": "synced", "synced": synced, "revision": saved.Revision})
-			return
-		}
-		var conflict workspaceConflict
-		if !errors.As(err, &conflict) {
-			RespondError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		synced = 0
-	}
-	RespondError(w, http.StatusConflict, "Workspace changed; retry sync")
-}
-
-func legacyHesabYarTransaction(row map[string]any) mobileTransactionRequest {
-	category := strings.TrimSpace(stringValue(row["category"]))
-	group := strings.TrimSpace(stringValue(row["group"]))
-	subgroup := strings.TrimSpace(stringValue(row["subgroup"]))
-	if category != "" && (group == "" || subgroup == "") {
-		parts := strings.Split(category, "/")
-		if group == "" && len(parts) > 0 {
-			group = strings.TrimSpace(parts[0])
-		}
-		if subgroup == "" && len(parts) > 1 {
-			subgroup = strings.TrimSpace(parts[1])
-		}
-	}
-	externalID := strings.TrimSpace(stringValue(row["external_id"]))
-	if externalID == "" {
-		externalID = strings.TrimSpace(stringValue(row["id"]))
-	}
-	accountID := strings.TrimSpace(stringValue(row["account_id"]))
-	if accountID == "" {
-		accountID = strings.TrimSpace(stringValue(row["account"]))
-	}
-	occurred := strings.TrimSpace(stringValue(row["occurred_jalali"]))
-	if occurred == "" {
-		occurred = strings.TrimSpace(stringValue(row["jalaliDateTime"]))
-	}
-	description := strings.TrimSpace(stringValue(row["description"]))
-	if description == "" {
-		description = strings.TrimSpace(stringValue(row["title"]))
-	}
-	return mobileTransactionRequest{
-		ExternalID:     externalID,
-		Title:          strings.TrimSpace(stringValue(row["title"])),
-		Direction:      normalizeMobileDirection(stringValue(row["direction"]), stringValue(row["type"])),
-		AccountID:      accountID,
-		Group:          group,
-		Subgroup:       subgroup,
-		Customer:       strings.TrimSpace(stringValue(row["customer"])),
-		Bank:           strings.TrimSpace(stringValue(row["bank"])),
-		Sender:         strings.TrimSpace(stringValue(row["sender"])),
-		Description:    description,
-		OccurredJalali: occurred,
-		Amount:         mobileInt64(row["amount"]),
-		TrackingNo:     strings.TrimSpace(stringValue(row["tracking_no"])),
-		CounterAccount: strings.TrimSpace(stringValue(row["counter_account"])),
-	}
-}
-
-func legacyReviewedValue(value any) bool {
-	if value == nil {
-		return true
-	}
-	switch typed := value.(type) {
-	case bool:
-		return typed
-	case string:
-		return !strings.EqualFold(strings.TrimSpace(typed), "false")
-	default:
-		return true
-	}
-}
-
-func mobileTransactionExists(state map[string]any, externalID string) bool {
-	for _, row := range rowsFrom(state, "mobileTransactions") {
-		if stringValue(row["externalId"]) == externalID {
-			return true
-		}
-	}
-	return false
-}
-
-func appendMobileTransactionState(state map[string]any, req mobileTransactionRequest, now string) {
-	occurred := strings.TrimSpace(req.OccurredJalali)
-	accountName := mobileCanonicalBankName(req.Bank)
-	if accountName == "" {
-		accountName = mobileCanonicalBankName(req.AccountID)
-	}
-	accounts := rowsFrom(state, "accounts")
-	accountIndex := -1
-	for index, account := range accounts {
-		if stringValue(account["id"]) == req.AccountID || strings.EqualFold(stringValue(account["name"]), accountName) || strings.EqualFold(stringValue(account["name"]), req.AccountID) {
-			accountIndex = index
-			break
-		}
-	}
-	if accountIndex < 0 {
-		accountID := "bank-mobile-" + pairingHash(accountName)[:12]
-		accounts = append(accounts, map[string]any{"id": accountID, "name": accountName, "type": "بانک", "opening": int64(0), "source": "mobile_sms", "mobileManaged": true})
-		accountIndex = len(accounts) - 1
-	}
-	resolvedAccountID := stringValue(accounts[accountIndex]["id"])
-	isTransfer := strings.TrimSpace(req.CounterAccount) != "" && mobileIsTransferGroup(req.Group)
-	counterAccountID := ""
-	if isTransfer {
-		for index, account := range accounts {
-			if stringValue(account["id"]) == req.CounterAccount || strings.EqualFold(stringValue(account["name"]), req.CounterAccount) {
-				counterAccountID = stringValue(accounts[index]["id"])
-				break
-			}
-		}
-		if counterAccountID == "" {
-			counterAccountID = "bank-mobile-" + pairingHash(req.CounterAccount)[:12]
-			accounts = append(accounts, map[string]any{"id": counterAccountID, "name": strings.TrimSpace(req.CounterAccount), "type": "بانک", "opening": int64(0), "source": "mobile_sms", "mobileManaged": true})
-		}
-	}
-	state["accounts"] = mapsToAny(accounts)
-	counterparty := strings.TrimSpace(req.Customer)
-	if counterparty == "" {
-		counterparty = strings.TrimSpace(req.Group + " / " + req.Subgroup)
-	}
-	mobileRow := map[string]any{"id": "sms-" + req.ExternalID, "externalId": req.ExternalID, "title": req.Title, "amount": req.Amount, "direction": req.Direction, "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "counterAccount": req.CounterAccount, "group": req.Group, "subgroup": req.Subgroup, "customer": req.Customer, "counterparty": counterparty, "bank": accountName, "sender": req.Sender, "trackingNo": req.TrackingNo, "reportedBalance": req.ReportedBalance, "occurredAt": occurred, "syncedAt": now}
-	state["mobileTransactions"] = append([]any{mobileRow}, anyRows(state, "mobileTransactions")...)
-	trackingNo := strings.TrimSpace(req.TrackingNo)
-	if trackingNo == "" {
-		trackingNo = req.ExternalID
-	}
-	movement := map[string]any{"id": "mov-sms-" + req.ExternalID, "accountId": resolvedAccountID, "date": occurred, "direction": req.Direction, "amount": req.Amount, "payer": req.Customer, "counterparty": counterparty, "trackingNo": trackingNo, "description": req.Description, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName, "group": req.Group, "subgroup": req.Subgroup}
-	state["movements"] = append([]any{movement}, anyRows(state, "movements")...)
-	if isTransfer {
-		counterDirection := "out"
-		if req.Direction == "out" {
-			counterDirection = "in"
-		}
-		counterMovement := map[string]any{"id": "mov-sms-" + req.ExternalID + "-counter", "accountId": counterAccountID, "date": occurred, "direction": counterDirection, "amount": req.Amount, "payer": req.Customer, "counterparty": accountName, "trackingNo": trackingNo, "description": "انتقال بین " + accountName + " و " + req.CounterAccount, "source_type": "mobile_sms_transfer", "sourceId": req.ExternalID, "bank": req.CounterAccount, "group": req.Group, "subgroup": req.Subgroup}
-		state["movements"] = append([]any{counterMovement}, anyRows(state, "movements")...)
-	}
-	if req.Direction == "out" && !isTransfer {
-		expense := map[string]any{"id": "exp-sms-" + req.ExternalID, "date": occurred, "group": req.Group, "subgroup": req.Subgroup, "amount": req.Amount, "description": req.Description, "accountId": resolvedAccountID, "customer": req.Customer, "counterparty": counterparty, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName}
-		state["expenses"] = append([]any{expense}, anyRows(state, "expenses")...)
-	}
-	debitAccount, creditAccount := "بانک: "+accountName, "درآمد/طرف حساب: "+counterparty
-	if req.Direction == "out" {
-		debitAccount, creditAccount = "هزینه: "+strings.TrimSpace(req.Group+" / "+req.Subgroup), "بانک: "+accountName
-	}
-	if isTransfer && req.Direction == "out" {
-		debitAccount, creditAccount = "بانک: "+req.CounterAccount, "بانک: "+accountName
-	}
-	if isTransfer && req.Direction == "in" {
-		debitAccount, creditAccount = "بانک: "+accountName, "بانک: "+req.CounterAccount
-	}
-	journal := map[string]any{"id": "journal-sms-" + req.ExternalID, "date": occurred, "description": req.Description, "source_type": "mobile_sms", "sourceId": req.ExternalID, "trackingNo": trackingNo, "lines": []any{map[string]any{"account": debitAccount, "debit": req.Amount, "credit": 0, "counterparty": counterparty}, map[string]any{"account": creditAccount, "debit": 0, "credit": req.Amount, "counterparty": counterparty}}}
-	state["journalEntries"] = append([]any{journal}, anyRows(state, "journalEntries")...)
 }
 
 func (h *APIHandler) deleteMobileTransaction(w http.ResponseWriter, r *http.Request) {
@@ -880,10 +626,6 @@ func mobileInt64(value any) int64 {
 		return int64(number)
 	case json.Number:
 		parsed, _ := number.Int64()
-		return parsed
-	case string:
-		var parsed int64
-		_, _ = fmt.Sscan(strings.ReplaceAll(number, ",", ""), &parsed)
 		return parsed
 	default:
 		return 0

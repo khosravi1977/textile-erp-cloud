@@ -19,38 +19,31 @@ func Logger(next http.Handler) http.Handler {
 
 // CORS adds CORS headers
 func CORS(next http.Handler) http.Handler {
+	allowed := map[string]bool{}
+	for _, origin := range strings.Split(os.Getenv("ALLOWED_ORIGINS"), ",") {
+		if origin = strings.TrimSpace(origin); origin != "" {
+			allowed[origin] = true
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := strings.TrimSpace(r.Header.Get("Origin"))
-		if origin != "" {
-			if !corsOriginAllowed(origin) {
-				http.Error(w, "Origin is not allowed", http.StatusForbidden)
-				return
-			}
+		origin := r.Header.Get("Origin")
+		if allowed[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-Dev-Mode")
 		}
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-Dev-Mode")
 
 		if r.Method == "OPTIONS" {
+			if origin != "" && !allowed[origin] {
+				http.Error(w, "origin not allowed", http.StatusForbidden)
+				return
+			}
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-func corsOriginAllowed(origin string) bool {
-	configured := strings.Split(os.Getenv("FINANCIAL_ALLOWED_ORIGINS"), ",")
-	for _, allowed := range configured {
-		if strings.EqualFold(strings.TrimSpace(allowed), origin) {
-			return true
-		}
-	}
-	if os.Getenv("APP_ENV") == "production" {
-		return false
-	}
-	return strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:")
 }
 
 // Recovery handles panics

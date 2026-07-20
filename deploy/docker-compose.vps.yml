@@ -9,13 +9,31 @@ services:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
-      DB_APP_USER: ${DB_APP_USER}
-      DB_APP_PASSWORD: ${DB_APP_PASSWORD}
     ports:
       - "127.0.0.1:5435:5432"
     volumes:
       - textile_erp_postgres_data:/var/lib/postgresql/data
-      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgres-replica:
+    image: postgres:16-alpine
+    container_name: textile-erp-db-replica
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "127.0.0.1:5436:5432"
+    volumes:
+      - textile_erp_postgres_replica_data:/var/lib/postgresql/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 10s
@@ -45,20 +63,24 @@ services:
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_USER: ${DB_APP_USER}
-      DB_PASSWORD: ${DB_APP_PASSWORD}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
       DB_SSLMODE: disable
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}
+      # The current postgres-replica container is an independent stale database,
+      # not a streaming replica. Keep reads on the primary until replication is rebuilt.
+      DB_READ_HOST: ""
+      DB_READ_PORT: 5432
+      DB_READ_USER: ${DB_USER}
+      DB_READ_PASSWORD: ${DB_PASSWORD}
+      DB_READ_NAME: ${DB_NAME}
       APP_PORT: 8081
       APP_ENV: production
       JWT_SECRET: ${JWT_SECRET}
       FINANCIAL_ADMIN_PASSWORD: ${FINANCIAL_ADMIN_PASSWORD}
-      FINANCIAL_ALLOWED_ORIGINS: ${PORTAL_PUBLIC_BASE}
-      TRUST_PROXY: "true"
-      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-600}
     depends_on:
       postgres:
         condition: service_healthy
@@ -96,15 +118,15 @@ services:
       OPERATIONAL_DB_DRIVER: postgres
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_USER: ${DB_APP_USER}
-      DB_PASSWORD: ${DB_APP_PASSWORD}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
       DB_SSLMODE: disable
       PORT: 8091
-      APP_ENV: production
       OPERATIONAL_ADMIN_PASSWORD: ${OPERATIONAL_ADMIN_PASSWORD}
-      OPERATIONAL_SESSION_SECRET: ${OPERATIONAL_SESSION_SECRET}
-      PORTAL_OPERATIONAL_SECRET: ${PORTAL_OPERATIONAL_SECRET}
+      OPERATIONAL_PORTAL_SECRET: ${OPERATIONAL_PORTAL_SECRET}
+      LOADING_PUBLIC_BASE: ${LOADING_PUBLIC_BASE:-}
+      LOADING_SESSION_TTL_MINUTES: ${LOADING_SESSION_TTL_MINUTES:-480}
     depends_on:
       postgres:
         condition: service_healthy
@@ -130,16 +152,15 @@ services:
       - "127.0.0.1:8180:8080"
     environment:
       PORTAL_PUBLIC_BASE: ${PORTAL_PUBLIC_BASE}
-      APP_ENV: production
       PORTAL_COOLER_STORE_URL: ${PORTAL_COOLER_STORE_URL}
       PORTAL_COOLER_STORE_SECRET: ${PORTAL_COOLER_STORE_SECRET}
       PORTAL_ADMIN_USERNAME: ${PORTAL_ADMIN_USERNAME}
       PORTAL_ADMIN_PASSWORD: ${PORTAL_ADMIN_PASSWORD}
       PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
-      PORTAL_OPERATIONAL_SECRET: ${PORTAL_OPERATIONAL_SECRET}
       PORTAL_ALLOW_OPERATIONAL_CUSTOMER_ACCESS: ${PORTAL_ALLOW_OPERATIONAL_CUSTOMER_ACCESS}
       PORTAL_FINANCIAL_JWT_SECRET: ${JWT_SECRET}
       OPERATIONAL_ADMIN_PASSWORD: ${OPERATIONAL_ADMIN_PASSWORD}
+      PORTAL_OPERATIONAL_SECRET: ${OPERATIONAL_PORTAL_SECRET}
       ACCESS_DB_PATH: /data/portal-access.db
     volumes:
       - textile_erp_portal_data:/data
@@ -192,6 +213,7 @@ services:
 
 volumes:
   textile_erp_postgres_data:
+  textile_erp_postgres_replica_data:
   textile_erp_prometheus_data:
   textile_erp_grafana_data:
   textile_erp_portal_data:
