@@ -41,6 +41,8 @@ jobs:
       DB_SSLMODE: disable
     steps:
       - uses: actions/checkout@v4
+      - name: Production compose release paths
+        run: bash deploy/production/validate-compose.sh
       - uses: actions/setup-go@v5
         with:
           go-version: "1.21"
