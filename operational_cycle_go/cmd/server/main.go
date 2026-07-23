@@ -1985,12 +1985,52 @@ func (a *app) emptyBeamOut(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "اطلاعات خروج نورد خالی کامل نیست")
 			return
 		}
-		if p.ID > 0 {
-			_, err = a.exec(`UPDATE empty_beam_out SET kod_navard=?, chellepich_name=?, description=? WHERE id_empty_beam_out=?`, beam, warper, strings.TrimSpace(p.Description), p.ID)
-		} else {
-			_, err = a.exec(`INSERT INTO empty_beam_out (tarikh_empty_beam_out,kod_navard,chellepich_name,description) VALUES (?,?,?,?)`, jalaliToday(), beam, warper, strings.TrimSpace(p.Description))
+		tx, err := a.db.Begin()
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
 		}
-		writeSave(w, err)
+		defer tx.Rollback()
+		if a.dialect == "postgres" {
+			if _, err = tx.Exec(`SELECT pg_advisory_xact_lock(hashtext($1))`, beam); err != nil {
+				fail(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+		var unresolved int
+		err = txQueryRow(a.dialect, tx, `
+			SELECT COUNT(*)
+			FROM empty_beam_out e
+			WHERE e.kod_navard=? AND e.id_empty_beam_out<>?
+			  AND NOT EXISTS (
+				SELECT 1 FROM chelle c
+				WHERE c.codnavard_chelle=e.kod_navard
+				  AND c.pich_chelle=e.chellepich_name
+				  AND COALESCE(c.tarikh_chelle,'')>=COALESCE(e.tarikh_empty_beam_out,'')
+			  )
+		`, beam, p.ID).Scan(&unresolved)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if unresolved > 0 {
+			fail(w, http.StatusConflict, "این نورد هنوز نزد چله‌پیچ است و خروج تکراری مجاز نیست")
+			return
+		}
+		if p.ID > 0 {
+			_, err = txExec(a.dialect, tx, `UPDATE empty_beam_out SET kod_navard=?, chellepich_name=?, description=? WHERE id_empty_beam_out=?`, beam, warper, strings.TrimSpace(p.Description), p.ID)
+		} else {
+			_, err = txExec(a.dialect, tx, `INSERT INTO empty_beam_out (tarikh_empty_beam_out,kod_navard,chellepich_name,description) VALUES (?,?,?,?)`, jalaliToday(), beam, warper, strings.TrimSpace(p.Description))
+		}
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err = tx.Commit(); err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, record{"success": true})
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}

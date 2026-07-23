@@ -145,6 +145,36 @@ func TestOutInvoiceSaveValidatesAndPersists(t *testing.T) {
 	}
 }
 
+func TestEmptyBeamOutRejectsDuplicateUntilReturn(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:empty-beam-out-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	application := &app{db: db, dialect: "sqlite", dbLabel: "test"}
+	if err := application.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	post := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/api/empty-beam-out", bytes.NewBufferString(`{"beam":"B-1","warper":"W-1"}`))
+		response := httptest.NewRecorder()
+		application.emptyBeamOut(response, request)
+		return response
+	}
+	if response := post(); response.Code != http.StatusOK {
+		t.Fatalf("first empty beam exit failed: %d %s", response.Code, response.Body.String())
+	}
+	if response := post(); response.Code != http.StatusConflict {
+		t.Fatalf("duplicate unresolved empty beam exit was allowed: %d %s", response.Code, response.Body.String())
+	}
+	if _, err := application.exec(`INSERT INTO chelle(tarikh_chelle,shom_chelle,pich_chelle,codnavard_chelle) VALUES(?,?,?,?)`, jalaliToday(), "CH-1", "W-1", "B-1"); err != nil {
+		t.Fatal(err)
+	}
+	if response := post(); response.Code != http.StatusOK {
+		t.Fatalf("returned beam could not exit again: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestOperationalSessionUsesOpaqueServerSideToken(t *testing.T) {
 	application := &app{sessions: map[string]sessionInfo{}}
 	request := httptest.NewRequest(http.MethodPost, "/api/login", nil)

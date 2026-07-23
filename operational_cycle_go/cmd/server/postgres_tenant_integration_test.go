@@ -24,6 +24,7 @@ func TestPostgresOperationalTenantIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	db.SetMaxOpenConns(1)
 	application := &app{db: db, dialect: "postgres", dbLabel: "integration", defaultSchema: "public", sessions: map[string]sessionInfo{}}
 	if err := application.initializeTenancy(); err != nil {
 		t.Fatalf("initialize operational tenancy: %v", err)
@@ -146,7 +147,17 @@ func TestPostgresOperationalTenantIsolation(t *testing.T) {
 		t.Fatalf("create chelle: %d %s", chelleResponse.Code, chelleResponse.Body.String())
 	}
 	var returnedAt, returnedChelle string
-	if err := application.queryRow(`SELECT COALESCE(returned_at,''), COALESCE(returned_chelle_no,'') FROM empty_beam_out WHERE kod_navard=? ORDER BY id_empty_beam_out DESC LIMIT 1`, beam).Scan(&returnedAt, &returnedChelle); err != nil {
+	if err := application.queryRow(`
+		SELECT COALESCE((SELECT c.tarikh_chelle FROM chelle c
+			WHERE c.codnavard_chelle=e.kod_navard AND c.pich_chelle=e.chellepich_name
+			  AND COALESCE(c.tarikh_chelle,'')>=COALESCE(e.tarikh_empty_beam_out,'')
+			ORDER BY c.tarikh_chelle DESC, c.id_chelle DESC LIMIT 1),''),
+		       COALESCE((SELECT c.shom_chelle FROM chelle c
+			WHERE c.codnavard_chelle=e.kod_navard AND c.pich_chelle=e.chellepich_name
+			  AND COALESCE(c.tarikh_chelle,'')>=COALESCE(e.tarikh_empty_beam_out,'')
+			ORDER BY c.tarikh_chelle DESC, c.id_chelle DESC LIMIT 1),'')
+		FROM empty_beam_out e WHERE e.kod_navard=? ORDER BY e.id_empty_beam_out DESC LIMIT 1
+	`, beam).Scan(&returnedAt, &returnedChelle); err != nil {
 		t.Fatal(err)
 	}
 	if returnedAt == "" || returnedChelle != "CH-TEST" {
