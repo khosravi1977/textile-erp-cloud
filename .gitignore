@@ -28,6 +28,7 @@ legacy_sync_reports/
 *.pem
 *.exe
 *.apk
-portal_server/downloads/
+portal_server/downloads/*
+!portal_server/downloads/HesabYar.apk
 portal_server/textile-erp-portal-linux-amd64*
 .production-access
