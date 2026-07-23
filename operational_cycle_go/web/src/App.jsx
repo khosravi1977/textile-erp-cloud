@@ -1054,7 +1054,17 @@ function NakhSalon({ lookups, notify }) {
 
   const [chelles, setChelles] = useState([]);
 
-  const load = () => api('/nakh-salon?chelles=1').then(setChelles).catch(() => setChelles([]));
+  const [inventory, setInventory] = useState([]);
+
+  const [movements, setMovements] = useState([]);
+
+  const load = () => Promise.all([api('/nakh-salon?chelles=1'), api('/nakh-khor?inventory=1'), api('/nakh-salon')])
+    .then(([activeChelles, yarnInventory, salonMovements]) => {
+      setChelles(activeChelles);
+      setInventory(yarnInventory);
+      setMovements(salonMovements);
+    })
+    .catch(() => { setChelles([]); setInventory([]); setMovements([]); });
 
   useEffect(() => { load(); }, []);
 
@@ -1068,11 +1078,26 @@ function NakhSalon({ lookups, notify }) {
 
     notify={notify}
 
+    afterSave={load}
+
     filters={[['machine','ماشین'],['ham_nakh','همبافت نخ'],['nakh_name','نوع نخ'],['shom_chelle','چله'],['mosh_name','مالک نخ'],['vor_khor','نوع']]}
 
     mapEdit={row => ({ id: row.id, machine: row.machine || '', ham_nakh: row.ham_nakh || '', weight: Math.abs(Number(row.weight || 0)), chelle_id: row.chelle_id || '', mosh_name: row.mosh_name || '', nakh_name: row.nakh_name || '', vor_khor: row.vor_khor || 'vorud' })}
 
     renderForm={(form, set) => {
+      const current = movements.find(x => Number(x.id) === Number(form.id));
+      const inventoryRow = inventory.find(x => x.mosh === form.mosh_name && x.hambaft === form.ham_nakh && x.yarn === form.nakh_name);
+      const warehouseAvailable = Number(inventoryRow?.inventory || 0)
+        + (current?.vor_khor === 'vorud' ? Math.abs(Number(current.weight || 0)) : 0)
+        - (current?.vor_khor === 'khoroj' ? Math.abs(Number(current.weight || 0)) : 0);
+      const returnable = movements
+        .filter(x => Number(x.id) !== Number(form.id)
+          && Number(x.chelle_id) === Number(form.chelle_id)
+          && x.machine === form.machine
+          && x.mosh_name === form.mosh_name
+          && x.ham_nakh === form.ham_nakh
+          && x.nakh_name === form.nakh_name)
+        .reduce((sum, x) => sum + (x.vor_khor === 'khoroj' ? -Math.abs(Number(x.weight || 0)) : Math.abs(Number(x.weight || 0))), 0);
       const chooseChelle = value => {
         const id = Number(value);
         const selected = chelles.find(x => Number(x.id) === id);
@@ -1098,6 +1123,10 @@ function NakhSalon({ lookups, notify }) {
       <Select label="نوع نخ پود" value={form.nakh_name} onChange={v => set('nakh_name', v)} items={(lookups.yarns || []).map(x => ({ id: x.name, name: x.name }))} />
 
       <Select label="نوع" value={form.vor_khor} onChange={v => set('vor_khor', v)} items={[{id:'vorud',name:'ورود'}, {id:'khoroj',name:'خروج'}]} />
+
+      {(form.chelle_id && form.mosh_name && form.ham_nakh && form.nakh_name) && <div className="form-help">
+        موجودی دقیق قابل تخصیص از انبار: {fmt(warehouseAvailable)} کیلو — مقدار خالص قابل مرجوع از این ماشین و چله: {fmt(Math.max(0, returnable))} کیلو
+      </div>}
 
     </>;
     }}
@@ -1178,6 +1207,8 @@ function Salon({ lookups, notify }) {
 
     let selectedChelle = latest?.shom_chelle || (defaults.found ? defaults.shom_chelle : '');
 
+    let selectedChelleID = latest?.chelle_id || (defaults.found ? defaults.chelle_id : '');
+
     let selectedHambaft = latest?.hambaft || (defaults.found ? defaults.ham_chelle : '');
 
     const previousChelle = defaults.found ? defaults.shom_chelle : '';
@@ -1189,6 +1220,8 @@ function Salon({ lookups, notify }) {
       if (!useNew) {
 
         selectedChelle = previousChelle;
+
+        selectedChelleID = defaults.chelle_id || selectedChelleID;
 
         selectedHambaft = defaults.ham_chelle || selectedHambaft;
 
@@ -1242,7 +1275,9 @@ function Salon({ lookups, notify }) {
 
         ham_chelle: selectedHambaft || s.ham_chelle,
 
-        shom_chelle: selectedChelle || s.shom_chelle
+        shom_chelle: selectedChelle || s.shom_chelle,
+
+        chelle_id: selectedChelleID || s.chelle_id
 
       };
 
@@ -1278,7 +1313,7 @@ function Salon({ lookups, notify }) {
 
     setEditing(true);
 
-    setForm({ id: row.id, metr: Number(row.metr || 0), weight: Number(row.weight || 0), machine: row.machine || '', kala_id: row.kala_id || '', ham_pod: row.ham_pod || '', ham_chelle: row.ham_chelle || '', shom_chelle: row.shom_chelle || '', user: row.user || 'admin', skip_print: true });
+    setForm({ id: row.id, metr: Number(row.metr || 0), weight: Number(row.weight || 0), machine: row.machine || '', kala_id: row.kala_id || '', ham_pod: row.ham_pod || '', ham_chelle: row.ham_chelle || '', shom_chelle: row.shom_chelle || '', chelle_id: row.chelle_id || '', skip_print: true });
 
     if (row.machine) {
 
@@ -1340,19 +1375,27 @@ function Salon({ lookups, notify }) {
 
           <Input label="همبافت پود" value={form.ham_pod} onChange={() => {}} disabled hint="از آخرین ورود نخ سالن برای همین ماشین پر می‌شود و قابل ویرایش دستی نیست." />
 
-          <Select label="شماره چله" value={form.shom_chelle} onChange={v => {
+          <Select label="شماره چله فعال" value={form.chelle_id} onChange={v => {
 
-            set('shom_chelle', v);
+            const chelleID = Number(v);
 
-            const row = recent.find(x => x.shom_chelle === v);
+            const row = recent.find(x => Number(x.chelle_id) === chelleID);
 
-            if (row) set('ham_chelle', row.hambaft || '');
+            set('chelle_id', chelleID);
 
-          }} items={recent.map(x => ({ id: x.shom_chelle, name: `${x.shom_chelle} - ${x.hambaft || 'بدون همبافت'} - ${fmt(x.weight)} کیلو` }))} />
+            if (row) {
+
+              set('shom_chelle', row.shom_chelle || '');
+
+              set('ham_chelle', row.hambaft || '');
+
+            }
+
+          }} items={recent.map(x => ({ id: x.chelle_id, name: `${x.shom_chelle} - ${x.hambaft || 'بدون همبافت'} - ${fmt(x.weight)} کیلو` }))} />
 
           <Input label="همبافت تار / چله" value={form.ham_chelle} onChange={v => set('ham_chelle', v)} />
 
-          <Input label="کاربر" value={form.user} onChange={v => set('user', v)} />
+          <Input label="ثبت‌کننده" value="از نشست کاربر واردشده ثبت می‌شود" onChange={() => {}} disabled />
 
           <label className="check-line"><input type="checkbox" checked={!!form.skip_print} onChange={e => set('skip_print', e.target.checked)} /> <span>بعد از ثبت لیبل چاپ نشود</span></label>
 
@@ -1500,7 +1543,7 @@ function YarnOut({ lookups, notify }) {
 
       <Select label="مالک نخ / مشتری" value={form.owner_mosh} onChange={v => set('owner_mosh', v)} items={(lookups.customers || []).map(x => ({ id: x.name, name: x.name }))} />
 
-      <Select label="نوع مقصد" value={form.destination_type} onChange={v => { set('destination_type', v); set('mosh_name', ''); }} items={[{id:'warper',name:'چله‌پیچ'}, {id:'customer',name:'مشتری / مصرف دیگر'}]} />
+      <Select label="نوع مقصد" value={form.destination_type} onChange={v => { set('destination_type', v); set('mosh_name', ''); }} items={[{id:'warper',name:'چله‌پیچ'}, {id:'other',name:'مشتری / مصرف دیگر'}]} />
 
       <Input label="مقصد خروج" value={form.mosh_name} onChange={v => set('mosh_name', v)} list={recipientOptions} />
 
@@ -1834,7 +1877,7 @@ function ConsumptionPro() {
 
   const [rows, setRows] = useState([]);
   const [waste, setWaste] = useState([]);
-  const [form, setForm] = useState({ machine: '', shom_chelle: '', waste_type: 'tar', weight: '', reason: '', description: '' });
+  const [form, setForm] = useState({ machine: '', shom_chelle: '', chelle_id: '', waste_type: 'tar', weight: '', reason: '', description: '', corrective_action: '' });
   const [editing, setEditing] = useState(false);
 
   const load = () => Promise.all([api('/consumption/machines'), api('/production-waste')])
@@ -1846,16 +1889,16 @@ function ConsumptionPro() {
   const set = (key, value) => setForm(s => ({ ...s, [key]: value }));
   const chooseMachine = machine => {
     const current = rows.find(r => r.machine === machine);
-    setForm(s => ({ ...s, machine, shom_chelle: current?.shom_chelle || '' }));
+    setForm(s => ({ ...s, machine, shom_chelle: current?.shom_chelle || '', chelle_id: current?.chelle_id || '' }));
   };
   const saveWaste = async () => {
     await api('/production-waste', { method: 'POST', body: form });
-    setForm({ machine: '', shom_chelle: '', waste_type: 'tar', weight: '', reason: '', description: '' });
+    setForm({ machine: '', shom_chelle: '', chelle_id: '', waste_type: 'tar', weight: '', reason: '', description: '', corrective_action: '' });
     setEditing(false);
     await load();
   };
   const editWaste = row => {
-    setForm({ id: row.id, machine: row.machine || '', shom_chelle: row.shom_chelle || '', waste_type: row.waste_type || 'tar', weight: Number(row.weight || 0), reason: row.reason || '', description: row.description || '' });
+    setForm({ id: row.id, machine: row.machine || '', shom_chelle: row.shom_chelle || '', chelle_id: row.chelle_id || '', waste_type: row.waste_type || 'tar', weight: Number(row.weight || 0), reason: row.reason || '', description: row.description || '', corrective_action: row.corrective_action || '' });
     setEditing(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -1873,13 +1916,14 @@ function ConsumptionPro() {
       <p className="hint">مانده نخ، ضایعات نیست. فقط وزن فیزیکی دورریز یا پارچه معیوب را در این فرم ثبت کنید.</p>
       <div className="form-grid">
         <Select label="ماشین" value={form.machine} onChange={chooseMachine} items={rows.map(r => ({ id: r.machine, name: `ماشین ${r.machine} — چله ${r.shom_chelle}` }))} />
-        <Input label="شماره چله" value={form.shom_chelle} onChange={v => set('shom_chelle', v)} />
+        <Input label="شماره چله" value={form.shom_chelle} onChange={() => {}} disabled hint="از چله فعال همان ماشین انتخاب می‌شود." />
         <Select label="نوع ضایعات" value={form.waste_type} onChange={v => set('waste_type', v)} items={[{id:'tar',name:'تار'}, {id:'pod',name:'پود'}, {id:'fabric',name:'پارچه معیوب'}, {id:'selvage',name:'کناره'}, {id:'other',name:'سایر'}]} />
         <Input label="وزن ضایعات (kg)" type="number" value={form.weight} onChange={v => set('weight', Number(v))} />
         <Input label="علت ضایعات" value={form.reason} onChange={v => set('reason', v)} />
-        <Input label="توضیحات / اقدام اصلاحی" value={form.description} onChange={v => set('description', v)} />
+        <Input label="توضیحات" value={form.description} onChange={v => set('description', v)} />
+        <Input label="اقدام اصلاحی" value={form.corrective_action} onChange={v => set('corrective_action', v)} />
       </div>
-      <div className="actions-row"><button className="primary" onClick={saveWaste}>{editing ? 'ثبت ویرایش' : 'ثبت ضایعات'}</button>{editing && <button className="ghost" onClick={() => { setEditing(false); setForm({ machine: '', shom_chelle: '', waste_type: 'tar', weight: '', reason: '', description: '' }); }}>لغو</button>}</div>
+      <div className="actions-row"><button className="primary" onClick={saveWaste}>{editing ? 'ثبت ویرایش' : 'ثبت ضایعات'}</button>{editing && <button className="ghost" onClick={() => { setEditing(false); setForm({ machine: '', shom_chelle: '', chelle_id: '', waste_type: 'tar', weight: '', reason: '', description: '', corrective_action: '' }); }}>لغو</button>}</div>
     </section>
 
     <section className="panel green-head">
@@ -1952,7 +1996,7 @@ function ConsumptionPro() {
 
     <section className="panel">
       <h2>دفتر ثبت ضایعات</h2>
-      <Table rows={wasteHistory} columns={[["tarikh","تاریخ"],["machine","ماشین"],["shom_chelle","چله"],["waste_type_fa","نوع"],["weight","وزن kg"],["reason","علت"],["operator_name","ثبت‌کننده"],["description","توضیحات"]]} onEdit={editWaste} onDelete={deleteWaste} />
+      <Table rows={wasteHistory} columns={[["tarikh","تاریخ"],["machine","ماشین"],["shom_chelle","چله"],["waste_type_fa","نوع"],["weight","وزن kg"],["reason","علت"],["operator_name","ثبت‌کننده"],["description","توضیحات"],["corrective_action","اقدام اصلاحی"]]} onEdit={editWaste} onDelete={deleteWaste} />
     </section>
 
   </Page>;
@@ -2641,11 +2685,31 @@ function OutInvoicePro({ lookups, notify }) {
 
 
 
+function ReportTable({ title, rows = [], columns, filterKeys }) {
+
+  const [values, setValues] = useState({});
+
+  const defs = (filterKeys || columns.slice(0, 3).map(([key, label]) => [key, label]));
+
+  const visible = filterRows(rows, values);
+
+  return <section className="panel report-card">
+
+    <h2>{title}</h2>
+
+    <Filters filters={defs} rows={rows} values={values} setValues={setValues} onPrint={() => printReport(title, visible, columns)} />
+
+    <Table rows={visible} columns={columns} hideActions />
+
+  </section>;
+
+}
+
+
+
 function ReportsPro2() {
 
   const [data, setData] = useState({ yarnOut: [], invoices: [], expenses: [], management: {} });
-
-  const [filters, setFilters] = useState({});
 
   useEffect(() => {
 
@@ -2653,13 +2717,6 @@ function ReportsPro2() {
 
   }, []);
 
-  const allRows = [...data.yarnOut, ...data.invoices, ...data.expenses];
-
-  const yarnOut = filterRows(data.yarnOut, filters);
-
-  const invoices = filterRows(data.invoices, filters);
-
-  const expenses = filterRows(data.expenses, filters);
   const management = data.management || {};
   const today = management.today || {};
   const month = management.month || {};
@@ -2683,33 +2740,27 @@ function ReportsPro2() {
       {(management.notifications || []).length ? <div className="notice-list">{management.notifications.map((x, i) => <div key={`${x.code || 'n'}-${i}`}><b>{x.title}</b><span>{x.message}</span></div>)}</div> : <div className="empty">هشدار فعالی وجود ندارد.</div>}
     </section>
 
-    <section className="panel report-card"><h2>کنترل کیفیت داده‌های سیکل</h2><Table rows={management.data_quality || []} columns={[["title","کنترل"],["count","تعداد مورد"],["status","وضعیت"]]} hideActions /></section>
+    <ReportTable title="کنترل کیفیت داده‌های سیکل" rows={management.data_quality || []} columns={[["title","کنترل"],["count","تعداد مورد"],["status","وضعیت"]]} />
 
-    <section className="panel report-card"><h2>دفتر موجودی نخ انبار</h2><Table rows={management.yarn_inventory || []} columns={[["mosh","مالک نخ"],["hambaft","هم‌بافت"],["yarn","نوع نخ"],["vorud","ورود kg"],["to_salon","خالص ارسال سالن kg"],["khoroj","سایر خروج kg"],["inventory","مانده انبار kg"]]} hideActions /></section>
+    <ReportTable title="دفتر موجودی نخ انبار" rows={management.yarn_inventory || []} columns={[["mosh","مالک نخ"],["hambaft","هم‌بافت"],["yarn","نوع نخ"],["vorud","ورود kg"],["to_salon","خالص ارسال سالن kg"],["khoroj","سایر خروج kg"],["inventory","مانده انبار kg"]]} />
 
-    <section className="panel report-card"><h2>مانده نخ نزد چله‌پیچ</h2><Table rows={management.warper_balances || []} columns={[["warper","چله‌پیچ"],["owner","مالک نخ"],["hambaft","هم‌بافت"],["yarn","نوع نخ"],["sent_weight","ارسال kg"],["returned_weight","چله برگشتی kg"],["balance_weight","مانده kg"],["chelle_count","تعداد چله"]]} hideActions /></section>
+    <ReportTable title="مانده نخ نزد چله‌پیچ" rows={management.warper_balances || []} columns={[["warper","چله‌پیچ"],["owner","مالک نخ"],["hambaft","هم‌بافت"],["yarn","نوع نخ"],["sent_weight","ارسال kg"],["returned_weight","چله برگشتی kg"],["balance_weight","مانده kg"],["chelle_count","تعداد چله"],["last_sent_date","آخرین ارسال"],["last_return_date","آخرین برگشت"]]} />
 
-    <section className="panel report-card"><h2>وضعیت چله و مواد روی ماشین</h2><Table rows={management.machines || []} columns={[["machine","ماشین"],["shom_chelle","چله"],["chelle_weight","تار اولیه kg"],["pod_assigned","پود تخصیصی kg"],["tar_used","تار مصرفی kg"],["pod_used","پود مصرفی kg"],["tar_remaining","مانده تار kg"],["pod_remaining","مانده پود kg"],["actual_waste","ضایعات واقعی kg"],["remaining_percent","درصد مانده"],["material_shortage","کسری مواد kg"]]} hideActions /></section>
+    <ReportTable title="وضعیت چله و مواد روی ماشین" rows={management.machines || []} columns={[["machine","ماشین"],["shom_chelle","چله"],["chelle_weight","تار اولیه kg"],["pod_assigned","پود تخصیصی kg"],["tar_used","تار مصرفی kg"],["pod_used","پود مصرفی kg"],["tar_remaining","مانده تار kg"],["pod_remaining","مانده پود kg"],["remaining","مانده کل kg"],["actual_waste","ضایعات واقعی kg"],["remaining_percent","درصد مانده"],["material_shortage","کسری مواد kg"]]} />
 
-    <section className="panel report-card"><h2>تولید ماه به تفکیک ماشین</h2><Table rows={management.month_by_machine || []} columns={[["machine","ماشین"],["pieces","طاقه"],["metr","متراژ"],["weight","وزن kg"]]} hideActions /></section>
+    <ReportTable title="تولید ماه به تفکیک ماشین" rows={management.month_by_machine || []} columns={[["machine","ماشین"],["pieces","طاقه"],["metr","متراژ"],["weight","وزن kg"]]} />
 
-    <section className="panel report-card"><h2>دفتر ضایعات واقعی</h2><Table rows={management.waste || []} columns={[["tarikh","تاریخ"],["machine","ماشین"],["shom_chelle","چله"],["waste_type","نوع"],["weight","وزن kg"],["reason","علت"],["operator_name","ثبت‌کننده"],["description","اقدام اصلاحی"]]} hideActions /></section>
+    <ReportTable title="دفتر ضایعات واقعی" rows={management.waste || []} columns={[["tarikh","تاریخ"],["machine","ماشین"],["shom_chelle","چله"],["waste_type","نوع"],["weight","وزن kg"],["reason","علت"],["operator_name","ثبت‌کننده"],["description","توضیحات"],["corrective_action","اقدام اصلاحی"]]} />
 
-    <section className="panel report-card"><h2>موجودی پارچه آماده خروج</h2><Table rows={stock.items || []} columns={[["kala","کالا"],["taghe_count","تعداد طاقه"],["metr","متراژ"],["weight","وزن kg"]]} hideActions /></section>
+    <ReportTable title="موجودی پارچه آماده خروج" rows={stock.items || []} columns={[["kala","کالا"],["taghe_count","تعداد طاقه"],["metr","متراژ"],["weight","وزن kg"]]} />
 
-    <section className="panel">
+    <ReportTable title="فاکتورهای خروج" rows={management.out_invoices || []} columns={[["invoice_no","شماره فاکتور"],["tarikh","تاریخ"],["mosh","مشتری"],["sanad","شماره سند"],["kala","کالا"],["taghe_count","تعداد طاقه"]]} />
 
-      <h2>فیلتر مشترک گزارشات</h2>
+    <ReportTable title="گزارش فاکتور خروج" rows={data.invoices} columns={[['tarikh','تاریخ'],['invoice_no','شماره فاکتور'],['sanad','شماره سند'],['mosh','مشتری'],['kala','کالا'],['taghe_count','تعداد طاقه'],['metr','متراژ'],['weight','وزن']]} />
 
-      <Filters filters={[['tarikh','تاریخ'],['mosh','مشتری'],['kala','کالا'],['hambaft','همبافت'],['onvan_hazine','هزینه']]} rows={allRows} values={filters} setValues={setFilters} onPrint={() => printReport('گزارش ترکیبی عملیاتی', [...invoices, ...yarnOut, ...expenses], [['tarikh','تاریخ'],['invoice_no','فاکتور'],['mosh','مشتری'],['kala','کالا'],['hambaft','همبافت'],['weight','وزن'],['mablagh','مبلغ'],['onvan_hazine','عنوان هزینه']])} />
+    <ReportTable title="گزارش خروج نخ" rows={data.yarnOut} columns={[['tarikh','تاریخ'],['owner_mosh','مالک نخ'],['hambaft','همبافت'],['nakh','نخ'],['weight','وزن'],['mosh','مقصد']]} />
 
-    </section>
-
-    <section className="panel report-card"><h2>گزارش فاکتور خروج</h2><Table rows={invoices} columns={[['tarikh','تاریخ'],['invoice_no','شماره فاکتور'],['sanad','شماره سند'],['mosh','مشتری'],['kala','کالا'],['taghe_count','تعداد طاقه'],['metr','متراژ'],['weight','وزن']]} hideActions /></section>
-
-    <section className="panel report-card"><h2>گزارش خروج نخ</h2><Table rows={yarnOut} columns={[['tarikh','تاریخ'],['owner_mosh','مالک نخ'],['hambaft','همبافت'],['nakh','نخ'],['weight','وزن'],['mosh','مقصد']]} hideActions /></section>
-
-    <section className="panel report-card"><h2>گزارش هزینه‌ها</h2><Table rows={expenses} columns={[['tarikh','تاریخ'],['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','بافنده'],['mablagh','مبلغ'],['shomare_sanad','شماره سند'],['tozih','توضیحات']]} hideActions /></section>
+    <ReportTable title="گزارش هزینه‌ها" rows={data.expenses} columns={[['tarikh','تاریخ'],['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','بافنده'],['mablagh','مبلغ'],['shomare_sanad','شماره سند'],['tozih','توضیحات']]} />
 
   </Page>;
 
@@ -2719,7 +2770,7 @@ function ReportsPro2() {
 
 function salonEmpty() {
 
-  return { metr: '', weight: '', machine: '', kala_id: '', ham_pod: '', ham_chelle: '', shom_chelle: '', user: 'admin', skip_print: false };
+  return { metr: '', weight: '', machine: '', kala_id: '', ham_pod: '', ham_chelle: '', shom_chelle: '', chelle_id: '', skip_print: false };
 
 }
 
