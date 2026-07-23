@@ -44,7 +44,6 @@ func TestTenantScopedCostAPIRejectsCrossCompanyLeakage(t *testing.T) {
 func TestTenantScopedInventoryAPIRejectsCrossCompanyLeakage(t *testing.T) {
 	t.Setenv("ALLOW_DEV_AUTH", "true")
 	t.Setenv("CACHE_DISABLED", "true")
-	t.Setenv("SEED_DEMO_DATA", "true")
 
 	server := httptest.NewServer(router.SetupRouter())
 	defer server.Close()

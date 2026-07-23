@@ -67,6 +67,7 @@ func Connect(cfg Config) (*sql.DB, error) {
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	if err := db.Ping(); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
@@ -277,8 +278,7 @@ func SeedSampleData(db *sql.DB) error {
 		if err := tx.QueryRowContext(ctx, `
 			INSERT INTO branches (company_id, code, name, created_by)
 			VALUES ($1, 'MAIN', 'شعبه اصلی', 1)
-			ON CONFLICT (code) DO UPDATE SET
-				company_id = EXCLUDED.company_id,
+			ON CONFLICT (company_id, code) DO UPDATE SET
 				name = EXCLUDED.name
 			RETURNING id
 		`, companyID).Scan(&branchID); err != nil {
@@ -289,8 +289,7 @@ func SeedSampleData(db *sql.DB) error {
 		if err := tx.QueryRowContext(ctx, `
 			INSERT INTO parties (company_id, code, name, type, national_id, tax_id, mobile, phone, is_active)
 			VALUES ($1, 'CUST001', 'Sherkat Nasaji Nemoneh', 'Customer', '1234567890', 'TAX123456', '09120000000', '021-12345678', true)
-			ON CONFLICT (code) DO UPDATE SET
-				company_id = EXCLUDED.company_id,
+			ON CONFLICT (company_id, code) DO UPDATE SET
 				name = EXCLUDED.name
 			RETURNING id
 		`, companyID).Scan(&customerID); err != nil {
@@ -312,8 +311,7 @@ func SeedSampleData(db *sql.DB) error {
 		if err := tx.QueryRowContext(ctx, `
 			INSERT INTO parties (company_id, code, name, type, mobile, is_active)
 			VALUES ($1, 'CONT001', 'Bafandeh Maher', 'Contractor', '09130000000', true)
-			ON CONFLICT (code) DO UPDATE SET
-				company_id = EXCLUDED.company_id,
+			ON CONFLICT (company_id, code) DO UPDATE SET
 				name = EXCLUDED.name
 			RETURNING id
 		`, companyID).Scan(&contractorID); err != nil {

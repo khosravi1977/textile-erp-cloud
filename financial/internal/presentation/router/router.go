@@ -18,7 +18,6 @@ func SetupRouter() http.Handler {
 	mux.HandleFunc("/api/mobile/bootstrap", h.MobileBootstrap)
 	mux.HandleFunc("/api/mobile/settings", h.MobileSettings)
 	mux.HandleFunc("/api/mobile/transactions", h.MobileTransaction)
-	mux.HandleFunc("/api/v1/hesabyar/sync", h.HesabYarLegacySync)
 	mux.HandleFunc("/api/production/orders", h.CreateProductionOrder)
 	mux.HandleFunc("/api/production/complete", h.CompleteProduction)
 	mux.HandleFunc("/api/settlements", h.CreateSettlement)
@@ -39,6 +38,8 @@ func SetupRouter() http.Handler {
 	mux.HandleFunc("/api/workspace/history", h.GetWorkspaceHistory)
 	mux.HandleFunc("/api/workspace/summary", h.GetWorkspaceSummary)
 	mux.HandleFunc("/api/workspace/alerts", h.GetWorkspaceAlerts)
+	mux.HandleFunc("/api/accounting/reports", h.GetAccountingReports)
+	mux.HandleFunc("/api/accounting/periods", h.AccountingPeriods)
 
 	// Invoice API
 	mux.HandleFunc("/api/invoices", h.InvoicesRoot)            // GET, POST

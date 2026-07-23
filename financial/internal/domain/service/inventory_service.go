@@ -57,9 +57,7 @@ func NewInventoryService() *InventoryService {
 		nextTxnID:    make(map[int64]int64),
 	}
 
-	if demoDataEnabled() {
-		is.seedCompany(1)
-	}
+	is.seedCompany(1)
 	return is
 }
 
@@ -302,16 +300,14 @@ func (is *InventoryService) GetStockAlertsForCompany(companyID int64) []map[stri
 }
 
 func (is *InventoryService) ensureCompanySeeded(companyID int64) {
-	if !demoDataEnabled() {
-		return
-	}
 	companyID = normalizedCompanyID(companyID)
 	is.mu.RLock()
 	seeded := len(is.items[companyID]) > 0
 	is.mu.RUnlock()
-	if !seeded {
-		is.seedCompany(companyID)
+	if seeded {
+		return
 	}
+	is.seedCompany(companyID)
 }
 
 func (is *InventoryService) seedCompany(companyID int64) {

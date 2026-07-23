@@ -1,50 +1,40 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"github.com/erpsystem/textile-erp/internal/infrastructure/persistence/postgres"
 	"github.com/erpsystem/textile-erp/internal/presentation/router"
 	"log"
 	"net/http"
 	"os"
+	"time"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	validateProductionConfiguration()
 
 	// Database connection
 	cfg := postgres.LoadConfig()
-	db, err := postgres.Connect(cfg)
+	db, err := connectDatabaseWithRetry(cfg, 5*time.Minute)
 	if err != nil {
-		if os.Getenv("APP_ENV") == "production" {
-			log.Fatalf("Database is required in production: %v", err)
-		}
-		log.Printf("⚠️  Database not available: %v", err)
-		log.Println("⚠️  Running without database - some features disabled")
-	} else {
-		defer db.Close()
+		log.Fatalf("Database did not become ready: %v", err)
+	}
+	defer db.Close()
 
-		// Run migrations
-		migrationsPath := "internal/infrastructure/persistence/postgres/migrations"
-		if err := postgres.RunMigrations(db, migrationsPath); err != nil {
-			if os.Getenv("APP_ENV") == "production" {
-				log.Fatalf("Database migration failed: %v", err)
-			}
-			log.Printf("⚠️  Migration warning: %v", err)
-		}
-		if err := postgres.EnsureFinancialUsers(db); err != nil {
-			if os.Getenv("APP_ENV") == "production" {
-				log.Fatalf("Financial user initialization failed: %v", err)
-			}
-			log.Printf("⚠️  User seed warning: %v", err)
-		}
+	// Run migrations
+	migrationsPath := "internal/infrastructure/persistence/postgres/migrations"
+	if err := postgres.RunMigrations(db, migrationsPath); err != nil {
+		log.Printf("⚠️  Migration warning: %v", err)
+	}
+	if err := postgres.EnsureFinancialUsers(db); err != nil {
+		log.Printf("⚠️  User seed warning: %v", err)
+	}
 
-		// Seed sample data (only in development)
-		if os.Getenv("APP_ENV") == "development" {
-			if err := postgres.SeedSampleData(db); err != nil {
-				log.Printf("⚠️  Seed warning: %v", err)
-			}
+	// Seed sample data (only in development)
+	if os.Getenv("APP_ENV") == "development" {
+		if err := postgres.SeedSampleData(db); err != nil {
+			log.Printf("⚠️  Seed warning: %v", err)
 		}
 	}
 
@@ -67,18 +57,20 @@ func main() {
 	}
 }
 
-func validateProductionConfiguration() {
-	if os.Getenv("APP_ENV") != "production" {
-		return
-	}
-	for _, key := range []string{"JWT_SECRET", "DB_PASSWORD", "FINANCIAL_ADMIN_PASSWORD"} {
-		value := os.Getenv(key)
-		if len(value) < 12 || value == "change_me" || value == "admin123" {
-			log.Fatalf("%s must be configured securely for production", key)
+func connectDatabaseWithRetry(cfg postgres.Config, timeout time.Duration) (*sql.DB, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		db, err := postgres.Connect(cfg)
+		if err == nil {
+			return db, nil
 		}
-	}
-	if len(os.Getenv("JWT_SECRET")) < 32 {
-		log.Fatal("JWT_SECRET must contain at least 32 characters in production")
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		log.Printf("Database is starting; retrying in 3 seconds: %v", err)
+		time.Sleep(3 * time.Second)
 	}
 }
 

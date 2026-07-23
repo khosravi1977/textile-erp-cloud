@@ -13,8 +13,7 @@ const API_BASE = window.ERP_FINANCIAL_API || import.meta.env.VITE_API_BASE || (
   window.location.port === '5173' ? `${window.location.protocol}//${window.location.hostname}:8081/api` : '/api/financial/api'
 );
 const PORTAL_FINANCIAL_SESSION = window.ERP_PORTAL_FINANCIAL_SESSION || '';
-const LAN_ORIGIN = window.ERP_LAN_ORIGIN || window.location.origin;
-const MOBILE_APP_DOWNLOAD_URL = '/downloads/HesabYar.apk';
+const MOBILE_APP_DOWNLOAD_URL = `${window.location.origin}/HesabYar.apk?v=1.0.1-local-20260722-2`;
 
 const authHeaders = () => {
 
@@ -65,12 +64,12 @@ const pages = [
   { id: 'receivableDocs', label: 'اسناد دریافتی' },
   { id: 'payableDocs', label: 'اسناد پرداختی' },
   { id: 'bankCash', label: 'بانک و صندوق' },
+  { id: 'accounting', label: 'دفاتر و تراز' },
   { id: 'reports', label: 'گزارشات' },
   { id: 'taxReports', label: 'گزارش مالیاتی' },
   { id: 'credit', label: 'اعتبارسنجی' },
   { id: 'advisor', label: 'مشاور مالی' },
   { id: 'mobileApp', label: 'اتصال اپ بانکی' },
-  { id: 'teamAccess', label: 'مدیریت تیم' },
 ];
 
 const fullPageAccess = pages.map(page => page.id);
@@ -87,16 +86,10 @@ function decodeJwtPayload(token) {
   }
 }
 
-function normalizeAccessList(list, canManageTeam = false) {
-  const allowed = Array.isArray(list) && list.length ? list.filter(item => fullPageAccess.includes(item)) : fullPageAccess.filter(item => item !== 'teamAccess');
+function normalizeAccessList(list) {
+  const allowed = Array.isArray(list) && list.length ? list.filter(item => fullPageAccess.includes(item)) : fullPageAccess;
   if (allowed.includes('incomingInvoices') && !allowed.includes('chelleIncomingInvoices')) {
     allowed.push('chelleIncomingInvoices');
-  }
-  if (canManageTeam && !allowed.includes('teamAccess')) {
-    allowed.push('teamAccess');
-  }
-  if (!allowed.includes('mobileApp')) {
-    allowed.push('mobileApp');
   }
   return [...new Set(allowed)];
 }
@@ -113,7 +106,7 @@ function buildSessionProfile(token, sessionData = {}) {
     projectKey: sessionData.projectKey || claims.project_key || '',
     portalRole: sessionData.portalRole || claims.portal_role || claims.role || 'owner',
     canManageTeam,
-    permissions: normalizeAccessList(sessionData.permissions || claims.permissions, canManageTeam),
+    permissions: normalizeAccessList(sessionData.permissions || claims.permissions),
     portalLinked: Boolean(sessionData.projectKey || claims.project_key || sessionData.company || claims.company_name),
   };
 }
@@ -818,6 +811,14 @@ function emptyFinance() {
 
     smsBankSenders: [],
 
+    mobileTransactions: [],
+
+    journalEntries: [],
+
+    fiscalPeriods: [],
+
+    accountingSettings: { defaultVatRate: 0 },
+
   };
 
 }
@@ -880,7 +881,12 @@ function sameMonth(date, offset = 0) {
 
 function accountBalance(account, movements) {
 
-  return Number(account.opening || 0) + movements.filter(m => m.accountId === account.id).reduce((s, m) => s + (m.direction === 'in' ? Number(m.amount || 0) : -Number(m.amount || 0)), 0);
+  return Number(account.opening || 0) + movements.reduce((sum, movement) => {
+    const amount = Number(movement.amount || 0);
+    if (movement.accountId === account.id) sum += movement.direction === 'in' ? amount : -amount;
+    if (movement.transactionType === 'transfer' && movement.counterAccountId === account.id) sum += movement.direction === 'in' ? -amount : amount;
+    return sum;
+  }, 0);
 
 }
 
@@ -922,11 +928,21 @@ function customerFinance(finance, customer) {
 
   const paidOut = financialIncomingInvoices.reduce((s, x) => s + (x.payments || []).filter(p => p.type !== 'credit').reduce((sum, p) => sum + Number(p.amount || 0), 0), 0);
 
-  const payableToCustomer = financialIncomingInvoices.reduce((s, x) => s + (x.payments || []).filter(p => p.type === 'credit').reduce((sum, p) => sum + Number(p.amount || 0), 0), 0);
+  const payableToCustomer = financialIncomingInvoices.reduce((s, x) => s + Math.max(Number(x.amount || 0) - (x.payments || []).filter(p => p.type !== 'credit').reduce((sum, p) => sum + Number(p.amount || 0), 0), 0), 0);
+
+  const manualCustomerReceipts = (finance.movements || []).filter(x => x.transactionType === 'customer_receipt' && (x.payer === customer || x.customer === customer)).reduce((s, x) => s + Number(x.amount || 0), 0);
+
+  const manualSupplierPayments = (finance.movements || []).filter(x => x.transactionType === 'supplier_payment' && (x.payer === customer || x.customer === customer)).reduce((s, x) => s + Number(x.amount || 0), 0);
 
   const invoiceDebtTotal = invoices.reduce((s, x) => s + invoiceDebt(x), 0);
 
-  return { invoices, incomingInvoices, openingRows, openingReceivable, openingPayable, total, paid, cash, checks, barter, assignedChecks, assignedDebt: assignedChecks, incomingTotal, paidOut, payableToCustomer, nonFinancialInventoryValue, yarnOutFinancialTotal, invoiceDebt: invoiceDebtTotal, debt: invoiceDebtTotal + yarnOutFinancialTotal + assignedChecks + openingReceivable, netBalance: invoiceDebtTotal + yarnOutFinancialTotal + assignedChecks + openingReceivable - payableToCustomer - openingPayable };
+  const receivableBalance = Math.max(invoiceDebtTotal + yarnOutFinancialTotal + openingReceivable - manualCustomerReceipts, 0);
+
+  const directAssignedChecks = finance.receivableDocs.filter(x => x.assignedTo === customer && !x.assignedIncomingInvoice).reduce((s, x) => s + Number(x.amount || 0), 0);
+
+  const netBalance = receivableBalance - payableToCustomer - openingPayable + manualSupplierPayments + directAssignedChecks;
+
+  return { invoices, incomingInvoices, openingRows, openingReceivable, openingPayable, total, paid, cash, checks, barter, assignedChecks, assignedDebt: 0, incomingTotal, paidOut, payableToCustomer, nonFinancialInventoryValue, yarnOutFinancialTotal, invoiceDebt: invoiceDebtTotal, debt: receivableBalance, netBalance };
 
 }
 
@@ -1008,16 +1024,17 @@ async function buildQrImageUrl(value) {
 
 
 export default function App() {
-  const [currentPage, setCurrentPage] = useState('dashboard');
+  const [currentPage, setCurrentPage] = useState(() => {
+    const requested = new URLSearchParams(window.location.search).get('page');
+    return pages.some(page => page.id === requested) ? requested : 'dashboard';
+  });
   const [isLoggedIn, setIsLoggedIn] = useState(Boolean(localStorage.getItem('financial-auth-token')));
-  // Always refresh a portal-linked token before loading workspace data. This also
-  // replaces stale tokens left by a previous server or local package.
-  const [authBooting, setAuthBooting] = useState(Boolean(PORTAL_FINANCIAL_SESSION));
+  const [authBooting, setAuthBooting] = useState(Boolean(PORTAL_FINANCIAL_SESSION) && !localStorage.getItem('financial-auth-token'));
   const [sessionProfile, setSessionProfile] = useLocalStorage('financial-auth-profile', null);
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const writablePermissions = new Set(['initialData', 'incomingInvoices', 'yarnOutInvoices', 'invoices', 'inventory', 'costs', 'receivableDocs', 'payableDocs', 'bankCash']);
+  const writablePermissions = new Set(['initialData', 'incomingInvoices', 'yarnOutInvoices', 'invoices', 'inventory', 'costs', 'receivableDocs', 'payableDocs', 'bankCash', 'accounting']);
   const workspaceWritable = !sessionProfile?.portalLinked || (
     sessionProfile?.portalRole !== 'viewer' && (sessionProfile?.permissions || []).some(permission => writablePermissions.has(permission))
   );
@@ -1205,6 +1222,7 @@ export default function App() {
     localStorage.removeItem('financial-auth-profile');
     setSessionProfile(null);
     setIsLoggedIn(false);
+    if (window.ERP_PORTAL_PREFIX) window.location.assign('/module-logout?module=financial&login=1');
   };
 
   if (!isLoggedIn) {
@@ -1262,7 +1280,7 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <button className="mt-8 w-full rounded-md bg-slate-800 p-3 text-sm text-slate-200" onClick={handleLogout}>خروج</button>
+        <button className="mt-8 w-full rounded-md bg-slate-800 p-3 text-sm text-slate-200" onClick={handleLogout}>خروج و ورود کاربر دیگر</button>
       </aside>
 
       <main className="mr-64 p-7">
@@ -1300,16 +1318,30 @@ export default function App() {
         {currentPage === 'costs' && <CostsPage finance={safeFinance} setFinance={updateFinance} />}
         {currentPage === 'receivableDocs' && <DocsPage kind="receivable" finance={safeFinance} setFinance={updateFinance} />}
         {currentPage === 'payableDocs' && <DocsPage kind="payable" finance={safeFinance} setFinance={updateFinance} />}
-        {currentPage === 'bankCash' && <BankCashPage finance={safeFinance} setFinance={updateFinance} />}
+        {currentPage === 'bankCash' && <ProfessionalBankCashPage finance={safeFinance} setFinance={updateFinance} />}
+        {currentPage === 'accounting' && <AccountingPage finance={safeFinance} setFinance={updateFinance} revision={workspaceStatus.revision} />}
         {currentPage === 'reports' && <ReportsPage finance={safeFinance} />}
         {currentPage === 'taxReports' && <TaxReportPage finance={safeFinance} />}
         {currentPage === 'credit' && <CreditPage finance={safeFinance} />}
         {currentPage === 'advisor' && <AdvisorPage finance={safeFinance} />}
         {currentPage === 'mobileApp' && <MobileAppPage />}
-        {currentPage === 'teamAccess' && <TeamAccessPage sessionProfile={sessionProfile} />}
       </main>
     </div>
   );
+}
+
+function paymentValidationError(payments, total, label) {
+  const active = (payments || []).map(p => ({ ...p, amount: Number(p.amount || 0) })).filter(p => p.amount > 0);
+  const settled = active.reduce((sum, p) => sum + p.amount, 0);
+  if (Math.abs(Number(total || 0) - settled) > Math.max(1, Number(total || 0) * 0.000001)) {
+    return `جمع روش‌های تسویه ${label} باید دقیقاً با مبلغ فاکتور برابر باشد.`;
+  }
+  for (const payment of active) {
+    if (payment.type === 'cash' && !payment.accountId) return `برای پرداخت نقدی ${label} بانک یا صندوق را انتخاب کنید.`;
+    if (payment.type === 'check' && (!String(payment.checkNo || '').trim() || !payment.dueDate)) return `شماره و تاریخ سررسید چک ${label} الزامی است.`;
+    if (payment.type === 'assign_receivable' && !payment.docId) return `چک دریافتی مورد واگذاری در ${label} انتخاب نشده است.`;
+  }
+  return '';
 }
 
 function MobileAppPage() {
@@ -1321,7 +1353,8 @@ function MobileAppPage() {
   const createPairing = async () => {
     setBusy(true); setError(''); setQrImage('');
     try {
-      const apiBase = new URL(API_BASE, LAN_ORIGIN).toString().replace(/\/$/, '')
+      const mobileOrigin = window.ERP_MOBILE_ORIGIN || window.location.origin;
+      const apiBase = new URL(API_BASE, mobileOrigin).toString().replace(/\/$/, '')
         .replace('textile.62-60-204-237.sslip.io', 'textile.62.60.204.237.nip.io');
       const result = await apiJSON('/mobile/pairing', { method: 'POST', body: { api_base: apiBase } });
       setPairing(result);
@@ -1336,9 +1369,19 @@ function MobileAppPage() {
       <Card>
         <h3 className="text-xl font-black">اتصال امن حسابیار</h3>
         <p className="mt-3 text-sm leading-7 text-slate-300">این کد تا ۳۰ دقیقه و فقط برای اتصال اولیه یک گوشی معتبر است. پس از اتصال، گوشی بدون اسکن مجدد به همین شرکت متصل می‌ماند.</p>
+        <a href={MOBILE_APP_DOWNLOAD_URL} className="mt-5 inline-flex items-center justify-center rounded-md border border-emerald-600 bg-emerald-950 px-4 py-3 text-sm font-bold text-emerald-100 hover:bg-emerald-900">
+          دانلود/به‌روزرسانی حسابیار 1.0.1-local
+        </a>
+        <a href={MOBILE_APP_DOWNLOAD_URL} target="_blank" rel="noreferrer" className="mr-3 mt-5 inline-flex items-center justify-center rounded-md border border-slate-500 bg-slate-800 px-4 py-3 text-sm font-bold text-slate-100 hover:bg-slate-700">
+          اگر دانلود نشد، فایل را مستقیم باز کنید
+        </a>
+        <p className="mt-3 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm leading-7 text-amber-100">
+          اگر در گوشی آدرس <span dir="ltr">cooler.62-60-204-237.sslip.io</span> دیده می‌شود، ابتدا نسخه بالا را روی برنامه فعلی نصب کنید؛ سپس از داخل حسابیار، «بیشتر ← همگام‌سازی آنلاین» را باز و QR جدید را اسکن کنید.
+        </p>
         <PrimaryButton className="mt-5" onClick={createPairing}>{busy ? 'در حال ساخت...' : 'ساخت QR اتصال گوشی'}</PrimaryButton>
         {error && <div className="mt-4"><ErrorBox message={error} /></div>}
         {pairing && <div className="mt-4 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm text-amber-100">اعتبار کد تا {new Date(pairing.expires_at).toLocaleTimeString('fa-IR')}</div>}
+        {pairing && <div className="mt-3 break-all rounded-md border border-emerald-800 bg-emerald-950 p-3 text-xs text-emerald-100">آدرس شبکه داخل QR: {window.ERP_MOBILE_ORIGIN || window.location.origin}</div>}
       </Card>
       <Card>
         {qrImage ? <div className="mx-auto max-w-sm rounded-2xl bg-white p-5"><img src={qrImage} alt="QR اتصال حسابیار" className="h-auto w-full" /></div> : <div className="flex min-h-72 items-center justify-center text-center text-slate-500">پس از ساخت کد، QR اتصال اینجا نمایش داده می‌شود.</div>}
@@ -1355,8 +1398,8 @@ function TeamAccessPage({ sessionProfile }) {
     password: '',
     accessRole: 'viewer',
     canManageTeam: false,
-    allowFinancial: true,
-    allowOperational: false,
+    allowFinancial: false,
+    allowOperational: true,
     trialDays: '30',
     notes: '',
   };
@@ -2735,7 +2778,7 @@ function YarnOutInvoicePage({ finance, setFinance }) {
 
   const [editingId, setEditingId] = useState('');
 
-  const [form, setForm] = useState({ date: today(), customer: '', itemName: '', quantity: '', unitPrice: '', amount: '', outMode: 'return_customer', stockType: 'amanat', source_type: 'manual', sourceId: '', description: '' });
+  const [form, setForm] = useState({ date: today(), customer: '', itemName: '', quantity: '', unitPrice: '', costUnitPrice: '', amount: '', outMode: 'return_customer', stockType: 'amanat', source_type: 'manual', sourceId: '', description: '' });
 
   const rows = finance.yarnOutInvoices || [];
 
@@ -2751,17 +2794,27 @@ function YarnOutInvoicePage({ finance, setFinance }) {
 
   const amount = mode.needsPrice ? (Number(form.amount || 0) || Number(form.quantity || 0) * Number(form.unitPrice || 0)) : 0;
 
-  const resetForm = () => { setEditingId(''); setForm({ date: today(), customer: '', itemName: '', quantity: '', unitPrice: '', amount: '', outMode: 'return_customer', stockType: 'amanat', source_type: 'manual', sourceId: '', description: '' }); };
+  const averageYarnCost = itemName => {
+    const receipts = (finance.ownedInventory || []).filter(x => x.kindCode === 'yarn' && x.itemName === itemName && Number(x.quantity || 0) > 0 && Number(x.amount || 0) > 0);
+    const quantity = receipts.reduce((sum, x) => sum + Number(x.quantity || 0), 0);
+    return quantity ? Math.round(receipts.reduce((sum, x) => sum + Number(x.amount || 0), 0) / quantity) : 0;
+  };
+
+  const shouldRecognizeYarnCost = mode.needsPrice && form.stockType !== 'amanat';
+
+  const costAmount = shouldRecognizeYarnCost ? Number(form.quantity || 0) * Number(form.costUnitPrice || 0) : 0;
+
+  const resetForm = () => { setEditingId(''); setForm({ date: today(), customer: '', itemName: '', quantity: '', unitPrice: '', costUnitPrice: '', amount: '', outMode: 'return_customer', stockType: 'amanat', source_type: 'manual', sourceId: '', description: '' }); };
 
   const selectOperational = row => {
 
     setEditingId('');
 
-    setForm({ date: today(), customer: row.customer_name || '', itemName: row.yarn_name || '', quantity: Math.abs(Number(row.weight || 0)) || '', unitPrice: '', amount: '', outMode: 'return_customer', stockType: 'amanat', source_type: 'operational_yarn_out', sourceId: row.id, description: `خروج نخ عملياتي | همبافت ${row.doc_no || '-'} | تاريخ ${row.date || '-'}` });
+    setForm({ date: today(), customer: row.customer_name || '', itemName: row.yarn_name || '', quantity: Math.abs(Number(row.weight || 0)) || '', unitPrice: '', costUnitPrice: '', amount: '', outMode: 'return_customer', stockType: 'amanat', source_type: 'operational_yarn_out', sourceId: row.id, description: `خروج نخ عملياتي | همبافت ${row.doc_no || '-'} | تاريخ ${row.date || '-'}` });
 
   };
 
-  const edit = row => { setEditingId(row.id); setForm({ date: row.date || today(), customer: row.customer || '', itemName: row.itemName || '', quantity: Math.abs(Number(row.quantity || 0)) || '', unitPrice: row.unitPrice || '', amount: row.amount || '', outMode: row.outMode || 'return_customer', stockType: row.stockType || 'amanat', source_type: row.source_type || 'manual', sourceId: row.sourceId || '', description: row.description || '' }); };
+  const edit = row => { setEditingId(row.id); setForm({ date: row.date || today(), customer: row.customer || '', itemName: row.itemName || '', quantity: Math.abs(Number(row.quantity || 0)) || '', unitPrice: row.unitPrice || '', costUnitPrice: row.costUnitPrice || '', amount: row.amount || '', outMode: row.outMode || 'return_customer', stockType: row.stockType || 'amanat', source_type: row.source_type || 'manual', sourceId: row.sourceId || '', description: row.description || '' }); };
 
   const remove = id => setFinance(prev => ({ ...prev, yarnOutInvoices: (prev.yarnOutInvoices || []).filter(x => x.id !== id), ownedInventory: (prev.ownedInventory || []).filter(x => x.sourceYarnOutInvoice !== id) }));
 
@@ -2775,7 +2828,9 @@ function YarnOutInvoicePage({ finance, setFinance }) {
 
     if (mode.needsPrice && !amount) return;
 
-    const invoice = { ...form, id: editingId || shortId('YOUT'), quantity, unitPrice: Number(form.unitPrice || 0), amount, outMode: form.outMode, outModeLabel: mode.label, stockTypeLabel: stockTypes.find(x => x.id === form.stockType)?.label || form.stockType };
+    if (shouldRecognizeYarnCost && !costAmount) { window.alert('برای خروج نخ ملکی، بهای تمام‌شده واحد الزامی است.'); return; }
+
+    const invoice = { ...form, id: editingId || shortId('YOUT'), quantity, unitPrice: Number(form.unitPrice || 0), costUnitPrice: Number(form.costUnitPrice || 0), costAmount, amount, outMode: form.outMode, outModeLabel: mode.label, stockTypeLabel: stockTypes.find(x => x.id === form.stockType)?.label || form.stockType };
 
     setFinance(prev => {
 
@@ -2785,7 +2840,7 @@ function YarnOutInvoicePage({ finance, setFinance }) {
 
       const ownedInventory = (prev.ownedInventory || []).filter(x => x.sourceYarnOutInvoice !== sourceId);
 
-      ownedInventory.unshift({ id: uid('yout-stock'), sourceYarnOutInvoice: sourceId, customer: invoice.customer, kindCode: 'yarn', kind: `خروج نخ - ${invoice.stockTypeLabel} - ${mode.label}`, itemName: invoice.itemName, quantity: -quantity, unitPrice: Number(invoice.unitPrice || 0), amount: -Number(invoice.amount || 0), date: invoice.date || today() });
+      ownedInventory.unshift({ id: uid('yout-stock'), sourceYarnOutInvoice: sourceId, customer: invoice.customer, kindCode: 'yarn', kind: `خروج نخ - ${invoice.stockTypeLabel} - ${mode.label}`, itemName: invoice.itemName, quantity: -quantity, unitPrice: Number(invoice.costUnitPrice || 0), amount: -Number(invoice.costAmount || 0), date: invoice.date || today() });
 
       return { ...prev, yarnOutInvoices, ownedInventory };
 
@@ -2811,7 +2866,7 @@ function YarnOutInvoicePage({ finance, setFinance }) {
 
       <div className="grid grid-cols-[2fr_0.7fr] gap-4">
 
-        <Card><h3 className="mb-4 font-bold">{L.title}</h3><form className="space-y-4" onSubmit={save}><div className="grid grid-cols-3 gap-3"><label className="text-sm text-slate-300"><span className="mb-2 block">{L.date}</span><DateInput className="w-full" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></label><SelectInput value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })}><option value="">{L.selectCustomer}</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><SelectInput value={form.itemName} onChange={e => setForm({ ...form, itemName: e.target.value })}><option value="">{L.selectYarn}</option>{yarns.map(y => <option key={y} value={y}>{y}</option>)}</SelectInput><SelectInput value={form.outMode} onChange={e => setForm({ ...form, outMode: e.target.value, unitPrice: '', amount: '' })}>{modes.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</SelectInput><SelectInput value={form.stockType} onChange={e => setForm({ ...form, stockType: e.target.value })}>{stockTypes.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}</SelectInput><TextInput type="number" placeholder={L.quantity} value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value, amount: '' })} />{mode.needsPrice && <><TextInput type="number" placeholder={L.unitPrice} value={form.unitPrice} onChange={e => setForm({ ...form, unitPrice: e.target.value, amount: '' })} /><TextInput type="number" placeholder={L.amount} value={amount || ''} onChange={e => setForm({ ...form, amount: e.target.value })} /></>}<TextInput className="col-span-3" placeholder={L.desc} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></div><div className={`rounded-md border p-3 text-sm ${mode.needsPrice ? 'border-amber-700 bg-amber-950 text-amber-100' : 'border-emerald-700 bg-emerald-950 text-emerald-100'}`}>{mode.needsPrice ? L.priceHelp : L.noPriceHelp}</div><div className="grid grid-cols-3 gap-3"><Field label="مقدار کسر از انبار" value={`${num(Math.abs(Number(form.quantity || 0)))} کيلو`} tone="text-red-300" /><Field label="نرخ واحد" value={mode.needsPrice ? money(form.unitPrice) : '-'} /><Field label="مبلغ" value={mode.needsPrice ? money(amount) + ' تومان' : 'بدون اثر ريالي'} /></div><PrimaryButton className="w-full" type="submit">{editingId ? L.editSave : L.save}</PrimaryButton>{editingId && <GhostButton onClick={resetForm}>{L.reset}</GhostButton>}</form></Card>
+        <Card><h3 className="mb-4 font-bold">{L.title}</h3><form className="space-y-4" onSubmit={save}><div className="grid grid-cols-3 gap-3"><label className="text-sm text-slate-300"><span className="mb-2 block">{L.date}</span><DateInput className="w-full" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></label><SelectInput value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })}><option value="">{L.selectCustomer}</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><SelectInput value={form.itemName} onChange={e => { const itemName = e.target.value; setForm({ ...form, itemName, costUnitPrice: averageYarnCost(itemName) || '' }); }}><option value="">{L.selectYarn}</option>{yarns.map(y => <option key={y} value={y}>{y}</option>)}</SelectInput><SelectInput value={form.outMode} onChange={e => setForm({ ...form, outMode: e.target.value, unitPrice: '', amount: '' })}>{modes.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</SelectInput><SelectInput value={form.stockType} onChange={e => setForm({ ...form, stockType: e.target.value, costUnitPrice: e.target.value === 'amanat' ? '' : (form.costUnitPrice || averageYarnCost(form.itemName) || '') })}>{stockTypes.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}</SelectInput><TextInput type="number" placeholder={L.quantity} value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value, amount: '' })} />{mode.needsPrice && <><TextInput type="number" placeholder={L.unitPrice} value={form.unitPrice} onChange={e => setForm({ ...form, unitPrice: e.target.value, amount: '' })} /><TextInput type="number" placeholder={L.amount} value={amount || ''} onChange={e => setForm({ ...form, amount: e.target.value })} />{form.stockType !== 'amanat' && <TextInput type="number" min="0" placeholder="بهای تمام‌شده واحد" value={form.costUnitPrice} onChange={e => setForm({ ...form, costUnitPrice: e.target.value })} />}</>}<TextInput className="col-span-3" placeholder={L.desc} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></div><div className={`rounded-md border p-3 text-sm ${mode.needsPrice ? 'border-amber-700 bg-amber-950 text-amber-100' : 'border-emerald-700 bg-emerald-950 text-emerald-100'}`}>{mode.needsPrice ? `${L.priceHelp}${shouldRecognizeYarnCost ? ' بهای تمام‌شده خروج نیز جداگانه در موجودی و هزینه فروش ثبت می‌شود.' : ''}` : L.noPriceHelp}</div><div className="grid grid-cols-4 gap-3"><Field label="مقدار کسر از انبار" value={`${num(Math.abs(Number(form.quantity || 0)))} کيلو`} tone="text-red-300" /><Field label="نرخ فروش/تهاتر" value={mode.needsPrice ? money(form.unitPrice) : '-'} /><Field label="مبلغ فروش/تهاتر" value={mode.needsPrice ? money(amount) + ' تومان' : 'بدون اثر ريالي'} /><Field label="بهای تمام‌شده خروج" value={shouldRecognizeYarnCost ? money(costAmount) + ' تومان' : '-'} tone="text-amber-300" /></div><PrimaryButton className="w-full" type="submit">{editingId ? L.editSave : L.save}</PrimaryButton>{editingId && <GhostButton onClick={resetForm}>{L.reset}</GhostButton>}</form></Card>
 
         <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">{L.pending}</h3><span className="text-xs text-slate-400">{loading ? 'در حال دريافت...' : num(pendingYarnOut.length) + ' مورد'}</span></div>{error && <ErrorBox message={error} />}<div className="max-h-[620px] space-y-2 overflow-auto">{pendingYarnOut.length ? pendingYarnOut.map(row => <button key={row.id} type="button" className="w-full rounded-md border border-slate-700 bg-slate-900 p-3 text-right text-sm hover:border-amber-500" onClick={() => selectOperational(row)}><div className="flex items-center justify-between gap-2"><span className="font-bold text-amber-200">{row.yarn_name || '-'}</span><span className="rounded-full bg-slate-950 px-2 py-1 text-xs text-amber-200">{num(row.weight)} کيلو</span></div><div className="mt-1 text-xs text-slate-400">{row.customer_name || '-'} | {row.doc_no || '-'}</div><div className="mt-1 text-xs text-slate-500">{toJalali(row.date)}</div></button>) : <EmptyState />}</div></Card>
 
@@ -2845,7 +2900,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
   const [payments, setPayments] = useState([newPaymentLine('credit')]);
 
-  const [form, setForm] = useState({ date: today(), customer: '', inventoryType: 'yarn', itemName: '', quantity: '', unitPrice: '', amount: '', source_type: 'manual', sourceId: '', description: '', nonFinancial: false });
+  const [form, setForm] = useState({ date: today(), customer: '', inventoryType: 'yarn', itemName: '', quantity: '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'manual', sourceId: '', description: '', nonFinancial: false });
 
   const customers = [...new Set([
     ...data.customers.map(x => x.name),
@@ -2884,9 +2939,15 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
     ? pendingOperationalAll.filter(x => x.pendingType === 'operational_chelle_in')
     : pendingOperationalAll.filter(x => x.pendingType !== 'operational_chelle_in');
 
-  const sourceItems = form.inventoryType === 'yarn' ? data.yarn : form.inventoryType === 'fabric' ? data.kala : [];
+  const sourceItems = form.inventoryType === 'yarn' ? data.yarn : form.inventoryType === 'fabric' ? data.kala : form.inventoryType === 'spare_part' ? data.spareParts.map(x => ({ id: x.id, name: x.part_name || x.part_number })) : [];
 
-  const amount = Number(form.amount || 0) || (Number(form.quantity || 0) * Number(form.unitPrice || 0));
+  const subtotal = Number(form.subtotal || 0) || (Number(form.quantity || 0) * Number(form.unitPrice || 0));
+
+  const taxRate = form.taxable && !form.nonFinancial ? Number(form.taxRate || finance.accountingSettings?.defaultVatRate || 0) : 0;
+
+  const taxAmount = Math.round(subtotal * taxRate / 100);
+
+  const amount = subtotal + taxAmount;
 
   const paid = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
 
@@ -2902,7 +2963,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
     setPayments([newPaymentLine('credit')]);
 
-    setForm({ date: today(), customer: '', inventoryType: 'yarn', itemName: '', quantity: '', unitPrice: '', amount: '', source_type: 'manual', sourceId: '', description: '', nonFinancial: false });
+    setForm({ date: today(), customer: '', inventoryType: 'yarn', itemName: '', quantity: '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'manual', sourceId: '', description: '', nonFinancial: false });
 
   };
 
@@ -2914,7 +2975,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
     if (row.pendingType === 'operational_yarn_in' || row.type === 'incoming') {
 
-      setForm({ date: today(), customer: row.customer_name || '', inventoryType: 'yarn', itemName: row.yarn_name || '', quantity: Math.abs(Number(row.weight || 0)) || '', unitPrice: '', amount: '', source_type: 'operational_yarn_in', sourceId: row.id, description: `ورود نخ عملياتي | همبافت ${row.doc_no || '-'} | تاريخ ${row.date || '-'}`, nonFinancial: false });
+      setForm({ date: today(), customer: row.customer_name || '', inventoryType: 'yarn', itemName: row.yarn_name || '', quantity: Math.abs(Number(row.weight || 0)) || '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'operational_yarn_in', sourceId: row.id, description: `ورود نخ عملياتي | همبافت ${row.doc_no || '-'} | تاريخ ${row.date || '-'}`, nonFinancial: false });
 
       return;
 
@@ -2922,7 +2983,15 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
     if (row.pendingType === 'operational_chelle_in') {
 
-      setForm({ date: today(), customer: row.warper || row.customer_name || '', inventoryType: 'yarn', itemName: row.yarn_name || row.hambaft || '', quantity: Math.abs(Number(row.weight || 0)) || '', unitPrice: '', amount: '', source_type: 'operational_chelle_in', sourceId: row.id, description: `ورود چله عملياتي | شماره ${row.doc_no || '-'} | چله پیچ ${row.warper || '-'} | صاحب نخ ${row.customer_name || '-'} | همبافت ${row.hambaft || '-'} | تاريخ ${row.date || '-'}`, nonFinancial: false });
+      setForm({ date: today(), customer: row.warper || row.customer_name || '', inventoryType: 'yarn', itemName: row.yarn_name || row.hambaft || '', quantity: Math.abs(Number(row.weight || 0)) || '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'operational_chelle_in', sourceId: row.id, description: `ورود چله عملياتي | شماره ${row.doc_no || '-'} | چله پیچ ${row.warper || '-'} | صاحب نخ ${row.customer_name || '-'} | همبافت ${row.hambaft || '-'} | تاريخ ${row.date || '-'}`, nonFinancial: false });
+
+      return;
+
+    }
+
+    if (row.pendingType === 'operational_spare_part') {
+
+      setForm({ date: today(), customer: row.vendor_name || 'تأمین‌کننده قطعات', inventoryType: 'spare_part', itemName: row.part_name || row.part_number || '', quantity: Math.abs(Number(row.quantity || 0)) || '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'operational_spare_part', sourceId: row.id, description: `ورود قطعه عملیاتی | شماره قطعه ${row.part_number || '-'} | وضعیت ${row.condition_status || '-'} | تاریخ ${row.date || '-'}`, nonFinancial: false });
 
       return;
 
@@ -2938,7 +3007,11 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
     const cleanPayments = form.nonFinancial ? [] : payments.map(p => ({ ...p, amount: Number(p.amount || 0), quantity: Number(p.quantity || 0), unitPrice: Number(p.unitPrice || 0) })).filter(p => p.amount > 0);
 
-    const invoice = { ...form, id: editingId || shortId('IN'), amount, quantity: Number(form.quantity || 0), unitPrice: Number(form.unitPrice || 0), payments: cleanPayments, nonFinancial: !!form.nonFinancial };
+    const validationError = form.nonFinancial ? '' : paymentValidationError(cleanPayments, amount, 'فاکتور ورود');
+
+    if (validationError) { window.alert(validationError); return; }
+
+    const invoice = { ...form, id: editingId || shortId('IN'), subtotal, taxAmount: form.nonFinancial ? 0 : taxAmount, taxRate: form.nonFinancial ? 0 : taxRate, taxable: !form.nonFinancial && !!form.taxable, amount, quantity: Number(form.quantity || 0), unitPrice: Number(form.unitPrice || 0), payments: cleanPayments, nonFinancial: !!form.nonFinancial };
 
     setFinance(prev => {
 
@@ -2952,7 +3025,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
       let ownedInventory = (prev.ownedInventory || []).filter(x => x.sourceIncomingInvoice !== sourceId);
 
-      if (invoice.inventoryType === 'yarn' || invoice.inventoryType === 'fabric') {
+      if (invoice.inventoryType === 'yarn' || invoice.inventoryType === 'fabric' || invoice.inventoryType === 'spare_part') {
 
         ownedInventory.unshift({
 
@@ -2962,9 +3035,9 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
           customer: invoice.customer,
 
-          kindCode: invoice.inventoryType === 'yarn' ? 'yarn' : 'fabric',
+          kindCode: invoice.inventoryType === 'yarn' ? 'yarn' : invoice.inventoryType === 'fabric' ? 'fabric' : 'spare_part',
 
-          kind: invoice.inventoryType === 'yarn' ? 'ورود نخ از فاکتور ورود' : 'ورود پارچه از فاکتور ورود',
+          kind: invoice.inventoryType === 'yarn' ? 'ورود نخ از فاکتور ورود' : invoice.inventoryType === 'fabric' ? 'ورود پارچه از فاکتور ورود' : 'ورود قطعه از انبار عملیاتی',
 
           itemName: invoice.itemName,
 
@@ -2972,7 +3045,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
           unitPrice: Number(invoice.unitPrice || 0),
 
-          amount: Number(invoice.amount || 0),
+          amount: Number(invoice.subtotal || invoice.amount || 0),
 
           date: invoice.date || today(),
 
@@ -3004,7 +3077,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
     setPayments((row.payments || [newPaymentLine('credit')]).map(p => ({ ...newPaymentLine(p.type), ...p, id: uid('pay') })));
 
-    setForm({ date: row.date || today(), customer: row.customer || '', inventoryType: row.inventoryType || 'yarn', itemName: row.itemName || '', quantity: row.quantity || '', unitPrice: row.unitPrice || '', amount: row.amount || '', source_type: row.source_type || 'manual', sourceId: row.sourceId || '', description: row.description || '', nonFinancial: !!row.nonFinancial });
+    setForm({ date: row.date || today(), customer: row.customer || '', inventoryType: row.inventoryType || 'yarn', itemName: row.itemName || '', quantity: row.quantity || '', unitPrice: row.unitPrice || '', subtotal: row.subtotal ?? Math.max(0, Number(row.amount || 0) - Number(row.taxAmount || 0)), taxable: !!row.taxable, taxRate: row.taxRate || '', source_type: row.source_type || 'manual', sourceId: row.sourceId || '', description: row.description || '', nonFinancial: !!row.nonFinancial });
 
   };
 
@@ -3012,9 +3085,9 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
   const printIncoming = () => {
 
-    const body = rows.map(x => '<tr><td>' + (toJalali(x.date) || '') + '</td><td>' + (x.customer || '') + '</td><td>' + (x.itemName || '') + '</td><td>' + money(x.amount) + '</td><td>' + (x.payments || []).map(p => p.type).join(', ') + '</td></tr>').join('');
+    const body = rows.map(x => '<tr><td>' + (toJalali(x.date) || '') + '</td><td>' + (x.customer || '') + '</td><td>' + (x.itemName || '') + '</td><td>' + money(x.subtotal ?? (Number(x.amount || 0) - Number(x.taxAmount || 0))) + '</td><td>' + money(x.taxAmount || 0) + '</td><td>' + money(x.amount) + '</td><td>' + (x.payments || []).map(p => p.type).join(', ') + '</td></tr>').join('');
 
-    printSection('گزارش فاکتور ورود', '<table><thead><tr><th>تاريخ</th><th>شخص</th><th>کالا/قطعه</th><th>مبلغ</th><th>تسويه</th></tr></thead><tbody>' + body + '</tbody></table>');
+    printSection('گزارش فاکتور ورود', '<table><thead><tr><th>تاريخ</th><th>شخص</th><th>کالا/قطعه</th><th>قبل مالیات</th><th>مالیات</th><th>جمع</th><th>تسويه</th></tr></thead><tbody>' + body + '</tbody></table>');
 
   };
 
@@ -3026,7 +3099,31 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
       <div className="grid grid-cols-[2fr_0.65fr] gap-4">
 
-        <Card><h3 className="mb-4 font-bold">{onlySource === 'chelle' ? 'ثبت فاکتور ورود چله و تسویه' : 'ثبت فاکتور ورود و تسويه'}</h3><form className="space-y-4" onSubmit={save}><div className="grid grid-cols-3 gap-3"><label className="text-sm text-slate-300"><span className="mb-2 block">تاريخ کمکي</span><DateInput className="w-full" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></label><SelectInput value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })}><option value="">انتخاب مشتري/شخص</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><SelectInput value={form.inventoryType} onChange={e => setForm({ ...form, inventoryType: e.target.value, itemName: '' })}><option value="yarn">نخ</option><option value="fabric">پارچه</option><option value="other">ساير</option></SelectInput>{form.inventoryType === 'other' ? <TextInput placeholder="شرح ساير" value={form.itemName} onChange={e => setForm({ ...form, itemName: e.target.value })} /> : <SelectInput value={form.itemName} onChange={e => setForm({ ...form, itemName: e.target.value })}><option value="">انتخاب نوع</option>{sourceItems.map(x => <option key={x.id || x.name} value={x.name}>{x.name}</option>)}</SelectInput>}<TextInput type="number" placeholder="مقدار" value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value, amount: '' })} /><TextInput type="number" placeholder="نرخ واحد" value={form.unitPrice} onChange={e => setForm({ ...form, unitPrice: e.target.value, amount: '' })} /><TextInput type="number" placeholder="مبلغ نهایی" value={amount || ''} onChange={e => setForm({ ...form, amount: e.target.value })} /><TextInput className="col-span-2" placeholder="شرح" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /><label className="col-span-3 flex items-center gap-3 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm text-amber-100"><input type="checkbox" checked={!!form.nonFinancial} onChange={e => setForm({ ...form, nonFinancial: e.target.checked })} /><span>نخ/کالاي اماني کارمزدي؛ مبلغ فقط براي ارزش کالايي و اعتبارسنجي ثبت شود و در صورتحساب ريالي مشتري اثر نگذارد.</span></label></div>{form.nonFinancial ? <div className="rounded-md border border-emerald-700 bg-emerald-950 p-4 text-sm text-emerald-100">اين فاکتور بدون اثر ريالي ثبت مي‌شود؛ چک، نقد، بدهکاري يا بستانکاري براي مشتري ايجاد نمي‌شود، اما مقدار و ارزش کالا در حساب کالايي و اعتبارسنجي لحاظ مي‌شود.</div> : <div className="rounded-md border border-slate-700 bg-slate-900 p-4"><div className="mb-3 flex items-center justify-between"><h4 className="font-bold">رديف هاي تسويه فاکتور ورود</h4><PrimaryButton onClick={() => setPayments(prev => [...prev, newPaymentLine('credit')])}>افزودن رديف</PrimaryButton></div><div className="space-y-3">{payments.map(p => <IncomingPaymentLine key={p.id} payment={p} accounts={finance.accounts} receivableDocs={openReceivableDocs} onChange={patch => updatePayment(p.id, patch)} onRemove={() => removePayment(p.id)} />)}</div></div>}<div className="grid grid-cols-3 gap-3"><Field label="مبلغ ارزش‌گذاری" value={money(amount) + ' تومان'} /><Field label="جمع تسويه" value={money(form.nonFinancial ? 0 : paid) + ' تومان'} tone={form.nonFinancial || paid === amount ? 'text-emerald-300' : 'text-amber-300'} /><Field label={form.nonFinancial ? 'اثر ريالي' : 'مانده'} value={form.nonFinancial ? 'بدون اثر در صورتحساب' : money(amount - paid) + ' تومان'} tone={form.nonFinancial || amount - paid === 0 ? 'text-emerald-300' : 'text-red-300'} /></div><PrimaryButton className="w-full" type="submit">{onlySource === 'chelle' ? 'ثبت فاکتور ورود چله و اعمال مالی' : 'ثبت فاکتور ورود و اعمال مالي'}</PrimaryButton></form></Card>
+        <Card>
+          <h3 className="mb-4 font-bold">{onlySource === 'chelle' ? 'ثبت فاکتور ورود چله و تسویه' : 'ثبت فاکتور ورود و تسويه'}</h3>
+          <form className="space-y-4" onSubmit={save}>
+            <div className="grid grid-cols-3 gap-3">
+              <label className="text-sm text-slate-300"><span className="mb-2 block">تاريخ کمکي</span><DateInput className="w-full" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></label>
+              <SelectInput value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })}><option value="">انتخاب مشتري/شخص</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput>
+              <SelectInput value={form.inventoryType} onChange={e => setForm({ ...form, inventoryType: e.target.value, itemName: '' })}><option value="yarn">نخ</option><option value="fabric">پارچه</option><option value="spare_part">قطعه یدکی</option><option value="other">ساير</option></SelectInput>
+              {form.inventoryType === 'other'
+                ? <TextInput placeholder="شرح ساير" value={form.itemName} onChange={e => setForm({ ...form, itemName: e.target.value })} />
+                : <SelectInput value={form.itemName} onChange={e => setForm({ ...form, itemName: e.target.value })}><option value="">انتخاب نوع</option>{form.itemName && !sourceItems.some(x => x.name === form.itemName) && <option value={form.itemName}>{form.itemName}</option>}{sourceItems.map(x => <option key={x.id || x.name} value={x.name}>{x.name}</option>)}</SelectInput>}
+              <TextInput type="number" placeholder="مقدار" value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value, subtotal: '' })} />
+              <TextInput type="number" placeholder="نرخ واحد" value={form.unitPrice} onChange={e => setForm({ ...form, unitPrice: e.target.value, subtotal: '' })} />
+              <TextInput type="number" placeholder="مبلغ قبل از مالیات" value={subtotal || ''} onChange={e => setForm({ ...form, subtotal: e.target.value })} />
+              <TextInput className="col-span-2" placeholder="شرح" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
+              <TextInput type="number" min="0" max="100" placeholder="نرخ مالیات (درصد)" value={form.taxRate || finance.accountingSettings?.defaultVatRate || ''} disabled={!form.taxable || form.nonFinancial} onChange={e => setForm({ ...form, taxRate: e.target.value })} />
+              <label className="col-span-3 flex items-center gap-3 rounded-md border border-blue-700 bg-blue-950 p-3 text-sm text-blue-100"><input type="checkbox" disabled={form.nonFinancial} checked={!!form.taxable && !form.nonFinancial} onChange={e => setForm({ ...form, taxable: e.target.checked })} /><span>خرید مشمول مالیات بر ارزش افزوده است؛ مبلغ {money(taxAmount)} تومان به اعتبار مالیاتی خرید ثبت می‌شود.</span></label>
+              <label className="col-span-3 flex items-center gap-3 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm text-amber-100"><input type="checkbox" checked={!!form.nonFinancial} onChange={e => setForm({ ...form, nonFinancial: e.target.checked, taxable: e.target.checked ? false : form.taxable })} /><span>نخ/کالاي اماني کارمزدي؛ مبلغ فقط براي ارزش کالايي و اعتبارسنجي ثبت شود و در صورتحساب ريالي مشتري اثر نگذارد.</span></label>
+            </div>
+            {form.nonFinancial
+              ? <div className="rounded-md border border-emerald-700 bg-emerald-950 p-4 text-sm text-emerald-100">اين فاکتور بدون اثر ريالي ثبت مي‌شود؛ چک، نقد، بدهکاري يا بستانکاري براي مشتري ايجاد نمي‌شود، اما مقدار و ارزش کالا در حساب کالايي و اعتبارسنجي لحاظ مي‌شود.</div>
+              : <div className="rounded-md border border-slate-700 bg-slate-900 p-4"><div className="mb-3 flex items-center justify-between"><h4 className="font-bold">رديف هاي تسويه فاکتور ورود</h4><PrimaryButton onClick={() => setPayments(prev => [...prev, newPaymentLine('credit')])}>افزودن رديف</PrimaryButton></div><div className="space-y-3">{payments.map(p => <IncomingPaymentLine key={p.id} payment={p} accounts={finance.accounts} receivableDocs={openReceivableDocs} onChange={patch => updatePayment(p.id, patch)} onRemove={() => removePayment(p.id)} />)}</div></div>}
+            <div className="grid grid-cols-5 gap-3"><Field label="مبلغ قبل مالیات" value={money(subtotal) + ' تومان'} /><Field label="مالیات/عوارض" value={money(form.nonFinancial ? 0 : taxAmount) + ' تومان'} tone="text-blue-300" /><Field label="جمع فاکتور" value={money(form.nonFinancial ? subtotal : amount) + ' تومان'} /><Field label="جمع تسويه" value={money(form.nonFinancial ? 0 : paid) + ' تومان'} tone={form.nonFinancial || paid === amount ? 'text-emerald-300' : 'text-amber-300'} /><Field label={form.nonFinancial ? 'اثر ريالي' : 'مانده'} value={form.nonFinancial ? 'بدون اثر در صورتحساب' : money(amount - paid) + ' تومان'} tone={form.nonFinancial || amount - paid === 0 ? 'text-emerald-300' : 'text-red-300'} /></div>
+            <PrimaryButton className="w-full" type="submit">{onlySource === 'chelle' ? 'ثبت فاکتور ورود چله و اعمال مالی' : 'ثبت فاکتور ورود و اعمال مالي'}</PrimaryButton>
+          </form>
+        </Card>
 
         <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">عمليات در انتظار تعيين تکليف</h3><span className="text-xs text-slate-400">{loading ? 'در حال دريافت...' : num(pendingOperational.length) + ' مورد'}</span></div>{error && <ErrorBox message={error} />}<div className="max-h-[620px] space-y-2 overflow-auto">{pendingOperational.length ? pendingOperational.map(row => <button key={`${row.pendingType}-${row.id}`} type="button" className="w-full rounded-md border border-slate-700 bg-slate-900 p-3 text-right text-sm hover:border-blue-500" onClick={() => selectOperational(row)}><div className="flex items-center justify-between gap-2"><span className="font-bold text-blue-200">{row.actionLabel}: {row.title || '-'}</span><span className="rounded-full bg-slate-950 px-2 py-1 text-xs text-amber-200">{row.quantityLabel}</span></div><div className="mt-1 text-xs text-slate-400">{row.subtitle}</div><div className="mt-1 text-xs text-slate-500">تاريخ: {row.date || '-'}</div></button>) : <EmptyState />}</div></Card>
 
@@ -3058,11 +3155,15 @@ function InvoicePage({ finance, setFinance }) {
 
   const [unitPrice, setUnitPrice] = useState(250000);
 
+  const [costUnitPrice, setCostUnitPrice] = useState(0);
+
   const [termCashPercent, setTermCashPercent] = useState(30);
 
   const [termCheckPercent, setTermCheckPercent] = useState(70);
 
   const [termCheckMonths, setTermCheckMonths] = useState(3);
+
+  const [taxable, setTaxable] = useState(false);
 
   const [payments, setPayments] = useState([newPaymentLine('credit')]);
 
@@ -3088,7 +3189,15 @@ function InvoicePage({ finance, setFinance }) {
 
   const quantity = basis === 'weight' ? selected?.w_salon : selected?.metr_salon;
 
-  const total = Number(quantity || 0) * Number(unitPrice || 0);
+  const subtotal = Number(quantity || 0) * Number(unitPrice || 0);
+
+  const taxRate = taxable ? Number(finance.accountingSettings?.defaultVatRate || 0) : 0;
+
+  const taxAmount = Math.round(subtotal * taxRate / 100);
+
+  const costAmount = pricingMode === 'sale' ? Number(quantity || 0) * Number(costUnitPrice || 0) : 0;
+
+  const total = subtotal + taxAmount;
 
   const paid = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
 
@@ -3134,11 +3243,15 @@ function InvoicePage({ finance, setFinance }) {
 
     setUnitPrice(invoice.unitPrice || 0);
 
+    setCostUnitPrice(invoice.costUnitPrice || 0);
+
     setTermCashPercent(invoice.paymentTerms?.cashPercent ?? 30);
 
     setTermCheckPercent(invoice.paymentTerms?.checkPercent ?? 70);
 
     setTermCheckMonths(invoice.paymentTerms?.checkMonths ?? 3);
+
+    setTaxable(Boolean(invoice.taxable));
 
     setPayments((invoice.payments || []).map(p => ({ ...newPaymentLine(p.type), ...p, id: uid('pay') }))); 
 
@@ -3155,6 +3268,10 @@ function InvoicePage({ finance, setFinance }) {
       .map(p => ({ ...p, amount: Number(p.amount || 0), quantity: Number(p.quantity || 0), unitPrice: Number(p.unitPrice || 0) }))
 
       .filter(p => p.amount > 0);
+
+    const validationError = paymentValidationError(cleanPayments, total, 'فاکتور فروش');
+
+    if (validationError) { window.alert(validationError); return; }
 
     const invoice = {
 
@@ -3180,7 +3297,19 @@ function InvoicePage({ finance, setFinance }) {
 
       unitPrice: Number(unitPrice || 0),
 
+      costUnitPrice: Number(costUnitPrice || 0),
+
+      costAmount,
+
       total,
+
+      subtotal,
+
+      taxable,
+
+      taxRate,
+
+      taxAmount,
 
       payments: cleanPayments,
 
@@ -3278,6 +3407,10 @@ function InvoicePage({ finance, setFinance }) {
 
     setTermCheckMonths(3);
 
+    setCostUnitPrice(0);
+
+    setTaxable(false);
+
     setPayments([newPaymentLine('credit')]);
 
   };
@@ -3350,6 +3483,8 @@ function InvoicePage({ finance, setFinance }) {
 
               <label className="text-sm text-slate-300">نرخ واحد<TextInput className="mt-2 w-full" type="number" value={unitPrice} onChange={e => setUnitPrice(e.target.value)} /></label>
 
+              {pricingMode === 'sale' && <label className="text-sm text-slate-300">بهای تمام‌شده واحد<TextInput className="mt-2 w-full" type="number" min="0" value={costUnitPrice} onChange={e => setCostUnitPrice(e.target.value)} /></label>}
+
               <label className="text-sm text-slate-300">درصد نقد<TextInput className="mt-2 w-full" type="number" min="0" max="100" value={termCashPercent} onChange={e => { const v = Number(e.target.value || 0); setTermCashPercent(v); setTermCheckPercent(Math.max(0, 100 - v)); }} /></label>
 
               <label className="text-sm text-slate-300">درصد چک<TextInput className="mt-2 w-full" type="number" min="0" max="100" value={termCheckPercent} onChange={e => setTermCheckPercent(Number(e.target.value || 0))} /></label>
@@ -3357,6 +3492,8 @@ function InvoicePage({ finance, setFinance }) {
               <label className="text-sm text-slate-300">چک چند ماهه<TextInput className="mt-2 w-full" type="number" min="0" value={termCheckMonths} onChange={e => setTermCheckMonths(Number(e.target.value || 0))} /></label>
 
             </div>
+
+            <label className="flex items-center gap-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-sm"><input type="checkbox" checked={taxable} onChange={e => setTaxable(e.target.checked)} /><span>این فاکتور مشمول مالیات است؛ نرخ {num(finance.accountingSettings?.defaultVatRate || 0)}٪ و مبلغ مالیات {money(taxAmount)} تومان</span></label>
 
 
 
@@ -3882,15 +4019,22 @@ function DocsPage({ kind, finance, setFinance }) {
 
     if (!form.customer || !Number(form.amount || 0)) return;
 
+    if (!String(form.checkNo || '').trim() || !form.dueDate || !String(form.bank || '').trim()) { window.alert('شماره چک، بانک و تاریخ سررسید الزامی است.'); return; }
+
     if (!isReceivable && form.checkNo && !matchingCheckbook) { alert('شماره چک در محدوده دسته چک تعريف شده براي اين بانک نيست.'); return; }
 
-    setFinance(prev => ({ ...prev, [key]: [{ id: uid(isReceivable ? 'rch' : 'pch'), ...form, checkbookId: matchingCheckbook?.id || '', amount: Number(form.amount) }, ...(prev[key] || [])] }));
+    setFinance(prev => ({ ...prev, [key]: [{ id: uid(isReceivable ? 'rch' : 'pch'), ...form, receivedAt: isReceivable ? today() : '', issuedAt: isReceivable ? '' : today(), checkbookId: matchingCheckbook?.id || '', amount: Number(form.amount) }, ...(prev[key] || [])] }));
 
     setForm({ customer: '', amount: '', checkNo: '', dueDate: today(), dueJalali: '', bank: '', status: 'open' });
 
   };
 
-  const setStatus = (id, status) => setFinance(prev => ({ ...prev, [key]: prev[key].map(x => x.id === id ? { ...x, status } : x) }));
+  const setStatus = (id, status) => {
+    const isClosed = status === 'cleared' || status === 'paid';
+    const clearingAccountId = finance.accounts.find(account => account.type === 'بانک')?.id || finance.accounts[0]?.id || '';
+    if (isClosed && !clearingAccountId) { window.alert('ابتدا در بانک و صندوق یک حساب تعریف کنید.'); return; }
+    setFinance(prev => ({ ...prev, [key]: prev[key].map(x => x.id === id ? { ...x, status, clearingAccountId: isClosed ? clearingAccountId : x.clearingAccountId, ...(status === 'cleared' ? { clearedAt: today() } : {}), ...(status === 'paid' ? { paidAt: today() } : {}) } : x) }));
+  };
 
   const remove = id => setFinance(prev => ({ ...prev, [key]: prev[key].filter(x => x.id !== id) }));
 
@@ -3952,7 +4096,7 @@ function BankCashPage({ finance, setFinance }) {
 
   const [account, setAccount] = useState({ name: '', type: 'بانک', opening: 0 });
 
-  const [movement, setMovement] = useState({ accountId: finance.accounts[0]?.id || '', date: today(), direction: 'in', amount: '', payer: '', trackingNo: '', description: '' });
+  const [movement, setMovement] = useState({ accountId: finance.accounts[0]?.id || '', counterAccountId: '', date: today(), direction: 'in', transactionType: 'customer_receipt', amount: '', payer: '', trackingNo: '', description: '' });
 
   const [filters, setFilters] = useState({ accountId: 'all', payer: 'all', direction: 'all' });
 
@@ -3964,7 +4108,14 @@ function BankCashPage({ finance, setFinance }) {
 
   const addAccount = e => { e.preventDefault(); if (!account.name) return; setFinance(prev => ({ ...prev, accounts: [{ id: uid('acc'), ...account, opening: Number(account.opening || 0) }, ...prev.accounts] })); setAccount({ name: '', type: 'بانک', opening: 0 }); };
 
-  const addMovement = e => { e.preventDefault(); if (!movement.accountId || !Number(movement.amount || 0)) return; setFinance(prev => ({ ...prev, movements: [{ id: uid('mov'), ...movement, amount: Number(movement.amount) }, ...prev.movements] })); setMovement({ ...movement, amount: '', payer: '', trackingNo: '', description: '' }); };
+  const addMovement = e => {
+    e.preventDefault();
+    if (!movement.accountId || !Number(movement.amount || 0)) return;
+    if ((movement.transactionType === 'customer_receipt' || movement.transactionType === 'supplier_payment') && !movement.payer) { window.alert('طرف حساب را انتخاب کنید.'); return; }
+    if (movement.transactionType === 'transfer' && (!movement.counterAccountId || movement.counterAccountId === movement.accountId)) { window.alert('برای انتقال، حساب مقصد متفاوت را انتخاب کنید.'); return; }
+    setFinance(prev => ({ ...prev, movements: [{ id: uid('mov'), ...movement, amount: Number(movement.amount) }, ...prev.movements] }));
+    setMovement({ ...movement, amount: '', payer: '', trackingNo: '', description: '' });
+  };
 
   const printMovements = () => { const body = filteredRows.map(m => '<tr><td>' + (toJalali(m.date) || '') + '</td><td>' + m.account + '</td><td>' + m.payer + '</td><td>' + m.directionLabel + '</td><td>' + money(m.amount) + '</td><td>' + (m.trackingNo || '') + '</td><td>' + (m.description || '') + '</td></tr>').join(''); printSection('گزارش گردش بانک و صندوق', '<table><thead><tr><th>تاريخ</th><th>حساب</th><th>پرداخت کننده</th><th>نوع گردش</th><th>مبلغ</th><th>شماره رهگيري</th><th>شرح</th></tr></thead><tbody>' + body + '</tbody></table>'); };
 
@@ -3991,6 +4142,106 @@ function BankCashPage({ finance, setFinance }) {
 }
 
 
+
+function ProfessionalBankCashPage({ finance, setFinance }) {
+  const { data } = useOperationalData();
+  const [account, setAccount] = useState({ name: '', type: 'بانک', opening: 0 });
+  const [movement, setMovement] = useState({ accountId: finance.accounts[0]?.id || '', counterAccountId: '', date: today(), direction: 'in', transactionType: 'customer_receipt', amount: '', payer: '', trackingNo: '', description: '' });
+  const [filters, setFilters] = useState({ accountId: 'all', reconciled: 'all' });
+  const customers = [...new Set([...data.customers.map(x => x.name), ...finance.invoices.map(x => x.customer), ...finance.incomingInvoices.map(x => x.customer), ...(finance.yarnOutInvoices || []).map(x => x.customer), ...(finance.openingBalances || []).map(x => x.customer)].filter(Boolean))];
+
+  const addAccount = e => {
+    e.preventDefault();
+    if (!account.name.trim()) return;
+    setFinance(prev => ({ ...prev, accounts: [{ id: uid('acc'), ...account, opening: Number(account.opening || 0) }, ...prev.accounts] }));
+    setAccount({ name: '', type: 'بانک', opening: 0 });
+  };
+
+  const addMovement = e => {
+    e.preventDefault();
+    if (!movement.accountId || !Number(movement.amount || 0)) return;
+    if (['customer_receipt', 'supplier_payment'].includes(movement.transactionType) && !movement.payer) { window.alert('طرف حساب را انتخاب کنید.'); return; }
+    if (movement.transactionType === 'transfer' && (!movement.counterAccountId || movement.counterAccountId === movement.accountId)) { window.alert('حساب مقصد انتقال باید انتخاب و با حساب مبدأ متفاوت باشد.'); return; }
+    setFinance(prev => ({ ...prev, movements: [{ id: uid('mov'), ...movement, amount: Number(movement.amount), reconciled: false }, ...prev.movements] }));
+    setMovement(prev => ({ ...prev, amount: '', payer: '', trackingNo: '', description: '', counterAccountId: '' }));
+  };
+
+  const setReconciled = id => setFinance(prev => ({ ...prev, movements: prev.movements.map(row => row.id === id ? { ...row, reconciled: !row.reconciled, reconciledAt: !row.reconciled ? today() : '' } : row) }));
+  const rows = finance.movements
+    .map(row => ({ ...row, accountName: finance.accounts.find(a => a.id === row.accountId)?.name || '-', counterAccountName: finance.accounts.find(a => a.id === row.counterAccountId)?.name || '-' }))
+    .filter(row => (filters.accountId === 'all' || row.accountId === filters.accountId) && (filters.reconciled === 'all' || String(Boolean(row.reconciled)) === filters.reconciled));
+  const typeLabels = { customer_receipt: 'دریافت از مشتری', supplier_payment: 'پرداخت به فروشنده', transfer: 'انتقال بین حساب‌ها', expense: 'پرداخت هزینه', other_income: 'سایر درآمد', capital: 'آورده/برداشت سرمایه' };
+  const changeType = transactionType => setMovement(prev => ({ ...prev, transactionType, direction: ['supplier_payment', 'expense'].includes(transactionType) ? 'out' : 'in', payer: '', counterAccountId: '' }));
+  const printMovements = () => printSection('صورت گردش بانک و صندوق', `<table><thead><tr><th>تاریخ</th><th>حساب</th><th>ماهیت</th><th>طرف حساب</th><th>مبلغ</th><th>رهگیری</th><th>تطبیق</th></tr></thead><tbody>${rows.map(row => `<tr><td>${toJalali(row.date)}</td><td>${row.accountName}</td><td>${typeLabels[row.transactionType] || row.direction}</td><td>${row.payer || '-'}</td><td>${money(row.amount)}</td><td>${row.trackingNo || '-'}</td><td>${row.reconciled ? 'تطبیق شد' : 'باز'}</td></tr>`).join('')}</tbody></table>`);
+
+  return <div className="space-y-5">
+    <div className="grid grid-cols-4 gap-4">{finance.accounts.map(a => <Field key={a.id} label={`${a.type}: ${a.name}`} value={`${money(accountBalance(a, finance.movements))} تومان`} tone={accountBalance(a, finance.movements) >= 0 ? 'text-emerald-300' : 'text-red-300'} />)}</div>
+    <Card><h3 className="mb-4 font-bold">تعریف بانک یا صندوق</h3><form className="grid grid-cols-4 gap-3" onSubmit={addAccount}><TextInput placeholder="نام حساب" value={account.name} onChange={e => setAccount({ ...account, name: e.target.value })} /><SelectInput value={account.type} onChange={e => setAccount({ ...account, type: e.target.value })}><option>بانک</option><option>صندوق</option></SelectInput><TextInput type="number" placeholder="موجودی اولیه" value={account.opening} onChange={e => setAccount({ ...account, opening: e.target.value })} /><PrimaryButton type="submit">ثبت حساب</PrimaryButton></form></Card>
+    <Card><h3 className="mb-4 font-bold">ثبت دریافت، پرداخت یا انتقال</h3><form className="grid grid-cols-4 gap-3" onSubmit={addMovement}>
+      <SelectInput value={movement.transactionType} onChange={e => changeType(e.target.value)}><option value="customer_receipt">دریافت از مشتری</option><option value="supplier_payment">پرداخت به فروشنده</option><option value="transfer">انتقال بین حساب‌ها</option><option value="expense">پرداخت مستقیم هزینه</option><option value="other_income">سایر درآمد</option><option value="capital">آورده/برداشت سرمایه</option></SelectInput>
+      <SelectInput value={movement.accountId} onChange={e => setMovement({ ...movement, accountId: e.target.value })}><option value="">حساب مبدأ/مقصد</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput>
+      {movement.transactionType === 'transfer' ? <SelectInput value={movement.counterAccountId} onChange={e => setMovement({ ...movement, counterAccountId: e.target.value })}><option value="">حساب مقصد انتقال</option>{finance.accounts.filter(a => a.id !== movement.accountId).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput> : <SelectInput value={movement.payer} onChange={e => setMovement({ ...movement, payer: e.target.value })}><option value="">طرف حساب (در صورت نیاز)</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput>}
+      <DateInput value={movement.date} onChange={e => setMovement({ ...movement, date: e.target.value })} />
+      <TextInput type="number" min="1" placeholder="مبلغ" value={movement.amount} onChange={e => setMovement({ ...movement, amount: e.target.value })} />
+      <TextInput placeholder="شماره رهگیری" value={movement.trackingNo} onChange={e => setMovement({ ...movement, trackingNo: e.target.value })} />
+      <TextInput placeholder="شرح" value={movement.description} onChange={e => setMovement({ ...movement, description: e.target.value })} />
+      <PrimaryButton type="submit">ثبت گردش</PrimaryButton>
+    </form><div className="mt-3 rounded-md border border-blue-800 bg-blue-950 p-3 text-xs text-blue-100">هر گردش با ماهیت حسابداری مشخص ثبت می‌شود؛ دریافت مشتری مانده او را کاهش می‌دهد، پرداخت فروشنده بدهی را تسویه می‌کند و انتقال بین دو حساب روی سود و زیان اثر ندارد.</div></Card>
+    <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گردش و مغایرت‌گیری بانک و صندوق</h3><div className="flex gap-2"><SelectInput value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })}><option value="all">همه حساب‌ها</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><SelectInput value={filters.reconciled} onChange={e => setFilters({ ...filters, reconciled: e.target.value })}><option value="all">همه وضعیت‌ها</option><option value="false">تطبیق‌نشده</option><option value="true">تطبیق‌شده</option></SelectInput><PrimaryButton onClick={printMovements}>چاپ صورت حساب</PrimaryButton></div></div>
+      <div className="overflow-auto"><table className="w-full text-right text-sm"><thead><tr className="border-b border-slate-700 text-slate-300"><th className="p-3">تاریخ</th><th>حساب</th><th>ماهیت</th><th>طرف حساب</th><th>مبلغ</th><th>رهگیری</th><th>وضعیت تطبیق</th></tr></thead><tbody>{rows.map(row => <tr key={row.id} className="border-b border-slate-800"><td className="p-3">{toJalali(row.date)}</td><td>{row.accountName}{row.transactionType === 'transfer' ? ` ← ${row.counterAccountName}` : ''}</td><td>{typeLabels[row.transactionType] || row.direction}</td><td>{row.payer || '-'}</td><td>{money(row.amount)}</td><td>{row.trackingNo || '-'}</td><td><GhostButton onClick={() => setReconciled(row.id)}>{row.reconciled ? 'تطبیق شده' : 'علامت تطبیق'}</GhostButton></td></tr>)}</tbody></table></div>
+    </Card>
+  </div>;
+}
+
+function AccountingPage({ finance, setFinance, revision }) {
+  const [report, setReport] = useState({ trialBalance: [], partyBalances: [], vouchers: [], periods: [], summary: {} });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState({ date: today(), description: '', debitCode: '1110', creditCode: '3100', amount: '', party: '' });
+  const [periodForm, setPeriodForm] = useState({ title: '', startDate: '', endDate: '' });
+  const chart = [
+    ['1110', 'صندوق', 'Asset'], ['1120', 'بانک', 'Asset'], ['1200', 'حساب‌های دریافتنی', 'Asset'], ['1210', 'اسناد دریافتنی', 'Asset'], ['1300', 'موجودی مواد و کالا', 'Asset'], ['1310', 'موجودی نخ', 'Asset'], ['1320', 'موجودی پارچه', 'Asset'], ['1330', 'موجودی قطعات', 'Asset'], ['1410', 'مالیات ارزش افزوده خرید', 'Asset'], ['2100', 'حساب‌های پرداختنی', 'Liability'], ['2110', 'اسناد پرداختنی', 'Liability'], ['2310', 'مالیات ارزش افزوده فروش', 'Liability'], ['3100', 'سرمایه و مانده افتتاحیه', 'Equity'], ['4200', 'درآمد فروش', 'Income'], ['4300', 'درآمد فروش نخ', 'Income'], ['4900', 'سایر درآمدها', 'Income'], ['5300', 'بهای تمام‌شده کالای فروش‌رفته', 'Expense'], ['5900', 'هزینه‌های عملیاتی', 'Expense'],
+  ];
+  const load = () => { setLoading(true); setError(''); apiJSON('/accounting/reports').then(setReport).catch(err => setError(err.message || 'دریافت دفاتر انجام نشد')).finally(() => setLoading(false)); };
+  useEffect(load, [revision]);
+  const account = code => chart.find(row => row[0] === code) || [code, code, 'Asset'];
+  const addManual = e => {
+    e.preventDefault();
+    const amount = Number(form.amount || 0);
+    if (!amount || form.debitCode === form.creditCode || !form.description.trim()) { window.alert('شرح، مبلغ و دو حساب متفاوت الزامی است.'); return; }
+    const debit = account(form.debitCode), credit = account(form.creditCode);
+    const entry = { id: uid('jv'), number: shortId('JV'), date: form.date, description: form.description, lines: [
+      { accountCode: debit[0], accountName: debit[1], accountType: debit[2], party: form.party, debit: amount, credit: 0, description: form.description },
+      { accountCode: credit[0], accountName: credit[1], accountType: credit[2], party: form.party, debit: 0, credit: amount, description: form.description },
+    ] };
+    setFinance(prev => ({ ...prev, journalEntries: [entry, ...(prev.journalEntries || [])] }));
+    setForm(prev => ({ ...prev, description: '', amount: '', party: '' }));
+  };
+  const addPeriod = async e => {
+    e.preventDefault();
+    if (!periodForm.title.trim() || !periodForm.startDate || !periodForm.endDate) return;
+    try { await apiJSON('/accounting/periods', { method: 'POST', body: periodForm }); setPeriodForm({ title: '', startDate: '', endDate: '' }); load(); } catch (err) { window.alert(err.message || 'ثبت دوره مالی انجام نشد'); }
+  };
+  const togglePeriod = async row => {
+    const next = row.status === 'Closed' ? 'Open' : 'Closed';
+    if (next === 'Closed' && !window.confirm('با بستن دوره، ثبت یا ویرایش سند در این بازه متوقف می‌شود. ادامه می‌دهید؟')) return;
+    try { await apiJSON('/accounting/periods', { method: 'PUT', body: { id: Number(row.id), status: next } }); load(); } catch (err) { window.alert(err.message || 'تغییر وضعیت دوره انجام نشد'); }
+  };
+  const s = report.summary || {};
+  const profit = Number(s.income || 0) - Number(s.expense || 0);
+  const balanced = Math.abs(Number(s.total_debit || 0) - Number(s.total_credit || 0)) <= 1;
+  const printTrial = () => printSection('تراز آزمایشی', `<table><thead><tr><th>کد</th><th>حساب</th><th>بدهکار</th><th>بستانکار</th><th>مانده</th></tr></thead><tbody>${(report.trialBalance || []).map(row => `<tr><td>${row.code}</td><td>${row.name}</td><td>${money(row.debit)}</td><td>${money(row.credit)}</td><td>${money(row.balance)}</td></tr>`).join('')}</tbody></table>`);
+  return <div className="space-y-5">
+    {error && <ErrorBox message={error} />}
+    <div className="grid grid-cols-5 gap-4"><Field label="جمع بدهکار" value={money(s.total_debit) + ' تومان'} /><Field label="جمع بستانکار" value={money(s.total_credit) + ' تومان'} /><Field label="سود/زیان دوره" value={money(profit) + ' تومان'} tone={profit >= 0 ? 'text-emerald-300' : 'text-red-300'} /><Field label="دارایی خالص" value={money(s.assets) + ' تومان'} /><Field label="کنترل تراز" value={balanced ? 'تراز است' : 'عدم تراز'} tone={balanced ? 'text-emerald-300' : 'text-red-300'} /></div>
+    <Card><h3 className="mb-4 font-bold">ثبت سند دستی دوبل</h3><form className="grid grid-cols-6 gap-3" onSubmit={addManual}><DateInput value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /><SelectInput value={form.debitCode} onChange={e => setForm({ ...form, debitCode: e.target.value })}>{chart.map(row => <option key={row[0]} value={row[0]}>بدهکار: {row[0]} - {row[1]}</option>)}</SelectInput><SelectInput value={form.creditCode} onChange={e => setForm({ ...form, creditCode: e.target.value })}>{chart.map(row => <option key={row[0]} value={row[0]}>بستانکار: {row[0]} - {row[1]}</option>)}</SelectInput><TextInput type="number" min="1" placeholder="مبلغ" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} /><TextInput placeholder="طرف حساب (اختیاری)" value={form.party} onChange={e => setForm({ ...form, party: e.target.value })} /><PrimaryButton type="submit">ثبت سند</PrimaryButton><TextInput className="col-span-6" placeholder="شرح سند" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></form></Card>
+    <Card><h3 className="mb-4 font-bold">دوره مالی و قفل ثبت</h3><form className="grid grid-cols-4 gap-3" onSubmit={addPeriod}><TextInput placeholder="عنوان دوره" value={periodForm.title} onChange={e => setPeriodForm({ ...periodForm, title: e.target.value })} /><DateInput value={periodForm.startDate} onChange={e => setPeriodForm({ ...periodForm, startDate: e.target.value })} /><DateInput value={periodForm.endDate} onChange={e => setPeriodForm({ ...periodForm, endDate: e.target.value })} /><PrimaryButton type="submit">ایجاد دوره</PrimaryButton></form><div className="mt-4 space-y-2">{(report.periods || []).map(row => <div key={row.id} className="flex items-center justify-between rounded-md border border-slate-700 bg-slate-950 p-3 text-sm"><span>{row.title} | {toJalali(row.start_date)} تا {toJalali(row.end_date)}</span><GhostButton onClick={() => togglePeriod(row)}>{row.status === 'Closed' ? 'بازکردن دوره' : 'بستن دوره'}</GhostButton></div>)}</div></Card>
+    <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">تراز آزمایشی دفتر کل</h3><div className="flex gap-2"><PrimaryButton onClick={load}>{loading ? 'در حال دریافت...' : 'بازخوانی'}</PrimaryButton><PrimaryButton onClick={printTrial}>چاپ تراز</PrimaryButton></div></div><GenericTable rows={(report.trialBalance || []).map(row => ({ code: row.code, account: row.name, type: row.type, debit: row.debit, credit: row.credit, balance: row.balance }))} /></Card>
+    <Card><h3 className="mb-4 font-bold">مانده تفصیلی اشخاص</h3><GenericTable rows={(report.partyBalances || []).map(row => ({ party: row.party, debit: row.debit, credit: row.credit, balance: row.balance, nature: Number(row.balance) >= 0 ? 'بدهکار' : 'بستانکار' }))} /></Card>
+    <Card><h3 className="mb-4 font-bold">دفتر روزنامه (حداکثر ۱۰۰۰ آرتیکل اخیر)</h3><GenericTable rows={(report.vouchers || []).map(row => ({ voucher: row.voucher_no, date: row.voucher_date, source: row.source_doc_type, description: row.description, account: `${row.account_code} - ${row.account_name}`, party: row.party || '-', debit: row.debit, credit: row.credit }))} /></Card>
+    <Card><h3 className="mb-3 font-bold">تنظیم مالیات</h3><div className="flex items-center gap-3"><label className="text-sm text-slate-300">نرخ پیش‌فرض پیشنهادی (درصد)</label><TextInput type="number" min="0" max="100" value={finance.accountingSettings?.defaultVatRate ?? 0} onChange={e => setFinance(prev => ({ ...prev, accountingSettings: { ...(prev.accountingSettings || {}), defaultVatRate: Number(e.target.value || 0) } }))} /><span className="text-xs text-amber-200">مالیات فقط برای اسنادی محاسبه می‌شود که هنگام ثبت، مشمول علامت خورده باشند؛ نرخ قانونی را حسابدار دوره کنترل کند.</span></div></Card>
+  </div>;
+}
 
 function ReportsPage({ finance }) {
 
@@ -4090,7 +4341,7 @@ function TaxReportPage({ finance }) {
 
   const expenses = finance.expenses.filter(x => inRange(x.date));
 
-  const vatRate = 0.09;
+  const vatRate = Number(finance.accountingSettings?.defaultVatRate || 0) / 100;
 
   const salesTotal = sales.reduce((s, x) => s + Number(x.total || 0), 0);
 
@@ -4098,19 +4349,19 @@ function TaxReportPage({ finance }) {
 
   const expensesTotal = expenses.reduce((s, x) => s + Number(x.amount || 0), 0);
 
-  const outputVat = Math.round(salesTotal * vatRate);
+  const outputVat = sales.reduce((sum, row) => sum + Number(row.taxAmount || (row.taxable ? Math.round(Number(row.subtotal ?? row.total ?? 0) * vatRate) : 0)), 0);
 
-  const inputVat = Math.round((purchasesTotal + expensesTotal) * vatRate);
+  const inputVat = [...purchases, ...expenses].reduce((sum, row) => sum + Number(row.taxAmount || (row.taxable ? Math.round(Number(row.subtotal ?? row.amount ?? 0) * vatRate) : 0)), 0);
 
   const payableVat = outputVat - inputVat;
 
   const rows = [
 
-    ...sales.map(x => ({ type: 'فروش/درآمد', invoice_no: x.number, date: x.date, party: x.customer, description: x.item, taxable_amount: x.total, vat: Math.round(Number(x.total || 0) * vatRate), total: Number(x.total || 0) + Math.round(Number(x.total || 0) * vatRate) })),
+    ...sales.map(x => ({ type: 'فروش/درآمد', invoice_no: x.number, date: x.date, party: x.customer, description: x.item, taxable_amount: x.taxable ? Number(x.subtotal ?? x.total ?? 0) : 0, vat: Number(x.taxAmount || 0), total: Number(x.total || 0) })),
 
-    ...purchases.map(x => ({ type: 'خريد/ورود', invoice_no: x.id, date: x.date, party: x.customer, description: x.itemName, taxable_amount: x.amount, vat: Math.round(Number(x.amount || 0) * vatRate), total: Number(x.amount || 0) + Math.round(Number(x.amount || 0) * vatRate) })),
+    ...purchases.map(x => ({ type: 'خريد/ورود', invoice_no: x.id, date: x.date, party: x.customer, description: x.itemName, taxable_amount: x.taxable ? Number(x.subtotal ?? x.amount ?? 0) : 0, vat: Number(x.taxAmount || 0), total: Number(x.amount || 0) })),
 
-    ...expenses.map(x => ({ type: 'هزينه', invoice_no: x.id, date: x.date, party: '-', description: `${expenseGroup(x)} / ${expenseSubgroup(x)}`, taxable_amount: x.amount, vat: Math.round(Number(x.amount || 0) * vatRate), total: Number(x.amount || 0) + Math.round(Number(x.amount || 0) * vatRate) })),
+    ...expenses.map(x => ({ type: 'هزينه', invoice_no: x.id, date: x.date, party: '-', description: `${expenseGroup(x)} / ${expenseSubgroup(x)}`, taxable_amount: x.taxable ? Number(x.subtotal ?? x.amount ?? 0) : 0, vat: Number(x.taxAmount || 0), total: Number(x.amount || 0) })),
 
   ].sort((a, b) => String(a.date).localeCompare(String(b.date)));
 
@@ -4124,7 +4375,7 @@ function TaxReportPage({ finance }) {
 
   };
 
-  return <div className="space-y-5"><Card><div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گزارش مالياتي ايران</h3><div className="flex flex-wrap gap-2"><DateInput value={fromDate} onChange={e => setFromDate(e.target.value)} /><DateInput value={toDate} onChange={e => setToDate(e.target.value)} /><PrimaryButton onClick={printTax}>چاپ گزارش مالياتي</PrimaryButton></div></div></Card><div className="grid grid-cols-4 gap-4"><Field label="جمع فروش/درآمد" value={money(salesTotal) + ' تومان'} tone="text-emerald-300" /><Field label="جمع خريد/ورود" value={money(purchasesTotal) + ' تومان'} tone="text-blue-300" /><Field label="جمع هزينه" value={money(expensesTotal) + ' تومان'} tone="text-red-300" /><Field label="مالیات ارزش افزوده قابل پرداخت" value={money(payableVat) + ' تومان'} tone={payableVat >= 0 ? 'text-amber-300' : 'text-emerald-300'} /></div><Card><h3 className="mb-4 font-bold">ريز اقلام مالياتي</h3><GenericTable rows={rows} /></Card><Card><h3 className="mb-4 font-bold">يادداشت</h3><div className="text-sm leading-7 text-slate-300">اين گزارش بر اساس داده‌هاي ثبت‌شده در بخش مالي تهيه مي‌شود و نرخ پیش‌فرض مالیات و عوارض ۹ درصد در نظر گرفته شده است. براي ارسال رسمي به سامانه مؤديان بايد شناسه کالا/خدمت، شماره اقتصادي، کد شعبه، الگوي صورتحساب و امضاي الکترونيکي نيز به مدل داده اضافه شود.</div></Card></div>;
+  return <div className="space-y-5"><Card><div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گزارش مالیاتی ایران</h3><div className="flex flex-wrap gap-2"><DateInput value={fromDate} onChange={e => setFromDate(e.target.value)} /><DateInput value={toDate} onChange={e => setToDate(e.target.value)} /><PrimaryButton onClick={printTax}>چاپ گزارش مالیاتی</PrimaryButton></div></div></Card><div className="grid grid-cols-4 gap-4"><Field label="جمع فروش/درآمد" value={money(salesTotal) + ' تومان'} tone="text-emerald-300" /><Field label="جمع خرید/ورود" value={money(purchasesTotal) + ' تومان'} tone="text-blue-300" /><Field label="جمع هزینه" value={money(expensesTotal) + ' تومان'} tone="text-red-300" /><Field label="مالیات ارزش افزوده قابل پرداخت" value={money(payableVat) + ' تومان'} tone={payableVat >= 0 ? 'text-amber-300' : 'text-emerald-300'} /></div><Card><h3 className="mb-4 font-bold">ریز اقلام مالیاتی</h3><GenericTable rows={rows} /></Card><Card><h3 className="mb-4 font-bold">کنترل حسابدار</h3><div className="text-sm leading-7 text-slate-300">نرخ پیشنهادی فعلی {num(vatRate * 100)}٪ است. فقط اسنادی که هنگام ثبت «مشمول مالیات» شده‌اند در اعتبار و بدهی مالیاتی محاسبه می‌شوند. این خروجی گزارش کنترلی است؛ ارسال رسمی سامانه مؤدیان نیازمند شناسه کالا/خدمت، شماره اقتصادی، الگوی صورتحساب و امضای الکترونیکی معتبر است.</div></Card></div>;
 
 }
 

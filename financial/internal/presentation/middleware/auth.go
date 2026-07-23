@@ -151,8 +151,7 @@ func resolveIdentity(r *http.Request) (resolvedIdentity, bool) {
 
 func authorizeRequest(r *http.Request, identity resolvedIdentity) bool {
 	if strings.EqualFold(identity.role, "mobile") {
-		return (strings.HasPrefix(r.URL.Path, "/api/mobile/") && r.URL.Path != "/api/mobile/pairing") ||
-			r.URL.Path == "/api/v1/hesabyar/sync"
+		return strings.HasPrefix(r.URL.Path, "/api/mobile/") && r.URL.Path != "/api/mobile/pairing"
 	}
 	if !identity.portal {
 		return true
@@ -179,9 +178,13 @@ func authorizeRequest(r *http.Request, identity resolvedIdentity) bool {
 func requiredPermissions(path string) []string {
 	switch {
 	case path == "/api/workspace":
-		return []string{"dashboard", "financialHealth", "initialData", "incomingInvoices", "yarnOutInvoices", "invoices", "inventory", "costs", "receivableDocs", "payableDocs", "bankCash", "reports", "taxReports", "credit", "advisor"}
+		return []string{"dashboard", "financialHealth", "initialData", "incomingInvoices", "yarnOutInvoices", "invoices", "inventory", "costs", "receivableDocs", "payableDocs", "bankCash", "accounting", "reports", "taxReports", "credit", "advisor", "mobileApp"}
 	case strings.HasPrefix(path, "/api/workspace/"):
 		return []string{"dashboard", "financialHealth", "reports", "taxReports", "credit", "advisor"}
+	case strings.HasPrefix(path, "/api/accounting/"):
+		return []string{"accounting", "reports"}
+	case path == "/api/mobile/pairing":
+		return []string{"mobileApp"}
 	case strings.Contains(path, "/operational/out-invoices") || strings.HasSuffix(path, "/operational/f_khor"):
 		return []string{"operational", "invoices"}
 	case strings.Contains(path, "/operational/yarn-incoming") || strings.Contains(path, "/operational/chelle-incoming"):

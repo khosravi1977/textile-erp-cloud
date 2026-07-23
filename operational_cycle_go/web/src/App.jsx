@@ -4,9 +4,9 @@ import { createRoot } from 'react-dom/client';
 
 import JsBarcode from 'jsbarcode';
 
-import { BrowserMultiFormatReader } from '@zxing/browser';
-
 import QRCode from 'qrcode';
+
+import { BrowserMultiFormatReader } from '@zxing/browser';
 
 import './style.css';
 
@@ -22,7 +22,6 @@ const PORTAL_OPERATIONAL_SESSION = window.ERP_PORTAL_OPERATIONAL_SESSION || (
     ? '/api/portal/operational-session'
     : ''
 );
-const LOCAL_MODE = Boolean(window.ERP_LOCAL_MODE);
 
 
 
@@ -133,6 +132,10 @@ const sidebarTabs = [
 
 
 function App() {
+
+  const loadingPathMatch = window.location.pathname.match(/\/operational\/loading\/([^/?#]+)/);
+
+  const loadingToken = loadingPathMatch ? decodeURIComponent(loadingPathMatch[1]) : '';
 
   const [tab, setTab] = useState('dashboard');
 
@@ -386,6 +389,8 @@ function App() {
 
     setSession(null);
 
+    if (window.ERP_PORTAL_PREFIX) window.location.assign('/module-logout?module=operational&login=1');
+
   };
 
   if (!session) {
@@ -403,6 +408,12 @@ function App() {
     </div>;
 
     return <LoginPage onLogin={login} status={status} error={error} />;
+
+  }
+
+  if (loadingToken) {
+
+    return <LoadingMobilePage token={loadingToken} session={session} onLogout={logout} />;
 
   }
 
@@ -430,7 +441,7 @@ function App() {
 
         <nav>{visibleTabs.map(([id, label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}</button>)}</nav>
 
-        <button className="ghost" onClick={logout}>خروج</button>
+        <button className="ghost" onClick={logout}>خروج و ورود کاربر دیگر</button>
 
       </aside>
 
@@ -727,9 +738,9 @@ function DashboardPro() {
 
     <section className="panel">
 
-      <h2>موجودی نخ بر اساس مشتری و همبافت</h2>
+      <h2>موجودی نخ بر اساس مالک، هم‌بافت و نوع نخ</h2>
 
-      <Table rows={data.yarn_inventory || []} columns={[['mosh','مشتری'],['hambaft','همبافت'],['inventory','مانده'],['vorud','ورود'],['to_salon','ارسال سالن'],['khoroj','خروج']]} hideActions />
+      <Table rows={data.yarn_inventory || []} columns={[['mosh','مالک نخ'],['hambaft','همبافت'],['yarn','نوع نخ'],['inventory','مانده'],['vorud','ورود'],['to_salon','خالص ارسال سالن'],['khoroj','سایر خروج']]} hideActions />
 
     </section>
 
@@ -1053,31 +1064,45 @@ function NakhSalon({ lookups, notify }) {
 
     endpoint="/nakh-salon"
 
-    empty={{ machine: '', ham_nakh: '', weight: '', chelle_id: '', mosh_name: '', vor_khor: 'vorud' }}
+    empty={{ machine: '', ham_nakh: '', weight: '', chelle_id: '', mosh_name: '', nakh_name: '', vor_khor: 'vorud' }}
 
     notify={notify}
 
-    filters={[['machine','ماشین'],['ham_nakh','همبافت نخ'],['shom_chelle','چله'],['mosh_name','مشتری'],['vor_khor','نوع']]}
+    filters={[['machine','ماشین'],['ham_nakh','همبافت نخ'],['nakh_name','نوع نخ'],['shom_chelle','چله'],['mosh_name','مالک نخ'],['vor_khor','نوع']]}
 
-    mapEdit={row => ({ id: row.id, machine: row.machine || '', ham_nakh: row.ham_nakh || '', weight: Math.abs(Number(row.weight || 0)), chelle_id: row.chelle_id || '', mosh_name: row.mosh_name || '', vor_khor: row.vor_khor || 'vorud' })}
+    mapEdit={row => ({ id: row.id, machine: row.machine || '', ham_nakh: row.ham_nakh || '', weight: Math.abs(Number(row.weight || 0)), chelle_id: row.chelle_id || '', mosh_name: row.mosh_name || '', nakh_name: row.nakh_name || '', vor_khor: row.vor_khor || 'vorud' })}
 
-    renderForm={(form, set) => <>
+    renderForm={(form, set) => {
+      const chooseChelle = value => {
+        const id = Number(value);
+        const selected = chelles.find(x => Number(x.id) === id);
+        set('chelle_id', id);
+        if (selected) {
+          set('machine', selected.machine || '');
+          set('mosh_name', selected.mosh_name || form.mosh_name || '');
+          set('ham_nakh', selected.hambaft || form.ham_nakh || '');
+        }
+      };
+      return <>
 
-      <Input label="شماره ماشین" value={form.machine} onChange={v => set('machine', v)} />
+      <Input label="شماره ماشین" value={form.machine} onChange={v => set('machine', v)} hint="باید با ماشین چله فعال یکسان باشد." />
 
       <Select label="همبافت نخ" value={form.ham_nakh} onChange={v => set('ham_nakh', v)} items={(lookups.hambaftYarn || []).map(x => ({ id: x, name: x }))} />
 
       <Input label="وزن" type="number" value={form.weight} onChange={v => set('weight', Number(v))} />
 
-      <Select label="شماره چله روی ماشین" value={form.chelle_id} onChange={v => set('chelle_id', Number(v))} items={uniqueOptions(chelles.map(x => ({ id: x.id, name: `${x.shom_chelle} - ماشین ${x.machine}` })), form.chelle_id)} />
+      <Select label="شماره چله فعال روی ماشین" value={form.chelle_id} onChange={chooseChelle} items={uniqueOptions(chelles.map(x => ({ id: x.id, name: `${x.shom_chelle} - ماشین ${x.machine}` })), form.chelle_id)} />
 
-      <Input label="نام مشتری" value={form.mosh_name} onChange={v => set('mosh_name', v)} list={(lookups.customers || []).map(x => x.name)} />
+      <Select label="مالک نخ / مشتری" value={form.mosh_name} onChange={v => set('mosh_name', v)} items={(lookups.customers || []).map(x => ({ id: x.name, name: x.name }))} />
+
+      <Select label="نوع نخ پود" value={form.nakh_name} onChange={v => set('nakh_name', v)} items={(lookups.yarns || []).map(x => ({ id: x.name, name: x.name }))} />
 
       <Select label="نوع" value={form.vor_khor} onChange={v => set('vor_khor', v)} items={[{id:'vorud',name:'ورود'}, {id:'khoroj',name:'خروج'}]} />
 
-    </>}
+    </>;
+    }}
 
-    columns={[['tarikh','تاریخ'],['machine','ماشین'],['ham_nakh','همبافت نخ'],['weight','وزن'],['shom_chelle','چله'],['mosh_name','مشتری'],['vor_khor','نوع']]}
+    columns={[['tarikh','تاریخ'],['machine','ماشین'],['ham_nakh','همبافت نخ'],['nakh_name','نوع نخ'],['weight','وزن'],['shom_chelle','چله'],['mosh_name','مالک نخ'],['vor_khor','نوع']]}
 
   />;
 
@@ -1227,7 +1252,7 @@ function Salon({ lookups, notify }) {
 
 
 
-  const save = async (printAfterSave = true) => {
+  const save = async () => {
 
     const savedLabel = labelData();
 
@@ -1407,12 +1432,15 @@ function YarnOut({ lookups, notify }) {
 
   const [yarnInRows, setYarnInRows] = useState([]);
   const [warperBalanceRows, setWarperBalanceRows] = useState([]);
+  const [inventoryRows, setInventoryRows] = useState([]);
 
   const loadWarperBalances = () => api('/warper-yarn-balance').then(setWarperBalanceRows).catch(() => setWarperBalanceRows([]));
+  const loadInventory = () => api('/nakh-khor?inventory=1').then(setInventoryRows).catch(() => setInventoryRows([]));
 
   useEffect(() => {
     api('/nakh-vor').then(setYarnInRows).catch(() => setYarnInRows([]));
     loadWarperBalances();
+    loadInventory();
   }, []);
 
   return <CrudPage
@@ -1421,14 +1449,14 @@ function YarnOut({ lookups, notify }) {
 
     endpoint="/nakh-khor"
 
-    empty={{ hambaft: '', weight: '', mosh_name: '', nakh_name: '' }}
+    empty={{ hambaft: '', weight: '', owner_mosh: '', mosh_name: '', nakh_name: '', destination_type: 'warper' }}
 
     notify={notify}
-    afterSave={loadWarperBalances}
+    afterSave={() => { loadWarperBalances(); loadInventory(); }}
 
-    filters={[['mosh','مشتری'],['nakh','نخ'],['hambaft','همبافت']]}
+    filters={[['owner_mosh','مالک نخ'],['mosh','مقصد'],['nakh','نخ'],['hambaft','همبافت']]}
 
-    mapEdit={row => ({ id: row.id, hambaft: row.hambaft || '', weight: Math.abs(Number(row.weight || 0)), mosh_name: row.mosh || '', nakh_name: row.nakh || '' })}
+    mapEdit={row => ({ id: row.id, hambaft: row.hambaft || '', weight: Math.abs(Number(row.weight || 0)), owner_mosh: row.owner_mosh || '', mosh_name: row.mosh || '', nakh_name: row.nakh || '', destination_type: row.destination_type || 'warper' })}
 
     renderForm={(form, set) => {
 
@@ -1438,10 +1466,11 @@ function YarnOut({ lookups, notify }) {
 
       const yarnOptions = [...new Set(yarnInRows.filter(r => !form.hambaft || r.hambaft === form.hambaft).map(r => r.nakh).filter(Boolean))];
 
-      const recipientOptions = uniqueText([
-        ...(lookups.customers || []).map(x => x.name),
-        ...(lookups.warpers || []).map(x => x.name),
-      ]);
+      const recipientOptions = form.destination_type === 'warper'
+        ? (lookups.warpers || []).map(x => x.name)
+        : uniqueText([...(lookups.customers || []).map(x => x.name), ...(lookups.warpers || []).map(x => x.name)]);
+
+      const exactInventory = inventoryRows.find(x => x.mosh === form.owner_mosh && x.hambaft === form.hambaft && x.yarn === form.nakh_name);
 
       const setHambaft = v => {
 
@@ -1469,23 +1498,28 @@ function YarnOut({ lookups, notify }) {
 
       <Input label="وزن خروج" type="number" value={form.weight} onChange={v => set('weight', Number(v))} />
 
-      <Input label="مشتری / چله‌پیچ" value={form.mosh_name} onChange={v => set('mosh_name', v)} list={recipientOptions} />
+      <Select label="مالک نخ / مشتری" value={form.owner_mosh} onChange={v => set('owner_mosh', v)} items={(lookups.customers || []).map(x => ({ id: x.name, name: x.name }))} />
+
+      <Select label="نوع مقصد" value={form.destination_type} onChange={v => { set('destination_type', v); set('mosh_name', ''); }} items={[{id:'warper',name:'چله‌پیچ'}, {id:'customer',name:'مشتری / مصرف دیگر'}]} />
+
+      <Input label="مقصد خروج" value={form.mosh_name} onChange={v => set('mosh_name', v)} list={recipientOptions} />
 
       <Input label="نوع نخ" value={form.nakh_name} onChange={setYarn} list={yarnOptions.length ? yarnOptions : (lookups.yarns || []).map(x => x.name)} />
 
-      {(form.hambaft || form.nakh_name) && <div className="form-help">گزینه‌های نخ و همبافت بر اساس ورود نخ‌های ثبت‌شده فیلتر می‌شوند. موارد مرتبط: {relatedRows.length}</div>}
+      {(form.hambaft || form.nakh_name) && <div className="form-help">گزینه‌ها بر اساس ورود نخ فیلتر شده‌اند. موارد مرتبط: {relatedRows.length} — موجودی دقیق قابل خروج: {exactInventory ? `${fmt(exactInventory.inventory)} کیلو` : 'انتخاب مالک، هم‌بافت و نوع نخ'}</div>}
 
     </>;
 
     }}
 
-    columns={[['tarikh','تاریخ'],['hambaft','همبافت'],['weight','وزن'],['mosh','مشتری'],['nakh','نخ']]}
+    columns={[['tarikh','تاریخ'],['owner_mosh','مالک نخ'],['hambaft','همبافت'],['nakh','نخ'],['weight','وزن'],['mosh','مقصد'],['destination_type','نوع مقصد']]}
 
     extraSections={<section className="panel">
       <div className="panel-title-row"><h2>گزارش مانده نخ نزد چله‌پیچ</h2><button onClick={loadWarperBalances}>بروزرسانی</button></div>
       <p className="hint">این گزارش وزن نخ ارسال‌شده به چله‌پیچی را با چله‌های برگشتی همان چله‌پیچ، همبافت و نوع نخ مقایسه می‌کند.</p>
       <Table rows={warperBalanceRows} columns={[
         ['warper','چله‌پیچ'],
+        ['owner','مالک نخ'],
         ['hambaft','همبافت'],
         ['yarn','نوع نخ'],
         ['sent_weight','ارسال به چله‌پیچی kg'],
@@ -1799,16 +1833,54 @@ function ComingSoon({ title }) {
 function ConsumptionPro() {
 
   const [rows, setRows] = useState([]);
+  const [waste, setWaste] = useState([]);
+  const [form, setForm] = useState({ machine: '', shom_chelle: '', waste_type: 'tar', weight: '', reason: '', description: '' });
+  const [editing, setEditing] = useState(false);
 
-  const load = () => api('/consumption/machines').then(setRows).catch(() => setRows([]));
+  const load = () => Promise.all([api('/consumption/machines'), api('/production-waste')])
+    .then(([machines, wasteRows]) => { setRows(machines); setWaste(wasteRows); })
+    .catch(() => { setRows([]); setWaste([]); });
 
   useEffect(() => { load(); }, []);
 
-  const activeRows = rows.map(r => ({ machine: r.machine, shom_chelle: r.shom_chelle, chelle_weight: r.chelle_weight, pod_assigned: r.pod_assigned, tar_used: r.tar_used, pod_used: r.pod_used, total_weight: r.total_weight, remaining: r.remaining, remaining_percent: r.remaining_percent, tarikh: r.tarikh }));
+  const set = (key, value) => setForm(s => ({ ...s, [key]: value }));
+  const chooseMachine = machine => {
+    const current = rows.find(r => r.machine === machine);
+    setForm(s => ({ ...s, machine, shom_chelle: current?.shom_chelle || '' }));
+  };
+  const saveWaste = async () => {
+    await api('/production-waste', { method: 'POST', body: form });
+    setForm({ machine: '', shom_chelle: '', waste_type: 'tar', weight: '', reason: '', description: '' });
+    setEditing(false);
+    await load();
+  };
+  const editWaste = row => {
+    setForm({ id: row.id, machine: row.machine || '', shom_chelle: row.shom_chelle || '', waste_type: row.waste_type || 'tar', weight: Number(row.weight || 0), reason: row.reason || '', description: row.description || '' });
+    setEditing(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const deleteWaste = async id => { await api(`/production-waste/${id}`, { method: 'DELETE' }); await load(); };
 
-  const wasteRows = rows.map(r => ({ machine: r.machine, shom_chelle: r.shom_chelle, total_meter: r.total_meter, total_weight: r.total_weight, waste_weight: r.waste_weight, waste_per_meter: r.waste_per_meter, waste_per_kg: r.waste_per_kg, waste_percent_per_kg: r.waste_percent_per_kg, tarikh: r.tarikh }));
+  const activeRows = rows.map(r => ({ machine: r.machine, shom_chelle: r.shom_chelle, chelle_weight: r.chelle_weight, pod_assigned: r.pod_assigned, tar_used: r.tar_used, pod_used: r.pod_used, tar_remaining: r.tar_remaining, pod_remaining: r.pod_remaining, actual_waste: r.actual_waste, total_weight: r.total_weight, remaining: r.remaining, remaining_percent: r.remaining_percent, material_shortage: r.material_shortage, tarikh: r.tarikh }));
+
+  const wasteRows = rows.map(r => ({ machine: r.machine, shom_chelle: r.shom_chelle, total_meter: r.total_meter, total_weight: r.total_weight, actual_waste: r.actual_waste, waste_per_meter: r.waste_per_meter, waste_per_kg: r.waste_per_kg, waste_percent_input: r.waste_percent_input, waste_percent_output: r.waste_percent_output, tarikh: r.tarikh }));
+  const wasteHistory = waste.map(r => ({ ...r, waste_type_fa: ({ tar: 'تار', pod: 'پود', fabric: 'پارچه معیوب', selvage: 'کناره', other: 'سایر' })[r.waste_type] || r.waste_type }));
 
   return <Page title="مصرف تار و پود و ضایعات">
+
+    <section className="panel">
+      <h2>{editing ? 'ویرایش ضایعات واقعی' : 'ثبت ضایعات واقعی تولید'}</h2>
+      <p className="hint">مانده نخ، ضایعات نیست. فقط وزن فیزیکی دورریز یا پارچه معیوب را در این فرم ثبت کنید.</p>
+      <div className="form-grid">
+        <Select label="ماشین" value={form.machine} onChange={chooseMachine} items={rows.map(r => ({ id: r.machine, name: `ماشین ${r.machine} — چله ${r.shom_chelle}` }))} />
+        <Input label="شماره چله" value={form.shom_chelle} onChange={v => set('shom_chelle', v)} />
+        <Select label="نوع ضایعات" value={form.waste_type} onChange={v => set('waste_type', v)} items={[{id:'tar',name:'تار'}, {id:'pod',name:'پود'}, {id:'fabric',name:'پارچه معیوب'}, {id:'selvage',name:'کناره'}, {id:'other',name:'سایر'}]} />
+        <Input label="وزن ضایعات (kg)" type="number" value={form.weight} onChange={v => set('weight', Number(v))} />
+        <Input label="علت ضایعات" value={form.reason} onChange={v => set('reason', v)} />
+        <Input label="توضیحات / اقدام اصلاحی" value={form.description} onChange={v => set('description', v)} />
+      </div>
+      <div className="actions-row"><button className="primary" onClick={saveWaste}>{editing ? 'ثبت ویرایش' : 'ثبت ضایعات'}</button>{editing && <button className="ghost" onClick={() => { setEditing(false); setForm({ machine: '', shom_chelle: '', waste_type: 'tar', weight: '', reason: '', description: '' }); }}>لغو</button>}</div>
+    </section>
 
     <section className="panel green-head">
 
@@ -1828,11 +1900,19 @@ function ConsumptionPro() {
 
         ['pod_used','مصرف پود kg'],
 
+        ['tar_remaining','مانده تار kg'],
+
+        ['pod_remaining','مانده پود kg'],
+
+        ['actual_waste','ضایعات واقعی kg'],
+
         ['total_weight','وزن پارچه kg'],
 
         ['remaining','مانده نخ kg'],
 
         ['remaining_percent','درصد مانده'],
+
+        ['material_shortage','کسری ثبت مواد kg'],
 
         ['tarikh','آخرین بروزرسانی']
 
@@ -1842,7 +1922,7 @@ function ConsumptionPro() {
 
     <section className="panel">
 
-      <div className="panel-title-row"><h2>فرم محاسبه ضایعات چله</h2><button onClick={load}>بروزرسانی</button></div>
+      <div className="panel-title-row"><h2>شاخص واقعی ضایعات به تفکیک ماشین و چله</h2><button onClick={load}>بروزرسانی</button></div>
 
       <Table rows={wasteRows} columns={[
 
@@ -1854,18 +1934,25 @@ function ConsumptionPro() {
 
         ['total_weight','وزن پارچه kg'],
 
-        ['waste_weight','وزن ضایعات/مانده kg'],
+        ['actual_waste','وزن ضایعات واقعی kg'],
 
         ['waste_per_meter','ضایعات kg/m'],
 
         ['waste_per_kg','ضایعات kg/kg'],
 
-        ['waste_percent_per_kg','درصد ضایعات وزنی'],
+        ['waste_percent_input','درصد ضایعات از ورودی مواد'],
+
+        ['waste_percent_output','درصد ضایعات نسبت به خروجی'],
 
         ['tarikh','آخرین بروزرسانی']
 
       ]} hideActions />
 
+    </section>
+
+    <section className="panel">
+      <h2>دفتر ثبت ضایعات</h2>
+      <Table rows={wasteHistory} columns={[["tarikh","تاریخ"],["machine","ماشین"],["shom_chelle","چله"],["waste_type_fa","نوع"],["weight","وزن kg"],["reason","علت"],["operator_name","ثبت‌کننده"],["description","توضیحات"]]} onEdit={editWaste} onDelete={deleteWaste} />
     </section>
 
   </Page>;
@@ -1908,17 +1995,119 @@ function MachineFormulas({ notify }) {
 
 
 
-function MobileBarcodeScanner({ onCode, onClose }) {
+function LoadingMobilePage({ token, session, onLogout }) {
 
   const videoRef = React.useRef(null);
 
-  const streamRef = React.useRef(null);
+  const controlsRef = React.useRef(null);
 
-  const imageInputRef = React.useRef(null);
+  const scanLockRef = React.useRef(false);
 
-  const [message, setMessage] = useState('در حال فعال کردن دوربین...');
+  const [state, setState] = useState(null);
 
-  const decodeImage = async event => {
+  const [candidate, setCandidate] = useState(null);
+
+  const [manualCode, setManualCode] = useState('');
+
+  const [cameraOn, setCameraOn] = useState(false);
+
+  const [busy, setBusy] = useState(false);
+
+  const [error, setError] = useState('');
+
+  const loadState = async () => {
+
+    try { setState(await api(`/loading/${encodeURIComponent(token)}`)); setError(''); }
+
+    catch (err) { setError(err.message); }
+
+  };
+
+  useEffect(() => {
+
+    loadState();
+
+    const timer = setInterval(loadState, 2000);
+
+    return () => {
+
+      clearInterval(timer);
+
+      controlsRef.current?.stop();
+
+    };
+
+  }, [token]);
+
+  const inspectCode = async rawCode => {
+
+    const code = String(rawCode || '').trim();
+
+    if (!code || scanLockRef.current) return;
+
+    scanLockRef.current = true;
+
+    setBusy(true); setError('');
+
+    try {
+
+      const result = await api(`/loading/${encodeURIComponent(token)}/scan`, { method: 'POST', body: { code } });
+
+      controlsRef.current?.stop();
+
+      controlsRef.current = null;
+
+      setCameraOn(false);
+
+      setCandidate(result.item);
+
+      setManualCode('');
+
+    } catch (err) {
+
+      setError(err.message);
+
+    } finally {
+
+      setBusy(false);
+
+      scanLockRef.current = false;
+
+    }
+
+  };
+
+  const startCamera = async () => {
+
+    setError(''); setCandidate(null);
+
+    controlsRef.current?.stop();
+
+    try {
+
+      const reader = new BrowserMultiFormatReader();
+
+      const controls = await reader.decodeFromVideoDevice(undefined, videoRef.current, (result, err) => {
+
+        if (result && !scanLockRef.current) inspectCode(result.getText());
+
+      });
+
+      controlsRef.current = controls;
+
+      setCameraOn(true);
+
+    } catch (err) {
+
+      setCameraOn(false);
+
+      setError('دوربین باز نشد. اجازه Camera را فعال کنید یا کد را دستی وارد کنید.');
+
+    }
+
+  };
+
+  const scanCapturedImage = async event => {
 
     const file = event.target.files?.[0];
 
@@ -1926,291 +2115,23 @@ function MobileBarcodeScanner({ onCode, onClose }) {
 
     if (!file) return;
 
-    const imageURL = URL.createObjectURL(file);
+    const objectUrl = URL.createObjectURL(file);
+
+    setBusy(true); setError('');
 
     try {
 
-      setMessage('در حال خواندن بارکد از تصویر...');
+      const result = await new BrowserMultiFormatReader().decodeFromImageUrl(objectUrl);
 
-      const image = new Image();
-
-      image.src = imageURL;
-
-      await image.decode();
-
-      const result = await new BrowserMultiFormatReader().decodeFromImageElement(image);
-
-      const code = String(result?.getText?.() || '').trim();
-
-      if (!code) throw new Error('بارکدی در تصویر پیدا نشد. عکس واضح‌تر و نزدیک‌تر بگیرید.');
-
-      streamRef.current?.getTracks().forEach(track => track.stop());
-
-      onCode(code);
+      await inspectCode(result.getText());
 
     } catch (err) {
 
-      setMessage(err.message || 'بارکدی در تصویر پیدا نشد. دوباره عکس بگیرید.');
+      setError('بارکد در عکس خوانده نشد؛ عکس را نزدیک‌تر و با نور بهتر بگیرید.');
 
     } finally {
 
-      URL.revokeObjectURL(imageURL);
-
-    }
-
-  };
-
-  useEffect(() => {
-
-    let active = true;
-
-    let timer = 0;
-
-    const stop = () => {
-
-      window.clearTimeout(timer);
-
-      streamRef.current?.getTracks().forEach(track => track.stop());
-
-      streamRef.current = null;
-
-    };
-
-    const start = async () => {
-
-      try {
-
-        if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-
-          throw new Error('برای شبکه محلی از دکمه «گرفتن عکس بارکد» استفاده کنید. اسکن زنده فقط روی HTTPS یا localhost فعال است.');
-
-        }
-
-        if (!window.BarcodeDetector) {
-
-          throw new Error('اسکن زنده در این مرورگر فعال نیست؛ از دکمه «گرفتن عکس بارکد» استفاده کنید.');
-
-        }
-
-        const detector = new window.BarcodeDetector({ formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'qr_code'] });
-
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
-
-        if (!active) {
-
-          stream.getTracks().forEach(track => track.stop());
-
-          return;
-
-        }
-
-        streamRef.current = stream;
-
-        videoRef.current.srcObject = stream;
-
-        await videoRef.current.play();
-
-        setMessage('بارکد طاقه را داخل کادر قرار دهید.');
-
-        const scan = async () => {
-
-          if (!active) return;
-
-          try {
-
-            const results = await detector.detect(videoRef.current);
-
-            const code = String(results?.[0]?.rawValue || '').trim();
-
-            if (code) {
-
-              stop();
-
-              onCode(code);
-
-              return;
-
-            }
-
-          } catch {
-
-          }
-
-          timer = window.setTimeout(scan, 240);
-
-        };
-
-        scan();
-
-      } catch (err) {
-
-        setMessage(err.message || 'دوربین در دسترس نیست.');
-
-      }
-
-    };
-
-    start();
-
-    return () => {
-
-      active = false;
-
-      stop();
-
-    };
-
-  }, []);
-
-  return <div className="mobile-scanner" role="dialog" aria-modal="true" aria-label="اسکن بارکد طاقه">
-
-    <div className="mobile-scanner-card">
-
-      <div className="mobile-scanner-head"><strong>بارگیری با موبایل</strong><button type="button" className="ghost" onClick={onClose}>بستن</button></div>
-
-      <div className="mobile-scanner-frame"><video ref={videoRef} playsInline muted /></div>
-
-      <p>{message}</p>
-
-      <input ref={imageInputRef} className="mobile-scanner-file" type="file" accept="image/*" capture="environment" onChange={decodeImage} />
-
-      <button type="button" className="primary mobile-scanner-photo" onClick={() => imageInputRef.current?.click()}>گرفتن عکس بارکد / انتخاب تصویر</button>
-
-    </div>
-
-  </div>;
-
-}
-
-function MobileLoadingDialog({ session, onClose }) {
-
-  return <div className="mobile-loading-dialog" role="dialog" aria-modal="true" aria-label="اتصال بارگیری موبایل">
-
-    <div className="mobile-loading-dialog-card">
-
-      <div className="mobile-scanner-head"><strong>بارگیری با موبایل</strong><button type="button" className="ghost" onClick={onClose}>بستن اتصال</button></div>
-
-      <p className="mobile-loading-help">این QR را با دوربین گوشی اسکن کنید. پنل بارگیری روی گوشی باز می‌شود و طاقه‌های ثبت‌شده به‌صورت خودکار به همین فاکتور اضافه می‌شوند.</p>
-
-      <div className="mobile-loading-qr"><img src={session.qrImage} alt="QR اتصال بارگیری موبایل" /></div>
-
-      <div className="mobile-loading-status"><span className="connection-dot" /> اتصال فعال است</div>
-
-      <div className="mobile-loading-stats"><b>{fmt(session.count || 0)}</b><span>طاقه از موبایل دریافت شد</span></div>
-
-      <div className="mobile-loading-url" dir="ltr">{session.url}</div>
-
-      <button type="button" onClick={() => navigator.clipboard?.writeText(session.url)}>کپی لینک برای ارسال به گوشی</button>
-
-      <small>اعتبار اتصال تا {new Date(session.expires_at).toLocaleTimeString('fa-IR')} است.</small>
-
-    </div>
-
-  </div>;
-
-}
-
-function MobileLoadingPage() {
-
-  const token = new URLSearchParams(window.location.search).get('token') || '';
-
-  const [session, setSession] = useState(null);
-
-  const [code, setCode] = useState('');
-
-  const [message, setMessage] = useState('در حال اتصال به فاکتور...');
-
-  const [error, setError] = useState('');
-
-  const [scannerOpen, setScannerOpen] = useState(false);
-
-  const [pendingItem, setPendingItem] = useState(null);
-
-  const [busy, setBusy] = useState(false);
-
-  const refresh = async () => {
-
-    if (!token) throw new Error('کد اتصال در لینک وجود ندارد. QR را دوباره اسکن کنید.');
-
-    const data = await api(`/mobile-loading/${encodeURIComponent(token)}`);
-
-    setSession(data);
-
-    setMessage('اتصال برقرار است. بارکد طاقه بعدی را اسکن کنید.');
-
-    return data;
-
-  };
-
-  useEffect(() => {
-
-    let active = true;
-
-    const load = async () => {
-
-      try {
-
-        const data = await api(`/mobile-loading/${encodeURIComponent(token)}`);
-
-        if (active) {
-
-          setSession(data);
-
-          setMessage(current => current === 'در حال اتصال به فاکتور...' ? 'اتصال برقرار است. بارکد طاقه بعدی را اسکن کنید.' : current);
-
-        }
-
-      } catch (err) {
-
-        if (active) setError(err.message);
-
-      }
-
-    };
-
-    load();
-
-    const timer = window.setInterval(load, 2500);
-
-    return () => { active = false; window.clearInterval(timer); };
-
-  }, [token]);
-
-  const previewCode = async rawCode => {
-
-    const value = String(rawCode || code || '').trim();
-
-    if (!value) return;
-
-    setError('');
-
-    setPendingItem(null);
-
-    setBusy(true);
-
-    setMessage(`در حال دریافت اطلاعات طاقه ${value}...`);
-
-    try {
-
-      const result = await api(`/mobile-loading/${encodeURIComponent(token)}/preview`, { method: 'POST', body: { code: value } });
-
-      setCode(value);
-
-      setPendingItem(result.item);
-
-      setMessage('اطلاعات طاقه را بررسی کنید؛ در صورت صحت، تأیید و ثبت را بزنید.');
-
-      if (navigator.vibrate) navigator.vibrate(60);
-
-    } catch (err) {
-
-      setError(err.message);
-
-      setMessage('اطلاعات طاقه دریافت نشد. کد را بررسی و دوباره تلاش کنید.');
-
-      if (navigator.vibrate) navigator.vibrate([100, 80, 100]);
-
-    } finally {
+      URL.revokeObjectURL(objectUrl);
 
       setBusy(false);
 
@@ -2218,133 +2139,129 @@ function MobileLoadingPage() {
 
   };
 
-  const confirmItem = async () => {
+  const confirm = async () => {
 
-    if (!pendingItem || busy) return;
+    if (!candidate?.id || candidate.matches === false) return;
 
-    const value = String(pendingItem.id);
-
-    setError('');
-
-    setBusy(true);
-
-    setMessage(`در حال ثبت نهایی طاقه ${value}...`);
+    setBusy(true); setError('');
 
     try {
 
-      await api(`/mobile-loading/${encodeURIComponent(token)}/items`, { method: 'POST', body: { code: value } });
+      await api(`/loading/${encodeURIComponent(token)}/confirm`, { method: 'POST', body: { code: String(candidate.id) } });
 
-      setPendingItem(null);
+      setCandidate(null);
 
-      setCode('');
+      await loadState();
 
-      const data = await refresh();
+    } catch (err) { setError(err.message); }
 
-      setMessage(`طاقه ${value} با تأیید شما ثبت شد. تعداد کل: ${fmt(data.count)}`);
-
-      if (navigator.vibrate) navigator.vibrate(120);
-
-    } catch (err) {
-
-      setError(err.message);
-
-      setMessage('ثبت نهایی انجام نشد. اطلاعات را بررسی و دوباره تلاش کنید.');
-
-      if (navigator.vibrate) navigator.vibrate([100, 80, 100]);
-
-    } finally {
-
-      setBusy(false);
-
-    }
+    finally { setBusy(false); }
 
   };
 
-  const cancelPreview = () => {
+  const item = candidate || {};
 
-    setPendingItem(null);
+  return <div className="loading-mobile-page" dir="rtl">
 
-    setCode('');
+    <header className="loading-mobile-header">
 
-    setError('');
+      <div><h1>اسکن بارگیری فاکتور خروج</h1><p>کاربر: {session?.user?.username || session?.user?.name || '-'}</p></div>
 
-    setMessage('ثبت لغو شد. بارکد طاقه بعدی را اسکن کنید.');
+      <button className="ghost" onClick={onLogout}>خروج و ورود کاربر دیگر</button>
 
-  };
+    </header>
 
-  return <main className="mobile-loading-page" dir="rtl">
+    {state?.session && <section className="loading-mobile-summary">
 
-    <header><span>Textile ERP</span><h1>پنل بارگیری فاکتور خروج</h1><p>این صفحه فقط برای بارگیری موقت همین فاکتور فعال است.</p></header>
+      <div><span>فاکتور</span><b>{state.session.invoice_no}</b></div>
 
-    <section className="mobile-loading-summary">
+      <div><span>مشتری</span><b>{state.session.customer}</b></div>
 
-      <div><span>شماره فاکتور</span><b>{session?.invoice_no || 'ثبت نشده'}</b></div>
+      <div><span>کالا</span><b>{state.session.kala}</b></div>
 
-      <div><span>مشتری</span><b>{session?.customer || 'ثبت نشده'}</b></div>
+      <div><span>تعداد تأیید</span><b>{state.totals?.count || 0}</b></div>
 
-      <div><span>تعداد طاقه</span><b>{fmt(session?.count || 0)}</b></div>
+    </section>}
 
-      <div><span>جمع متراژ</span><b>{fmt(session?.total_metr || 0)}</b></div>
+    {error && <div className="error-box">{error}</div>}
 
-    </section>
+    <section className="panel loading-scanner-card">
 
-    <section className="mobile-loading-action">
+      <video ref={videoRef} className={cameraOn ? 'loading-camera active' : 'loading-camera'} muted playsInline />
 
-      <button type="button" className="primary mobile-camera-button" disabled={!session || busy || pendingItem} onClick={() => setScannerOpen(true)}>اسکن بارکد با دوربین</button>
+      <div className="actions-row">
 
-      <div className="mobile-code-entry"><input inputMode="numeric" autoComplete="off" placeholder="کد طاقه" value={code} disabled={busy || pendingItem} onChange={event => setCode(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') previewCode(); }} /><button type="button" disabled={busy || pendingItem} onClick={() => previewCode()}>{busy && !pendingItem ? 'در حال بررسی...' : 'نمایش اطلاعات'}</button></div>
+        <button className="primary" type="button" onClick={startCamera}>{cameraOn ? 'شروع مجدد دوربین' : 'باز کردن دوربین و اسکن بارکد'}</button>
 
-      <p className="mobile-loading-message">{message}</p>
+        <label className="capture-barcode-button">گرفتن عکس لیبل<input type="file" accept="image/*" capture="environment" onChange={scanCapturedImage} /></label>
 
-      {error && <p className="mobile-loading-error">{error}</p>}
+      </div>
 
-      {pendingItem && <div className="mobile-taghe-confirmation">
+      <small className="loading-camera-hint">اگر مرورگر روی شبکه محلی اجازه پخش زنده دوربین نداد، «گرفتن عکس لیبل» را بزنید؛ این روش بدون اینترنت هم کار می‌کند.</small>
 
-        <div className="mobile-taghe-confirmation-head"><span>اطلاعات طاقه برای تأیید</span><b>کد {pendingItem.id}</b></div>
+      <div className="loading-manual">
 
-        <dl>
+        <input inputMode="numeric" placeholder="یا کد طاقه را دستی وارد کنید" value={manualCode} onChange={e => setManualCode(e.target.value)} onKeyDown={e => e.key === 'Enter' && inspectCode(manualCode)} />
 
-          <div><dt>کالا</dt><dd>{pendingItem.kala || '-'}</dd></div>
+        <button type="button" onClick={() => inspectCode(manualCode)}>بررسی</button>
 
-          <div><dt>ماشین</dt><dd>{pendingItem.machine || '-'}</dd></div>
-
-          <div><dt>متراژ</dt><dd>{fmt(pendingItem.metr || 0)} متر</dd></div>
-
-          <div><dt>وزن</dt><dd>{fmt(pendingItem.weight || 0)} کیلوگرم</dd></div>
-
-          <div><dt>شماره چله</dt><dd>{pendingItem.shom_chelle || '-'}</dd></div>
-
-          <div><dt>هم‌پود</dt><dd>{pendingItem.ham_pod || '-'}</dd></div>
-
-          <div><dt>هم‌چله</dt><dd>{pendingItem.ham_chelle || '-'}</dd></div>
-
-        </dl>
-
-        <div className="mobile-taghe-confirmation-actions"><button type="button" className="primary" disabled={busy} onClick={confirmItem}>{busy ? 'در حال ثبت...' : 'تأیید و ثبت طاقه'}</button><button type="button" className="ghost" disabled={busy} onClick={cancelPreview}>لغو</button></div>
-
-      </div>}
+      </div>
 
     </section>
 
-    <section className="mobile-loaded-items">
+    {candidate && <section className={`panel loading-candidate ${item.matches === false ? 'mismatch' : 'match'}`}>
 
-      <h2>طاقه‌های بارگیری‌شده</h2>
+      <h2>{item.matches === false ? 'مغایرت مشخصات؛ تأیید مجاز نیست' : 'مشخصات لیبل را کنترل و تأیید کنید'}</h2>
 
-      {(session?.items || []).length ? (session.items || []).slice().reverse().map(item => <article key={item.id}><b>{item.id}</b><span>{fmt(item.metr)} متر</span><span>{fmt(item.weight)} کیلوگرم</span><small>{item.kala || '-'}</small></article>) : <p>هنوز طاقه‌ای ثبت نشده است.</p>}
+      {item.mismatch_reason && <div className="error-box">{item.mismatch_reason}</div>}
+
+      <div className="loading-detail-grid">
+
+        <FieldView label="کد طاقه" value={item.id} /><FieldView label="کالا" value={item.kala} />
+
+        <FieldView label="متراژ" value={item.metr} /><FieldView label="وزن" value={item.weight} />
+
+        <FieldView label="ماشین" value={item.machine} /><FieldView label="شماره چله" value={item.shom_chelle} />
+
+        <FieldView label="همبافت تار" value={item.ham_chelle} /><FieldView label="همبافت پود" value={item.ham_pod} />
+
+      </div>
+
+      <div className="actions-row">
+
+        <button className="primary" disabled={busy || item.matches === false} onClick={confirm}>{busy ? 'در حال ثبت...' : 'تأیید و افزودن به فاکتور'}</button>
+
+        <button className="ghost" onClick={() => setCandidate(null)}>رد کردن</button>
+
+      </div>
+
+    </section>}
+
+    <section className="panel"><h2>طاقه‌های تأییدشده</h2>
+
+      <Table rows={state?.items || []} columns={[["id","کد"],["metr","متراژ"],["weight","وزن"],["kala","کالا"],["confirmed_by","تأییدکننده"]]} hideActions />
+
+      <div className="invoice-total"><b>جمع:</b><span>{fmt(state?.totals?.count || 0)} طاقه</span><span>{fmt(state?.totals?.metr || 0)} متر</span><span>{fmt(state?.totals?.weight || 0)} کیلو</span></div>
 
     </section>
 
-    {scannerOpen && <MobileBarcodeScanner onClose={() => setScannerOpen(false)} onCode={value => { setScannerOpen(false); previewCode(value); }} />}
-
-  </main>;
+  </div>;
 
 }
 
+function FieldView({ label, value }) {
 
+  return <div><span>{label}</span><b>{display(value)}</b></div>;
+
+}
 
 function OutInvoicePro({ lookups, notify }) {
 
   const inputRef = React.useRef(null);
+
+  const mobileCountRef = React.useRef(0);
+
+  const mobileIdsRef = React.useRef(new Set());
 
   const [rows, setRows] = useState([]);
 
@@ -2354,229 +2271,87 @@ function OutInvoicePro({ lookups, notify }) {
 
   const [editing, setEditing] = useState(false);
 
-  const [mobileLoading, setMobileLoading] = useState(null);
+  const [loadingSession, setLoadingSession] = useState(null);
 
-  const [printers, setPrinters] = useState([]);
+  const [loadingQr, setLoadingQr] = useState('');
 
-  const [reportPrinter, setReportPrinter] = useState(() => localStorage.getItem('operational-report-printer') || '');
+  const [loadingBusy, setLoadingBusy] = useState(false);
 
-  const [printerLoading, setPrinterLoading] = useState(false);
+  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
 
-  const [saving, setSaving] = useState(false);
+  const [mobileItems, setMobileItems] = useState([]);
 
   const load = async () => setRows(await api('/out-invoice'));
 
   useEffect(() => { load(); api('/out-invoice/next-sanad').then(x => setForm(s => ({ ...s, sanad_no: x.sanad_number || '' }))).catch(() => {}); }, []);
 
-  const loadPrinters = async () => {
+  useEffect(() => {
 
-    if (!LOCAL_MODE) return;
+    if (!loadingSession?.token) return undefined;
 
-    setPrinterLoading(true);
+    let cancelled = false;
 
-    try {
+    const sync = async () => {
 
-      const data = await api('/local/printers');
+      try {
 
-      const available = data.printers || [];
+        const state = await api(`/loading/${encodeURIComponent(loadingSession.token)}`);
 
-      setPrinters(available);
+        if (!cancelled) {
 
-      if (reportPrinter && !available.some(item => item.name === reportPrinter)) {
+          const incoming = state.items || [];
 
-        setReportPrinter('');
+          setMobileItems(incoming);
 
-        localStorage.removeItem('operational-report-printer');
+          setForm(current => {
 
-      }
+            const incomingIds = new Set(incoming.map(item => String(item.id)));
 
-    } catch (err) {
+            const merged = current.items.filter(item => !mobileIdsRef.current.has(String(item.id)) || incomingIds.has(String(item.id)));
 
-      notify(err.message);
+            incoming.forEach(item => {
 
-    } finally {
+              const index = merged.findIndex(existing => String(existing.id) === String(item.id));
 
-      setPrinterLoading(false);
+              if (index >= 0) merged[index] = { ...merged[index], ...item };
 
-    }
+              else merged.push(item);
 
-  };
+            });
 
-  useEffect(() => { if (LOCAL_MODE) loadPrinters(); }, []);
+            mobileIdsRef.current = incomingIds;
 
-  const selectReportPrinter = name => {
+            return { ...current, items: merged };
 
-    setReportPrinter(name);
+          });
 
-    if (name) localStorage.setItem('operational-report-printer', name);
+          if (incoming.length > mobileCountRef.current) notify(`${incoming.length - mobileCountRef.current} طاقه جدید از موبایل به فاکتور اضافه شد`);
 
-    else localStorage.removeItem('operational-report-printer');
+          mobileCountRef.current = incoming.length;
 
-  };
+        }
 
-  const invoiceValidationError = invoice => {
+      } catch (err) {
 
-    const missing = [];
-
-    if (!String(invoice.invoice_no || '').trim()) missing.push('شماره فاکتور');
-
-    if (!String(invoice.customer || '').trim()) missing.push('مشتری');
-
-    if (!String(invoice.kala || '').trim()) missing.push('نام کالا');
-
-    if (!(invoice.items || []).length) missing.push('حداقل یک طاقه');
-
-    return missing.length ? `اطلاعات فاکتور کامل نیست: ${missing.join('، ')}` : '';
-
-  };
-
-  const printOutgoingInvoice = async (invoice, existingWindow = null) => {
-
-    const validationError = invoiceValidationError(invoice);
-
-    if (validationError) {
-
-      if (existingWindow) existingWindow.close();
-
-      notify(validationError);
-
-      return false;
-
-    }
-
-    if (printAfterSave && LOCAL_MODE && !reportPrinter) {
-
-      if (existingWindow) existingWindow.close();
-
-      notify('ابتدا چاپگر گزارش را انتخاب کنید تا فاکتور به لیبل‌پرینتر ارسال نشود');
-
-      return false;
-
-    }
-
-    const printWindow = existingWindow || window.open('', '_blank', 'width=1100,height=800');
-
-    if (!printWindow) {
-
-      notify('مرورگر پنجره چاپ را مسدود کرده است');
-
-      return false;
-
-    }
-
-    if (!existingWindow) {
-
-      printWindow.document.write('<!doctype html><html lang="fa" dir="rtl"><meta charset="UTF-8"><body style="font-family:Tahoma;padding:30px">در حال آماده‌سازی فاکتور...</body></html>');
-
-      printWindow.document.close();
-
-    }
-
-    let previousPrinter = '';
-
-    try {
-
-      if (LOCAL_MODE) {
-
-        const result = await api('/local/printers', { method: 'POST', body: { name: reportPrinter } });
-
-        previousPrinter = result.previous_printer || '';
+        if (!cancelled && !String(err.message || '').includes('پایان')) notify(err.message);
 
       }
 
-      printInvoiceTaghes(invoice, printWindow);
+    };
 
-      if (LOCAL_MODE && previousPrinter && previousPrinter !== reportPrinter) {
+    sync();
 
-        window.setTimeout(() => {
+    const timer = setInterval(sync, 2000);
 
-          api('/local/printers', { method: 'POST', body: { name: previousPrinter } }).catch(() => {});
+    return () => { cancelled = true; clearInterval(timer); };
 
-        }, 20000);
-
-      }
-
-      return true;
-
-    } catch (err) {
-
-      printWindow.close();
-
-      notify(`آماده‌سازی چاپ انجام نشد: ${err.message}`);
-
-      return false;
-
-    }
-
-  };
-
-  const printOutgoingReport = async (title, rowsOrLoader, columns) => {
-
-    if (LOCAL_MODE && !reportPrinter) {
-
-      notify('ابتدا چاپگر گزارش را انتخاب کنید تا چاپ به لیبل‌پرینتر ارسال نشود');
-
-      return;
-
-    }
-
-    const printWindow = printAfterSave ? window.open('', '_blank', 'width=1100,height=800') : null;
-
-    if (printAfterSave && !printWindow) {
-
-      notify('مرورگر پنجره چاپ را مسدود کرده است');
-
-      return;
-
-    }
-
-    printWindow.document.write('<!doctype html><html lang="fa" dir="rtl"><meta charset="UTF-8"><body style="font-family:Tahoma;padding:30px">در حال آماده‌سازی چاپ...</body></html>');
-
-    printWindow.document.close();
-
-    let previousPrinter = '';
-
-    try {
-
-      const reportRows = typeof rowsOrLoader === 'function' ? await rowsOrLoader() : rowsOrLoader;
-
-      if (LOCAL_MODE) {
-
-        const result = await api('/local/printers', { method: 'POST', body: { name: reportPrinter } });
-
-        previousPrinter = result.previous_printer || '';
-
-      }
-
-      printReport(title, reportRows, columns, printWindow);
-
-      notify(LOCAL_MODE ? `چاپگر گزارش آماده شد: ${reportPrinter}` : 'پنجره چاپ آماده شد');
-
-      if (LOCAL_MODE && previousPrinter && previousPrinter !== reportPrinter) {
-
-        window.setTimeout(() => {
-
-          api('/local/printers', { method: 'POST', body: { name: previousPrinter } }).catch(() => {});
-
-        }, 20000);
-
-      }
-
-    } catch (err) {
-
-      printWindow.close();
-
-      notify(err.message);
-
-    }
-
-  };
+  }, [loadingSession?.token]);
 
   const set = (k, v) => setForm(s => ({ ...s, [k]: v }));
 
-  const addTaghe = async (scannedCode = '') => {
+  const addTaghe = async () => {
 
-    const code = String(scannedCode || form.taghe_code || '').trim();
+    const code = String(form.taghe_code || '').trim();
 
     if (!code) return;
 
@@ -2610,82 +2385,6 @@ function OutInvoicePro({ lookups, notify }) {
 
   };
 
-  const startMobileLoading = async () => {
-
-    try {
-
-      const data = await api('/out-invoice/mobile-sessions', { method: 'POST', body: { invoice_no: form.invoice_no, customer: form.customer, kala: form.kala } });
-
-      const origin = String(window.ERP_LAN_ORIGIN || window.location.origin).replace(/\/$/, '');
-
-      const url = `${origin}/operational/mobile-load?token=${encodeURIComponent(data.token)}`;
-
-      const qrImage = await QRCode.toDataURL(url, { width: 380, margin: 2, errorCorrectionLevel: 'M' });
-
-      setMobileLoading({ ...data, url, qrImage, count: 0 });
-
-    } catch (err) {
-
-      notify(err.message);
-
-    }
-
-  };
-
-  useEffect(() => {
-
-    if (!mobileLoading?.token) return undefined;
-
-    let active = true;
-
-    const poll = async () => {
-
-      try {
-
-        const data = await api(`/mobile-loading/${encodeURIComponent(mobileLoading.token)}`);
-
-        if (!active) return;
-
-        setMobileLoading(current => current ? { ...current, count: data.count || 0 } : current);
-
-        setForm(current => {
-
-          const known = new Set(current.items.map(item => String(item.id)));
-
-          const received = (data.items || []).filter(item => !known.has(String(item.id)));
-
-          if (!received.length) return current;
-
-          return { ...current, kala: current.kala || data.kala || received[0]?.kala || '', items: [...current.items, ...received] };
-
-        });
-
-      } catch (err) {
-
-        if (active && /منقضی|بسته/.test(err.message)) setMobileLoading(null);
-
-      }
-
-    };
-
-    poll();
-
-    const timer = window.setInterval(poll, 1200);
-
-    return () => { active = false; window.clearInterval(timer); };
-
-  }, [mobileLoading?.token]);
-
-  const closeMobileLoading = async () => {
-
-    const token = mobileLoading?.token;
-
-    setMobileLoading(null);
-
-    if (token) await api(`/mobile-loading/${encodeURIComponent(token)}`, { method: 'DELETE' }).catch(() => {});
-
-  };
-
   const edit = async (row) => {
 
     const detail = await api(`/out-invoice/details/${encodeURIComponent(row.invoice_no)}`);
@@ -2712,15 +2411,87 @@ function OutInvoicePro({ lookups, notify }) {
 
   };
 
-  const removeItem = (row) => {
+  const removeItem = async (row) => {
 
     const id = typeof row === 'object' ? row.id : row;
+
+    if (loadingSession?.token) {
+
+      await api(`/loading/${encodeURIComponent(loadingSession.token)}/items/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(err => notify(err.message));
+
+      setMobileItems(items => {
+
+        const next = items.filter(x => String(x.id) !== String(id));
+
+        mobileCountRef.current = next.length;
+
+        return next;
+
+      });
+
+    }
 
     setForm(s => ({ ...s, items: s.items.filter(x => String(x.id) !== String(id)) }));
 
   };
 
+  const stopLoading = async () => {
+
+    const token = loadingSession?.token;
+
+    setLoadingSession(null); setLoadingQr('');
+
+    if (token) await api(`/out-invoice/loading/${encodeURIComponent(token)}`, { method: 'DELETE' }).catch(() => {});
+
+  };
+
+  const startLoading = async () => {
+
+    if (!String(form.invoice_no || '').trim() || !String(form.customer || '').trim() || !String(form.kala || '').trim()) {
+
+      notify('برای ساخت QR، شماره فاکتور، مشتری و نام کالا را وارد کنید');
+
+      return;
+
+    }
+
+    setLoadingBusy(true);
+
+    try {
+
+      if (loadingSession?.token) await stopLoading();
+
+      setMobileItems([]);
+
+      mobileCountRef.current = 0;
+
+      mobileIdsRef.current = new Set();
+
+      const result = await api('/out-invoice/loading', { method: 'POST', body: { invoice_no: form.invoice_no, sanad_no: form.sanad_no, customer: form.customer, kala: form.kala, items: form.items.map(item => String(item.id)), old_invoice_no: form.old_invoice_no } });
+
+      setLoadingSession(result);
+
+      setLoadingQr(await QRCode.toDataURL(result.url, { width: 420, margin: 2, errorCorrectionLevel: 'M' }));
+
+      notify('QR بارگیری ساخته شد؛ آن را با دوربین موبایل اسکن کنید');
+
+    } catch (err) { notify(err.message); }
+
+    finally { setLoadingBusy(false); }
+
+  };
+
   const clearInvoice = () => {
+
+    stopLoading();
+
+    setMobilePanelOpen(false);
+
+    setMobileItems([]);
+
+    mobileCountRef.current = 0;
+
+    mobileIdsRef.current = new Set();
 
     setForm({ invoice_no: '', sanad_no: form.sanad_no, customer: '', kala: '', taghe_code: '', items: [], old_invoice_no: '' });
 
@@ -2732,79 +2503,23 @@ function OutInvoicePro({ lookups, notify }) {
 
   const save = async () => {
 
-    if (saving) return;
+    await api('/out-invoice', { method: 'POST', body: { invoice_no: form.invoice_no, sanad_no: form.sanad_no, customer: form.customer, kala: form.kala, items: form.items.map(x => String(x.id)), old_invoice_no: form.old_invoice_no, loading_session_token: loadingSession?.token || '' } });
 
-    const snapshot = { ...form, items: form.items.map(item => ({ ...item })) };
+    setLoadingSession(null); setLoadingQr('');
 
-    const validationError = invoiceValidationError(snapshot);
+    setMobilePanelOpen(false); setMobileItems([]); mobileCountRef.current = 0; mobileIdsRef.current = new Set();
 
-    if (validationError) {
+    setForm({ invoice_no: '', sanad_no: form.sanad_no, customer: '', kala: '', taghe_code: '', items: [], old_invoice_no: '' });
 
-      notify(validationError);
+    setEditing(false);
 
-      return;
+    const next = await api('/out-invoice/next-sanad').catch(() => null);
 
-    }
+    if (next?.sanad_number) setForm(s => ({ ...s, sanad_no: next.sanad_number }));
 
-    if (LOCAL_MODE && !reportPrinter) {
+    await load();
 
-      notify('ابتدا چاپگر گزارش را انتخاب کنید؛ سپس فاکتور ذخیره و چاپ می‌شود');
-
-      return;
-
-    }
-
-    const printWindow = window.open('', '_blank', 'width=1100,height=800');
-
-    if (!printWindow) {
-
-      notify('مرورگر پنجره چاپ را مسدود کرده است؛ اجازه Pop-up را فعال کنید');
-
-      return;
-
-    }
-
-    if (printWindow) printWindow.document.write('<!doctype html><html lang="fa" dir="rtl"><meta charset="UTF-8"><body style="font-family:Tahoma;padding:30px">در حال ذخیره فاکتور و آماده‌سازی چاپ...</body></html>');
-
-    if (printWindow) printWindow.document.close();
-
-    const wasEditing = editing;
-
-    setSaving(true);
-
-    try {
-
-      const saved = await api('/out-invoice', { method: 'POST', body: { invoice_no: snapshot.invoice_no, sanad_no: snapshot.sanad_no, customer: snapshot.customer, kala: snapshot.kala, items: snapshot.items.map(x => String(x.id)), old_invoice_no: snapshot.old_invoice_no } });
-
-      const printed = printAfterSave ? await printOutgoingInvoice({ ...snapshot, tarikh: saved.tarikh || snapshot.tarikh }, printWindow) : false;
-
-      const token = mobileLoading?.token;
-
-      if (token) await api(`/mobile-loading/${encodeURIComponent(token)}`, { method: 'DELETE' }).catch(() => {});
-
-      setMobileLoading(null);
-
-      clearInvoice();
-
-      const next = await api('/out-invoice/next-sanad').catch(() => null);
-
-      if (next?.sanad_number) setForm(s => ({ ...s, sanad_no: next.sanad_number }));
-
-      await load();
-
-      notify(printAfterSave ? (printed ? (wasEditing ? 'فاکتور ویرایش، ذخیره و برای چاپ آماده شد' : 'فاکتور ذخیره و برای چاپ آماده شد') : 'فاکتور ذخیره شد؛ چاپ انجام نشد') : (wasEditing ? 'ویرایش فاکتور با موفقیت ذخیره شد' : 'فاکتور با موفقیت ذخیره شد'));
-
-    } catch (err) {
-
-      if (printWindow) printWindow.close();
-
-      notify(`ذخیره فاکتور انجام نشد: ${err.message}`);
-
-    } finally {
-
-      setSaving(false);
-
-    }
+    notify(editing ? 'فاکتور خروج ویرایش شد' : 'فاکتور خروج ثبت شد');
 
   };
 
@@ -2828,63 +2543,85 @@ function OutInvoicePro({ lookups, notify }) {
 
         <Input label="شماره فاکتور" value={form.invoice_no} onChange={v => set('invoice_no', v)} />
 
-        <Input label="مشتری" value={form.customer} onChange={v => set('customer', v)} list={(lookups.customers || []).map(x => x.name)} />
+        <Select label="مشتری" value={form.customer} onChange={v => set('customer', v)} items={(lookups.customers || []).map(x => ({ id: x.name, name: x.name }))} />
 
-        <Input label="نام کالا" value={form.kala} onChange={v => set('kala', v)} list={(lookups.fabrics || []).map(x => x.name)} />
+        <Select label="نام کالا" value={form.kala} onChange={v => set('kala', v)} items={(lookups.fabrics || []).map(x => ({ id: x.name, name: x.name }))} />
 
         <label><span>کد طاقه / بارکد</span><input ref={inputRef} value={form.taghe_code} onChange={e => set('taghe_code', e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTaghe(); } }} /></label>
 
-        <label><span>&nbsp;</span><button type="button" onClick={() => addTaghe()}>افزودن طاقه</button></label>
-
-        <label><span>بارگیری با موبایل</span><button type="button" className="mobile-load-button" onClick={startMobileLoading}>ساخت QR بارگیری با موبایل</button></label>
+        <label><span>&nbsp;</span><button type="button" onClick={addTaghe}>افزودن طاقه</button></label>
 
       </div>
+
+      <div className="mobile-feature-toggle">
+
+        <button className={mobilePanelOpen ? 'ghost' : 'primary'} type="button" onClick={async () => {
+
+          if (mobilePanelOpen) { await stopLoading(); setMobilePanelOpen(false); }
+
+          else setMobilePanelOpen(true);
+
+        }}>{mobilePanelOpen ? 'بستن بارگیری با موبایل' : 'بارگیری با موبایل (اختیاری)'}</button>
+
+        <small>در بارگیری دستی نیازی به فعال‌کردن این بخش نیست.</small>
+
+      </div>
+
+      {mobilePanelOpen && <section className="invoice-mobile-sync">
+
+        <div className="invoice-mobile-copy">
+
+          <h2>بارکدخوان موبایل برای فاکتور خروج</h2>
+
+          <p>پس از تکمیل شماره فاکتور، مشتری و کالا، QR را بسازید. کارمند QR را با دوربین گوشی باز می‌کند، با نام کاربری خودش وارد می‌شود و بارکد لیبل طاقه‌ها را یکی‌یکی تأیید می‌کند.</p>
+
+          <div className="actions-row">
+
+            <button className="primary" type="button" disabled={loadingBusy} onClick={startLoading}>{loadingBusy ? 'در حال ساخت...' : loadingSession ? 'ساخت QR جدید' : 'ساخت QR اتصال موبایل'}</button>
+
+            {loadingSession && <button className="ghost" type="button" onClick={stopLoading}>پایان اتصال موبایل</button>}
+
+          </div>
+
+          {loadingSession && <small>لیست این فاکتور هر ۲ ثانیه با تأییدهای موبایل به‌روز می‌شود. تاکنون {fmt(mobileItems.length)} طاقه از موبایل تأیید شده است.</small>}
+
+          {mobileItems.length > 0 && <div className="mobile-confirmed-list">
+
+            <b>آخرین رکوردهای تأییدشده در موبایل</b>
+
+            <Table rows={mobileItems.map((x, i) => ({ ...x, row: i + 1 }))} columns={[["row","ردیف"],["id","کد طاقه"],["metr","متراژ"],["weight","وزن"],["confirmed_by","کاربر موبایل"]]} hideActions />
+
+          </div>}
+
+        </div>
+
+        {loadingQr && <div className="invoice-mobile-qr"><img src={loadingQr} alt="QR اتصال بارکدخوان موبایل" /><a href={loadingSession.url} target="_blank" rel="noreferrer">باز کردن صفحه موبایل برای تست</a></div>}
+
+      </section>}
 
       <section className="invoice-taghe-list">
 
         <div className="invoice-taghe-head"><h2>لیست طاقه‌های خروجی</h2></div>
 
-        <Table rows={form.items.map((x, i) => ({ ...x, row: i + 1 }))} columns={[['row','ردیف'],['id','کد طاقه'],['metr','متراژ (m)'],['weight','وزن (kg)'],['ham_chelle','همبافت تار'],['ham_pod','همبافت پود'],['shom_chelle','شماره چله'],['kala','کالا']]} onEdit={() => {}} onDelete={removeItem} />
+        <Table rows={form.items.map((x, i) => ({ ...x, row: i + 1, entry_source: x.confirmed_by ? `موبایل (${x.confirmed_by})` : 'ثبت دستی' }))} columns={[['row','ردیف'],['id','کد طاقه'],['metr','متراژ (m)'],['weight','وزن (kg)'],['ham_chelle','همبافت تار'],['ham_pod','همبافت پود'],['shom_chelle','شماره چله'],['kala','کالا'],['entry_source','روش ثبت']]} onEdit={() => {}} onDelete={removeItem} />
 
         <div className="invoice-total"><b>جمع کل:</b><span>{fmt(form.items.length)} عدد طاقه</span><span>{fmt(totalMetr)} متر</span><span>{fmt(totalWeight)} kg</span></div>
 
       </section>
 
-      {LOCAL_MODE && <section className="report-printer-picker">
-
-        <div><strong>چاپگر گزارش و فاکتور</strong><span>این انتخاب از چاپگر لیبل جداست و فقط برای چاپ‌های همین صفحه استفاده می‌شود.</span></div>
-
-        <label><span>چاپگر معمولی</span><select value={reportPrinter} onChange={event => selectReportPrinter(event.target.value)}>
-
-          <option value="">انتخاب چاپگر گزارش</option>
-
-          {printers.map(printer => <option key={printer.name} value={printer.name}>{printer.name}{printer.is_default ? ' (پیش‌فرض فعلی)' : ''}</option>)}
-
-        </select></label>
-
-        <button type="button" className="ghost" disabled={printerLoading} onClick={loadPrinters}>{printerLoading ? 'در حال دریافت...' : 'به‌روزرسانی چاپگرها'}</button>
-
-        <small>پنجره چاپ مرورگر نیز باز می‌شود؛ قبل از تأیید نهایی، نام همین چاپگر را کنترل کنید. چاپگر پیش‌فرض قبلی ویندوز پس از چاپ بازگردانده می‌شود.</small>
-
-      </section>}
-
       <div className="actions-row invoice-actions">
 
-        <button onClick={() => printOutgoingReport('موجودی طاقه‌های خروج‌نخورده', () => api('/out-invoice/stock'), [['id','کد طاقه'],['tarikh','تاریخ'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['machine','ماشین'],['shom_chelle','چله']])}>گزارش موجودی انبار</button>
+        <button onClick={async () => printReport('موجودی طاقه‌های خروج‌نخورده', await api('/out-invoice/stock'), [['id','کد طاقه'],['tarikh','تاریخ'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['machine','ماشین'],['shom_chelle','چله']])}>گزارش موجودی انبار</button>
 
-        <button onClick={() => printOutgoingInvoice(form)}>چاپ لیست طاقه‌ها</button>
+        <button className="printer-picker" title="پنجره چاپ ویندوز/مرورگر باز می‌شود و می‌توانید چاپگر A4 را انتخاب کنید" onClick={() => printInvoiceTaghes(form)}>انتخاب چاپگر و چاپ فاکتور</button>
 
-        <button onClick={() => printOutgoingReport('گزارش فاکتور خروج', visible, invoiceCols)}>گزارش فاکتورها</button>
+        <button onClick={() => printReport('گزارش فاکتور خروج', visible, invoiceCols)}>گزارش فاکتورها</button>
 
-        <button className="primary" disabled={saving} onClick={() => save(true)}>{saving ? 'در حال ذخیره...' : 'اتمام فاکتور، ذخیره و چاپ'}</button>
-
-        <button className="ghost" disabled={saving} onClick={() => save(false)}>فقط ذخیره</button>
+        <button className="primary" onClick={save}>اتمام فاکتور و ذخیره</button>
 
         <button className="ghost" onClick={clearInvoice}>پاک کردن فاکتور</button>
 
       </div>
-
-      {mobileLoading && <MobileLoadingDialog session={mobileLoading} onClose={closeMobileLoading} />}
 
     </section>
 
@@ -2892,7 +2629,7 @@ function OutInvoicePro({ lookups, notify }) {
 
       <h2>فاکتورهای ثبت شده قبلی</h2>
 
-      <Filters filters={[['invoice_no','شماره فاکتور'],['mosh','مشتری'],['kala','نام کالا'],['sanad','شماره سند']]} rows={rows} values={filters} setValues={setFilters} onPrint={() => printOutgoingReport('فاکتورهای ثبت شده قبلی', visible, invoiceCols)} />
+      <Filters filters={[['invoice_no','شماره فاکتور'],['mosh','مشتری'],['kala','نام کالا'],['sanad','شماره سند']]} rows={rows} values={filters} setValues={setFilters} onPrint={() => printReport('فاکتورهای ثبت شده قبلی', visible, invoiceCols)} />
 
       <Table rows={visible} columns={invoiceCols} onEdit={edit} onDelete={del} />
 
@@ -2906,13 +2643,13 @@ function OutInvoicePro({ lookups, notify }) {
 
 function ReportsPro2() {
 
-  const [data, setData] = useState({ yarnOut: [], invoices: [], expenses: [] });
+  const [data, setData] = useState({ yarnOut: [], invoices: [], expenses: [], management: {} });
 
   const [filters, setFilters] = useState({});
 
   useEffect(() => {
 
-    Promise.all([api('/nakh-khor'), api('/out-invoice'), api('/expenses')]).then(([yarnOut, invoices, expenses]) => setData({ yarnOut, invoices, expenses })).catch(() => {});
+    Promise.all([api('/nakh-khor'), api('/out-invoice'), api('/expenses'), api('/management-report')]).then(([yarnOut, invoices, expenses, management]) => setData({ yarnOut, invoices, expenses, management })).catch(() => {});
 
   }, []);
 
@@ -2923,8 +2660,42 @@ function ReportsPro2() {
   const invoices = filterRows(data.invoices, filters);
 
   const expenses = filterRows(data.expenses, filters);
+  const management = data.management || {};
+  const today = management.today || {};
+  const month = management.month || {};
+  const stock = management.stock || {};
 
   return <Page title="گزارشات عملیاتی">
+
+    <div className="metrics">
+      {[
+        ['تولید امروز', fmt(today.metr), 'متر'],
+        ['وزن تولید امروز', fmt(today.weight), 'کیلو'],
+        ['تولید ماه', fmt(month.metr), 'متر'],
+        ['وزن تولید ماه', fmt(month.weight), 'کیلو'],
+        ['طاقه آماده خروج', fmt(stock.total_taghe), 'طاقه'],
+        ['وزن پارچه موجود', fmt(stock.total_weight), 'کیلو'],
+      ].map(([title, value, unit]) => <div className="metric" key={title}><span>{title}</span><b>{value}</b><small>{unit}</small></div>)}
+    </div>
+
+    <section className="panel report-card">
+      <h2>هشدارهای مدیریتی و کنترلی</h2>
+      {(management.notifications || []).length ? <div className="notice-list">{management.notifications.map((x, i) => <div key={`${x.code || 'n'}-${i}`}><b>{x.title}</b><span>{x.message}</span></div>)}</div> : <div className="empty">هشدار فعالی وجود ندارد.</div>}
+    </section>
+
+    <section className="panel report-card"><h2>کنترل کیفیت داده‌های سیکل</h2><Table rows={management.data_quality || []} columns={[["title","کنترل"],["count","تعداد مورد"],["status","وضعیت"]]} hideActions /></section>
+
+    <section className="panel report-card"><h2>دفتر موجودی نخ انبار</h2><Table rows={management.yarn_inventory || []} columns={[["mosh","مالک نخ"],["hambaft","هم‌بافت"],["yarn","نوع نخ"],["vorud","ورود kg"],["to_salon","خالص ارسال سالن kg"],["khoroj","سایر خروج kg"],["inventory","مانده انبار kg"]]} hideActions /></section>
+
+    <section className="panel report-card"><h2>مانده نخ نزد چله‌پیچ</h2><Table rows={management.warper_balances || []} columns={[["warper","چله‌پیچ"],["owner","مالک نخ"],["hambaft","هم‌بافت"],["yarn","نوع نخ"],["sent_weight","ارسال kg"],["returned_weight","چله برگشتی kg"],["balance_weight","مانده kg"],["chelle_count","تعداد چله"]]} hideActions /></section>
+
+    <section className="panel report-card"><h2>وضعیت چله و مواد روی ماشین</h2><Table rows={management.machines || []} columns={[["machine","ماشین"],["shom_chelle","چله"],["chelle_weight","تار اولیه kg"],["pod_assigned","پود تخصیصی kg"],["tar_used","تار مصرفی kg"],["pod_used","پود مصرفی kg"],["tar_remaining","مانده تار kg"],["pod_remaining","مانده پود kg"],["actual_waste","ضایعات واقعی kg"],["remaining_percent","درصد مانده"],["material_shortage","کسری مواد kg"]]} hideActions /></section>
+
+    <section className="panel report-card"><h2>تولید ماه به تفکیک ماشین</h2><Table rows={management.month_by_machine || []} columns={[["machine","ماشین"],["pieces","طاقه"],["metr","متراژ"],["weight","وزن kg"]]} hideActions /></section>
+
+    <section className="panel report-card"><h2>دفتر ضایعات واقعی</h2><Table rows={management.waste || []} columns={[["tarikh","تاریخ"],["machine","ماشین"],["shom_chelle","چله"],["waste_type","نوع"],["weight","وزن kg"],["reason","علت"],["operator_name","ثبت‌کننده"],["description","اقدام اصلاحی"]]} hideActions /></section>
+
+    <section className="panel report-card"><h2>موجودی پارچه آماده خروج</h2><Table rows={stock.items || []} columns={[["kala","کالا"],["taghe_count","تعداد طاقه"],["metr","متراژ"],["weight","وزن kg"]]} hideActions /></section>
 
     <section className="panel">
 
@@ -2936,7 +2707,7 @@ function ReportsPro2() {
 
     <section className="panel report-card"><h2>گزارش فاکتور خروج</h2><Table rows={invoices} columns={[['tarikh','تاریخ'],['invoice_no','شماره فاکتور'],['sanad','شماره سند'],['mosh','مشتری'],['kala','کالا'],['taghe_count','تعداد طاقه'],['metr','متراژ'],['weight','وزن']]} hideActions /></section>
 
-    <section className="panel report-card"><h2>گزارش خروج نخ</h2><Table rows={yarnOut} columns={[['tarikh','تاریخ'],['hambaft','همبافت'],['weight','وزن'],['mosh','مشتری'],['nakh','نخ']]} hideActions /></section>
+    <section className="panel report-card"><h2>گزارش خروج نخ</h2><Table rows={yarnOut} columns={[['tarikh','تاریخ'],['owner_mosh','مالک نخ'],['hambaft','همبافت'],['nakh','نخ'],['weight','وزن'],['mosh','مقصد']]} hideActions /></section>
 
     <section className="panel report-card"><h2>گزارش هزینه‌ها</h2><Table rows={expenses} columns={[['tarikh','تاریخ'],['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','بافنده'],['mablagh','مبلغ'],['shomare_sanad','شماره سند'],['tozih','توضیحات']]} hideActions /></section>
 
@@ -3621,7 +3392,7 @@ tr.big td.value-cell { font-size: 20px; } .barcode-box { flex: 1; min-height: 19
 
 
 
-function printReport(title, rows, columns, targetWindow = null) {
+function printReport(title, rows, columns) {
 
   const head = columns.map(c => `<th>${safe(c[1])}</th>`).join('');
 
@@ -3629,17 +3400,7 @@ function printReport(title, rows, columns, targetWindow = null) {
 
   const html = `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><title>${safe(title)}</title><style>body{font-family:Tahoma;padding:20px;color:#111}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #999;padding:8px;text-align:right}th{background:#e5e7eb}@media print{button{display:none}}</style></head><body><button onclick="window.print()">چاپ</button><h1>${safe(title)}</h1><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></body></html>`;
 
-  const win = targetWindow || window.open('', '_blank', 'width=1100,height=800');
-
-  if (!win) {
-
-    alert('مرورگر پنجره چاپ را مسدود کرده است');
-
-    return;
-
-  }
-
-  win.document.open();
+  const win = window.open('', '_blank', 'width=1100,height=800');
 
   win.document.write(html);
 
@@ -3651,7 +3412,7 @@ function printReport(title, rows, columns, targetWindow = null) {
 
 
 
-function printInvoiceTaghes(form, targetWindow = null) {
+function printInvoiceTaghes(form) {
 
   const rows = (form.items || []).map((x, i) => ({ ...x, row: i + 1 }));
 
@@ -3671,33 +3432,21 @@ function printInvoiceTaghes(form, targetWindow = null) {
 
     ['شماره فاکتور', form.invoice_no],
 
-    ['تاریخ فاکتور', form.tarikh || 'روز جاری'],
-
     ['مشتری', form.customer],
 
     ['نام کالا', form.kala],
 
     ['تعداد طاقه', rows.length],
 
-    ['جمع متراژ', `${display(totalMetr)} متر`],
+    ['جمع متراژ', totalMetr],
 
-    ['جمع وزن', `${display(totalWeight)} کیلوگرم`]
+    ['جمع وزن', totalWeight]
 
   ];
 
   const html = `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><title>لیست طاقه‌های خروجی</title><style>body{font-family:Tahoma;padding:20px;color:#111}h1{text-align:center}.meta{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:16px 0}.meta div{border:1px solid #999;padding:8px;border-radius:6px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #999;padding:8px;text-align:center}th{background:#e5e7eb}.total{background:#dcfce7;font-weight:900}@media print{button{display:none}}</style></head><body><button onclick="window.print()">چاپ</button><h1>لیست طاقه‌های خروجی</h1><div class="meta">${meta.map(([k,v]) => `<div><b>${safe(k)}:</b> ${safe(display(v))}</div>`).join('')}</div><table><thead><tr>${head}</tr></thead><tbody>${body}<tr class="total"><td colspan="2">جمع کل</td><td>${safe(display(totalMetr))}</td><td>${safe(display(totalWeight))}</td><td colspan="4">${safe(display(rows.length))} عدد طاقه</td></tr></tbody></table></body></html>`;
 
-  const win = targetWindow || window.open('', '_blank', 'width=1100,height=800');
-
-  if (!win) {
-
-    alert('مرورگر پنجره چاپ را مسدود کرده است');
-
-    return;
-
-  }
-
-  win.document.open();
+  const win = window.open('', '_blank', 'width=1100,height=800');
 
   win.document.write(html);
 
@@ -3797,6 +3546,4 @@ function safe(value) {
 
 
 
-const isMobileLoadingPage = /\/(operational\/)?mobile-load\/?$/.test(window.location.pathname);
-
-createRoot(document.getElementById('root')).render(isMobileLoadingPage ? <MobileLoadingPage /> : <App />);
+createRoot(document.getElementById('root')).render(<App />);

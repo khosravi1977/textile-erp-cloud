@@ -1,0 +1,114 @@
+name: deploy-vps
+
+on:
+  workflow_run:
+    workflows: [publish-images]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Full commit SHA whose images are already published
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+concurrency:
+  group: deploy-textile-erp-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Download release identity
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          name: production-release
+          path: ${{ runner.temp }}/published-release
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Resolve release
+        shell: bash
+        env:
+          MANUAL_RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            release_sha="$(tr -d '\r\n' < "$RUNNER_TEMP/published-release/release-sha")"
+          else
+            release_sha="$MANUAL_RELEASE_SHA"
+          fi
+          [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "RELEASE_SHA=$release_sha" >> "$GITHUB_ENV"
+          echo "REMOTE_ARCHIVE=/tmp/viora-deploy-textile-erp-$release_sha.tar.gz" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Package reviewed source and manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach "$RELEASE_SHA"
+          test -f deploy/production/compose.images.yaml
+          git archive --format=tar.gz --output="$RUNNER_TEMP/release.tar.gz" "$RELEASE_SHA"
+      - name: Configure restricted VPS access
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY_B64: ${{ secrets.VPS_SSH_KEY_B64 }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 ~/.ssh
+          printf '%s' "$VPS_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+      - name: Authenticate VPS for private images
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "sudo /usr/local/sbin/viora-deploy ghcr-login '${{ github.actor }}'"
+      - name: Deploy immutable release
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          scp -o BatchMode=yes "$RUNNER_TEMP/release.tar.gz" "$VPS_USER@$VPS_HOST:$REMOTE_ARCHIVE"
+          ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "sudo /usr/local/sbin/viora-deploy textile-erp '$RELEASE_SHA' '$REMOTE_ARCHIVE'"
+          pergol_archive="/tmp/viora-deploy-pergol-operational-$RELEASE_SHA.tar.gz"
+          scp -o BatchMode=yes "$RUNNER_TEMP/release.tar.gz" "$VPS_USER@$VPS_HOST:$pergol_archive"
+          ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "sudo /usr/local/sbin/viora-deploy pergol-operational '$RELEASE_SHA' '$pergol_archive'"
+      - name: Remove temporary registry credentials
+        if: always()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" "sudo /usr/local/sbin/viora-deploy ghcr-logout" || true
+      - name: Verify public service
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 24 --retry-delay 5 --retry-all-errors https://textile.vioraapps.com/ >/dev/null
+          curl --fail --silent --show-error --retry 24 --retry-delay 5 --retry-all-errors https://textile.vioraapps.com/health >/dev/null

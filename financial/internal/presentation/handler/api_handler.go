@@ -90,23 +90,15 @@ func (h *APIHandler) requireOperational(w http.ResponseWriter, r *http.Request) 
 		RespondError(w, http.StatusServiceUnavailable, "Operational database is not available")
 		return nil, func() {}
 	}
-	bridge, closeBridge, err := h.operational.ForCompany(r.Context(), requestctx.CompanyID(r.Context()))
+	bridge, cleanup, err := h.operational.ForCompany(r.Context(), requestctx.CompanyID(r.Context()))
 	if err != nil {
-		RespondError(w, http.StatusServiceUnavailable, "Operational tenant connection is not available")
+		RespondError(w, http.StatusServiceUnavailable, "Operational company database is not available: "+err.Error())
 		return nil, func() {}
 	}
-	return bridge, closeBridge
+	return bridge, cleanup
 }
 
 func (h *APIHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
-	if postgres.DB == nil {
-		RespondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"status": "error", "service": "textile-erp", "error": "database is not available"})
-		return
-	}
-	if err := postgres.DB.PingContext(r.Context()); err != nil {
-		RespondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"status": "error", "service": "textile-erp", "error": "database connection failed"})
-		return
-	}
 	RespondJSON(w, http.StatusOK, map[string]interface{}{
 		"status":  "ok",
 		"service": "textile-erp",
@@ -115,7 +107,7 @@ func (h *APIHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 			"financial-advisor", "waste-calculator", "commission-calculator",
 			"credit-scoring", "settlement-validator", "production-usecase",
 			"settlement-usecase", "cost-management", "inventory-management",
-			"invoice-management", "tenant-workspace-persistence", "financial-alerts",
+			"invoice-management",
 		},
 	})
 }
@@ -549,11 +541,11 @@ func (h *APIHandler) invalidateInvoiceCache(r *http.Request, companyID int64) {
 // ============================================
 
 func (h *APIHandler) GetOperationalCustomers(w http.ResponseWriter, r *http.Request) {
-	bridge, closeBridge := h.requireOperational(w, r)
+	bridge, cleanup := h.requireOperational(w, r)
 	if bridge == nil {
 		return
 	}
-	defer closeBridge()
+	defer cleanup()
 	rows, err := bridge.Customers()
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
@@ -563,11 +555,11 @@ func (h *APIHandler) GetOperationalCustomers(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *APIHandler) GetOperationalKalaItems(w http.ResponseWriter, r *http.Request) {
-	bridge, closeBridge := h.requireOperational(w, r)
+	bridge, cleanup := h.requireOperational(w, r)
 	if bridge == nil {
 		return
 	}
-	defer closeBridge()
+	defer cleanup()
 	rows, err := bridge.KalaItems()
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
@@ -577,11 +569,11 @@ func (h *APIHandler) GetOperationalKalaItems(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *APIHandler) GetOperationalYarnItems(w http.ResponseWriter, r *http.Request) {
-	bridge, closeBridge := h.requireOperational(w, r)
+	bridge, cleanup := h.requireOperational(w, r)
 	if bridge == nil {
 		return
 	}
-	defer closeBridge()
+	defer cleanup()
 	rows, err := bridge.YarnItems()
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
@@ -591,11 +583,11 @@ func (h *APIHandler) GetOperationalYarnItems(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *APIHandler) GetOperationalOutInvoices(w http.ResponseWriter, r *http.Request) {
-	bridge, closeBridge := h.requireOperational(w, r)
+	bridge, cleanup := h.requireOperational(w, r)
 	if bridge == nil {
 		return
 	}
-	defer closeBridge()
+	defer cleanup()
 	rows, err := bridge.OutInvoices(parseLimit(r, 300))
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
@@ -605,11 +597,11 @@ func (h *APIHandler) GetOperationalOutInvoices(w http.ResponseWriter, r *http.Re
 }
 
 func (h *APIHandler) GetOperationalYarnIncoming(w http.ResponseWriter, r *http.Request) {
-	bridge, closeBridge := h.requireOperational(w, r)
+	bridge, cleanup := h.requireOperational(w, r)
 	if bridge == nil {
 		return
 	}
-	defer closeBridge()
+	defer cleanup()
 	rows, err := bridge.YarnIncoming(parseLimit(r, 300))
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
@@ -619,11 +611,11 @@ func (h *APIHandler) GetOperationalYarnIncoming(w http.ResponseWriter, r *http.R
 }
 
 func (h *APIHandler) GetOperationalChelleIncoming(w http.ResponseWriter, r *http.Request) {
-	bridge, closeBridge := h.requireOperational(w, r)
+	bridge, cleanup := h.requireOperational(w, r)
 	if bridge == nil {
 		return
 	}
-	defer closeBridge()
+	defer cleanup()
 	rows, err := bridge.ChelleIncoming(parseLimit(r, 300))
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
@@ -633,11 +625,11 @@ func (h *APIHandler) GetOperationalChelleIncoming(w http.ResponseWriter, r *http
 }
 
 func (h *APIHandler) GetOperationalYarnOutgoing(w http.ResponseWriter, r *http.Request) {
-	bridge, closeBridge := h.requireOperational(w, r)
+	bridge, cleanup := h.requireOperational(w, r)
 	if bridge == nil {
 		return
 	}
-	defer closeBridge()
+	defer cleanup()
 	rows, err := bridge.YarnOutgoing(parseLimit(r, 300))
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
@@ -647,11 +639,11 @@ func (h *APIHandler) GetOperationalYarnOutgoing(w http.ResponseWriter, r *http.R
 }
 
 func (h *APIHandler) GetOperationalExpenses(w http.ResponseWriter, r *http.Request) {
-	bridge, closeBridge := h.requireOperational(w, r)
+	bridge, cleanup := h.requireOperational(w, r)
 	if bridge == nil {
 		return
 	}
-	defer closeBridge()
+	defer cleanup()
 	rows, err := bridge.Expenses(parseLimit(r, 300))
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
@@ -661,11 +653,11 @@ func (h *APIHandler) GetOperationalExpenses(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *APIHandler) GetOperationalMiscIncoming(w http.ResponseWriter, r *http.Request) {
-	bridge, closeBridge := h.requireOperational(w, r)
+	bridge, cleanup := h.requireOperational(w, r)
 	if bridge == nil {
 		return
 	}
-	defer closeBridge()
+	defer cleanup()
 	rows, err := bridge.MiscIncoming(parseLimit(r, 300))
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
@@ -675,11 +667,11 @@ func (h *APIHandler) GetOperationalMiscIncoming(w http.ResponseWriter, r *http.R
 }
 
 func (h *APIHandler) GetOperationalSparePartsInventory(w http.ResponseWriter, r *http.Request) {
-	bridge, closeBridge := h.requireOperational(w, r)
+	bridge, cleanup := h.requireOperational(w, r)
 	if bridge == nil {
 		return
 	}
-	defer closeBridge()
+	defer cleanup()
 	rows, err := bridge.SparePartsInventory(parseLimit(r, 300))
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
