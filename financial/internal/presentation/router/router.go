@@ -38,6 +38,8 @@ func SetupRouter() http.Handler {
 	mux.HandleFunc("/api/workspace/history", h.GetWorkspaceHistory)
 	mux.HandleFunc("/api/workspace/summary", h.GetWorkspaceSummary)
 	mux.HandleFunc("/api/workspace/alerts", h.GetWorkspaceAlerts)
+	mux.HandleFunc("/api/accounting/reports", h.GetAccountingReports)
+	mux.HandleFunc("/api/accounting/periods", h.AccountingPeriods)
 
 	// Invoice API
 	mux.HandleFunc("/api/invoices", h.InvoicesRoot)            // GET, POST

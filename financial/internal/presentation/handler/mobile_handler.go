@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,6 +60,78 @@ func mobileJalaliOrder(value string) string {
 		}
 	}
 	return digits.String()
+}
+
+// mobileAccountingDate accepts ISO dates and the yyyy/mm/dd Jalali dates sent by
+// the offline Android application. The original Jalali value is retained on the
+// workspace row; this conversion provides a valid Gregorian posting date.
+func mobileAccountingDate(value string) string {
+	value = strings.TrimSpace(strings.NewReplacer(
+		"۰", "0", "۱", "1", "۲", "2", "۳", "3", "۴", "4",
+		"۵", "5", "۶", "6", "۷", "7", "۸", "8", "۹", "9",
+		"٠", "0", "١", "1", "٢", "2", "٣", "3", "٤", "4",
+		"٥", "5", "٦", "6", "٧", "7", "٨", "8", "٩", "9",
+	).Replace(value))
+	if parsed, err := time.Parse("2006-01-02", value); err == nil {
+		return parsed.Format("2006-01-02")
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool { return r == '/' || r == '-' || r == '.' })
+	if len(parts) != 3 {
+		return time.Now().Format("2006-01-02")
+	}
+	year, errY := strconv.Atoi(parts[0])
+	month, errM := strconv.Atoi(parts[1])
+	day, errD := strconv.Atoi(parts[2])
+	if errY != nil || errM != nil || errD != nil || month < 1 || month > 12 || day < 1 || day > 31 {
+		return time.Now().Format("2006-01-02")
+	}
+	if year >= 1700 {
+		if parsed, err := time.Parse("2006-1-2", fmt.Sprintf("%d-%d-%d", year, month, day)); err == nil {
+			return parsed.Format("2006-01-02")
+		}
+		return time.Now().Format("2006-01-02")
+	}
+	gy, gm, gd := jalaliToGregorian(year, month, day)
+	parsed := time.Date(gy, time.Month(gm), gd, 0, 0, 0, 0, time.Local)
+	return parsed.Format("2006-01-02")
+}
+
+func jalaliToGregorian(jy, jm, jd int) (int, int, int) {
+	jy += 1595
+	days := -355668 + (365 * jy) + ((jy / 33) * 8) + (((jy % 33) + 3) / 4) + jd
+	if jm < 7 {
+		days += (jm - 1) * 31
+	} else {
+		days += ((jm - 7) * 30) + 186
+	}
+	gy := 400 * (days / 146097)
+	days %= 146097
+	if days > 36524 {
+		days--
+		gy += 100 * (days / 36524)
+		days %= 36524
+		if days >= 365 {
+			days++
+		}
+	}
+	gy += 4 * (days / 1461)
+	days %= 1461
+	if days > 365 {
+		gy += (days - 1) / 365
+		days = (days - 1) % 365
+	}
+	gd := days + 1
+	leap := (gy%4 == 0 && gy%100 != 0) || gy%400 == 0
+	monthDays := []int{0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+	if leap {
+		monthDays[2] = 29
+	}
+	gm := 1
+	for gm <= 12 && gd > monthDays[gm] {
+		gd -= monthDays[gm]
+		gm++
+	}
+	return gy, gm, gd
 }
 
 func (h *APIHandler) CreateMobilePairing(w http.ResponseWriter, r *http.Request) {
@@ -271,7 +344,8 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
-		occurred := strings.TrimSpace(req.OccurredJalali)
+		occurredJalali := strings.TrimSpace(req.OccurredJalali)
+		occurred := mobileAccountingDate(occurredJalali)
 		accountName := mobileCanonicalBankName(req.Bank)
 		if accountName == "" {
 			accountName = mobileCanonicalBankName(req.AccountID)
@@ -329,38 +403,30 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 		if counterparty == "" {
 			counterparty = strings.TrimSpace(req.Group + " / " + req.Subgroup)
 		}
-		mobileRow := map[string]any{"id": "sms-" + req.ExternalID, "externalId": req.ExternalID, "title": req.Title, "amount": req.Amount, "direction": req.Direction, "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "counterAccount": req.CounterAccount, "group": req.Group, "subgroup": req.Subgroup, "customer": req.Customer, "counterparty": counterparty, "bank": accountName, "sender": req.Sender, "trackingNo": req.TrackingNo, "reportedBalance": req.ReportedBalance, "occurredAt": occurred, "syncedAt": now}
+		mobileRow := map[string]any{"id": "sms-" + req.ExternalID, "externalId": req.ExternalID, "title": req.Title, "amount": req.Amount, "direction": req.Direction, "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "counterAccount": req.CounterAccount, "group": req.Group, "subgroup": req.Subgroup, "customer": req.Customer, "counterparty": counterparty, "bank": accountName, "sender": req.Sender, "trackingNo": req.TrackingNo, "reportedBalance": req.ReportedBalance, "occurredAt": occurred, "occurredJalali": occurredJalali, "syncedAt": now}
 		state["mobileTransactions"] = append([]any{mobileRow}, anyRows(state, "mobileTransactions")...)
 		trackingNo := strings.TrimSpace(req.TrackingNo)
 		if trackingNo == "" {
 			trackingNo = req.ExternalID
 		}
-		movement := map[string]any{"id": "mov-sms-" + req.ExternalID, "accountId": resolvedAccountID, "date": occurred, "direction": req.Direction, "amount": req.Amount, "payer": req.Customer, "counterparty": counterparty, "trackingNo": trackingNo, "description": req.Description, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName, "group": req.Group, "subgroup": req.Subgroup}
-		state["movements"] = append([]any{movement}, anyRows(state, "movements")...)
+		transactionType := "other_income"
 		if isTransfer {
-			counterDirection := "out"
-			if req.Direction == "out" {
-				counterDirection = "in"
-			}
-			counterMovement := map[string]any{"id": "mov-sms-" + req.ExternalID + "-counter", "accountId": counterAccountID, "date": occurred, "direction": counterDirection, "amount": req.Amount, "payer": req.Customer, "counterparty": accountName, "trackingNo": trackingNo, "description": "انتقال بین " + accountName + " و " + req.CounterAccount, "source_type": "mobile_sms_transfer", "sourceId": req.ExternalID, "bank": req.CounterAccount, "group": req.Group, "subgroup": req.Subgroup}
-			state["movements"] = append([]any{counterMovement}, anyRows(state, "movements")...)
+			transactionType = "transfer"
+		} else if strings.TrimSpace(req.Customer) != "" && req.Direction == "in" {
+			transactionType = "customer_receipt"
+		} else if strings.TrimSpace(req.Customer) != "" && req.Direction == "out" {
+			transactionType = "supplier_payment"
+		} else if req.Direction == "out" {
+			transactionType = "expense"
 		}
-		if req.Direction == "out" && !isTransfer {
-			expense := map[string]any{"id": "exp-sms-" + req.ExternalID, "date": occurred, "group": req.Group, "subgroup": req.Subgroup, "amount": req.Amount, "description": req.Description, "accountId": resolvedAccountID, "customer": req.Customer, "counterparty": counterparty, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName}
+		movement := map[string]any{"id": "mov-sms-" + req.ExternalID, "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "date": occurred, "occurredJalali": occurredJalali, "direction": req.Direction, "transactionType": transactionType, "amount": req.Amount, "payer": req.Customer, "counterparty": counterparty, "trackingNo": trackingNo, "description": req.Description, "sourceMobileTransaction": req.ExternalID, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName, "group": req.Group, "subgroup": req.Subgroup}
+		if transactionType == "expense" {
+			expenseID := "exp-sms-" + req.ExternalID
+			expense := map[string]any{"id": expenseID, "date": occurred, "occurredJalali": occurredJalali, "group": req.Group, "subgroup": req.Subgroup, "amount": req.Amount, "description": req.Description, "accountId": resolvedAccountID, "customer": req.Customer, "counterparty": counterparty, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName}
 			state["expenses"] = append([]any{expense}, anyRows(state, "expenses")...)
+			movement["sourceExpense"] = expenseID
 		}
-		debitAccount, creditAccount := "بانک: "+accountName, "درآمد/طرف حساب: "+counterparty
-		if req.Direction == "out" {
-			debitAccount, creditAccount = "هزینه: "+strings.TrimSpace(req.Group+" / "+req.Subgroup), "بانک: "+accountName
-		}
-		if isTransfer && req.Direction == "out" {
-			debitAccount, creditAccount = "بانک: "+req.CounterAccount, "بانک: "+accountName
-		}
-		if isTransfer && req.Direction == "in" {
-			debitAccount, creditAccount = "بانک: "+accountName, "بانک: "+req.CounterAccount
-		}
-		journal := map[string]any{"id": "journal-sms-" + req.ExternalID, "date": occurred, "description": req.Description, "source_type": "mobile_sms", "sourceId": req.ExternalID, "trackingNo": trackingNo, "lines": []any{map[string]any{"account": debitAccount, "debit": req.Amount, "credit": 0, "counterparty": counterparty}, map[string]any{"account": creditAccount, "debit": 0, "credit": req.Amount, "counterparty": counterparty}}}
-		state["journalEntries"] = append([]any{journal}, anyRows(state, "journalEntries")...)
+		state["movements"] = append([]any{movement}, anyRows(state, "movements")...)
 		if len(req.Groups) > 0 {
 			state["smsGroups"] = mapsToAny(req.Groups)
 		}

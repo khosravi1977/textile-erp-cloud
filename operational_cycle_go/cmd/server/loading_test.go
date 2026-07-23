@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -36,6 +37,12 @@ func newLoadingTestApp(t *testing.T) (*app, *http.ServeMux, string) {
 		t.Fatal(err)
 	}
 	if _, err := a.exec(`INSERT INTO salon (id_salon,metr_salon,w_salon,machin_salon,user_salon,tarikh_salon,kala_salon,ham_pod_salon,ham_chelle_salon,shom_chelle_salon) VALUES (102,48,17.1,'M-2','operator','1405/04/23','کالای دیگر','پود 2','تار 2','CH-8')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.exec(`INSERT INTO salon (id_salon,metr_salon,w_salon,machin_salon,user_salon,tarikh_salon,kala_salon,ham_pod_salon,ham_chelle_salon,shom_chelle_salon) VALUES (103,44,16.4,'M-3','operator','1405/04/23','پارچه تست','پود 3','تار 3','CH-9')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.exec(`INSERT INTO f_khor (tarikh_f_khor,shom_f_khor,taghe_cod_f_khor,mosh_f_khor,shomare_sanad,kala_name_f_khor) VALUES ('1405/04/23','OUT-OLD','103','مشتری قبلی','000000','پارچه تست')`); err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
@@ -84,7 +91,7 @@ func TestLoadingSessionScanConfirmAndFinalize(t *testing.T) {
 	if token == "" {
 		t.Fatal("expected loading token")
 	}
-	if got := created["url"]; got != "http://192.168.10.20:8091/loading/"+token {
+	if got := created["url"]; got != "http://192.168.10.20:8091/login?next="+url.QueryEscape("/operational/loading/"+token) {
 		t.Fatalf("unexpected local loading URL: %v", got)
 	}
 
@@ -111,6 +118,18 @@ func TestLoadingSessionScanConfirmAndFinalize(t *testing.T) {
 	confirmRec := loadingRequest(t, mux, http.MethodPost, "/api/loading/"+token+"/confirm", employeeSession, map[string]string{"code": "101"})
 	if confirmRec.Code != http.StatusOK {
 		t.Fatalf("confirm: %d %s", confirmRec.Code, confirmRec.Body.String())
+	}
+	repeatScan := loadingRequest(t, mux, http.MethodPost, "/api/loading/"+token+"/scan", employeeSession, map[string]string{"code": "101"})
+	if repeatScan.Code != http.StatusConflict {
+		t.Fatalf("duplicate scan in same invoice must be rejected: %d %s", repeatScan.Code, repeatScan.Body.String())
+	}
+	repeatConfirm := loadingRequest(t, mux, http.MethodPost, "/api/loading/"+token+"/confirm", employeeSession, map[string]string{"code": "101"})
+	if repeatConfirm.Code != http.StatusConflict {
+		t.Fatalf("duplicate confirm in same invoice must be rejected: %d %s", repeatConfirm.Code, repeatConfirm.Body.String())
+	}
+	oldInvoiceScan := loadingRequest(t, mux, http.MethodPost, "/api/loading/"+token+"/scan", employeeSession, map[string]string{"code": "103"})
+	if oldInvoiceScan.Code != http.StatusConflict || !strings.Contains(oldInvoiceScan.Body.String(), "OUT-OLD") {
+		t.Fatalf("taghe from another invoice must be rejected with invoice number: %d %s", oldInvoiceScan.Code, oldInvoiceScan.Body.String())
 	}
 	stateRec := loadingRequest(t, mux, http.MethodGet, "/api/loading/"+token, employeeSession, nil)
 	state := decodeLoadingResponse(t, stateRec)
@@ -144,5 +163,29 @@ func TestLoadingSessionRequiresEmployeeLogin(t *testing.T) {
 	unauthorized := loadingRequest(t, mux, http.MethodGet, "/api/loading/"+token, "", nil)
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("expected employee authentication, got %d", unauthorized.Code)
+	}
+}
+
+func TestLoadingSessionRejectsItemsAlreadyInDesktopInvoice(t *testing.T) {
+	_, mux, employeeSession := newLoadingTestApp(t)
+	createdRec := loadingRequest(t, mux, http.MethodPost, "/api/out-invoice/loading", employeeSession, map[string]any{
+		"invoice_no": "OUT-MANUAL", "sanad_no": "000002", "customer": "مشتری تست", "kala": "پارچه تست", "items": []string{"101"},
+	})
+	if createdRec.Code != http.StatusOK {
+		t.Fatalf("create session with desktop item: %d %s", createdRec.Code, createdRec.Body.String())
+	}
+	token := decodeLoadingResponse(t, createdRec)["token"].(string)
+
+	duplicateScan := loadingRequest(t, mux, http.MethodPost, "/api/loading/"+token+"/scan", employeeSession, map[string]string{"code": "101"})
+	if duplicateScan.Code != http.StatusConflict {
+		t.Fatalf("mobile must reject item already added on desktop: %d %s", duplicateScan.Code, duplicateScan.Body.String())
+	}
+
+	finalRec := loadingRequest(t, mux, http.MethodPost, "/api/out-invoice", employeeSession, map[string]any{
+		"invoice_no": "OUT-MANUAL", "sanad_no": "000002", "customer": "مشتری تست", "kala": "پارچه تست",
+		"items": []string{"101"}, "loading_session_token": token,
+	})
+	if finalRec.Code != http.StatusOK {
+		t.Fatalf("desktop item reserved by loading session must finalize: %d %s", finalRec.Code, finalRec.Body.String())
 	}
 }

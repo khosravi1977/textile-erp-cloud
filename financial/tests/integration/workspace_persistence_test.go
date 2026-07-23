@@ -2,6 +2,8 @@ package integration_test
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -42,8 +44,8 @@ func TestWorkspacePersistsAndRejectsCrossTenantReads(t *testing.T) {
 
 	server := httptest.NewServer(router.SetupRouter())
 	defer server.Close()
-	docOne := putWorkspace(t, server.URL, companyOne, 0, map[string]any{"invoices": []any{map[string]any{"number": "ONE", "total": 100.0}}, "accounts": []any{}})
-	putWorkspace(t, server.URL, companyTwo, 0, map[string]any{"invoices": []any{map[string]any{"number": "TWO", "total": 200.0}}, "accounts": []any{}})
+	docOne := putWorkspace(t, server.URL, companyOne, 0, validInvoiceWorkspace("ONE", 100))
+	putWorkspace(t, server.URL, companyTwo, 0, validInvoiceWorkspace("TWO", 200))
 
 	stateOne := getWorkspace(t, server.URL, companyOne)
 	encoded, _ := json.Marshal(stateOne["state"])
@@ -55,6 +57,50 @@ func TestWorkspacePersistsAndRejectsCrossTenantReads(t *testing.T) {
 		t.Fatalf("expected revision conflict after revision %v, got %s", docOne["revision"], conflict.Status)
 	}
 	_ = conflict.Body.Close()
+
+	var voucherCount int
+	var debit, credit float64
+	ctx := context.Background()
+	if _, err := postgres.WithCompanySession(ctx, db, companyOne, func(q postgres.SessionQueryable) (bool, error) {
+		err := q.QueryRowContext(ctx, `
+			SELECT COUNT(DISTINCT v.id), COALESCE(SUM(l.debit),0), COALESCE(SUM(l.credit),0)
+			FROM journal_vouchers v
+			JOIN journal_voucher_lines l ON l.journal_voucher_id=v.id AND l.company_id=v.company_id
+			WHERE v.company_id=$1 AND v.status='Posted' AND v.external_key LIKE 'WS:%'
+		`, companyOne).Scan(&voucherCount, &debit, &credit)
+		return err == nil, err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if voucherCount == 0 || debit <= 0 || debit != credit {
+		t.Fatalf("workspace ledger was not posted and balanced: vouchers=%d debit=%.2f credit=%.2f", voucherCount, debit, credit)
+	}
+
+	err = postgres.WithCompanyTx(ctx, db, companyOne, func(tx *sql.Tx) error {
+		var voucherID, accountID int64
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM journal_vouchers WHERE company_id=$1 AND status='Posted' AND external_key LIKE 'WS:%' LIMIT 1`, companyOne).Scan(&voucherID); err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT account_id FROM journal_voucher_lines WHERE company_id=$1 AND journal_voucher_id=$2 LIMIT 1`, companyOne, voucherID).Scan(&accountID); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO journal_voucher_lines(company_id,journal_voucher_id,account_id,debit,credit,line_no) VALUES($1,$2,$3,1,0,99)`, companyOne, voucherID, accountID)
+		return err
+	})
+	if err == nil {
+		t.Fatal("posted voucher accepted a new line")
+	}
+}
+
+func validInvoiceWorkspace(number string, total float64) map[string]any {
+	return map[string]any{
+		"accounts": []any{},
+		"invoices": []any{map[string]any{
+			"id": number, "number": number, "date": "2026-07-23", "customer": "tenant " + number,
+			"item": "fabric", "total": total,
+			"payments": []any{map[string]any{"id": number + "-credit", "type": "credit", "amount": total}},
+		}},
+	}
 }
 
 func putWorkspace(t *testing.T, base string, companyID, revision int64, state map[string]any) map[string]any {

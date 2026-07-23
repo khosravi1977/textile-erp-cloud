@@ -5,11 +5,11 @@ import "context"
 type contextKey string
 
 const (
-	companyIDKey contextKey = "company_id"
-	userIDKey    contextKey = "user_id"
-	userRoleKey  contextKey = "user_role"
-	requestIDKey contextKey = "request_id"
-	permissionsKey contextKey = "permissions"
+	companyIDKey    contextKey = "company_id"
+	userIDKey       contextKey = "user_id"
+	userRoleKey     contextKey = "user_role"
+	requestIDKey    contextKey = "request_id"
+	permissionsKey  contextKey = "permissions"
 	portalAccessKey contextKey = "portal_access"
 )
 
@@ -60,6 +60,15 @@ func Permissions(ctx context.Context) []string {
 		return append([]string(nil), values...)
 	}
 	return nil
+}
+
+func HasPermission(ctx context.Context, expected string) bool {
+	for _, permission := range Permissions(ctx) {
+		if permission == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func IsPortalAccess(ctx context.Context) bool {

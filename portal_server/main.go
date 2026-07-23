@@ -30,9 +30,11 @@ import (
 )
 
 const (
-	adminCookieName  = "erp_portal_admin"
-	accessCookieName = "erp_portal_access"
-	timeLayout       = "2006-01-02 15:04"
+	adminCookieName             = "erp_portal_admin"
+	accessCookieName            = "erp_portal_access"
+	financialAccessCookieName   = "erp_financial_access"
+	operationalAccessCookieName = "erp_operational_access"
+	timeLayout                  = "2006-01-02 15:04"
 )
 
 type portalApp struct {
@@ -52,6 +54,9 @@ type portalApp struct {
 	adminPassword                  string
 	sessionSecret                  string
 	financialJWTKey                string
+	localMode                      bool
+	localCompanyID                 int64
+	localCompanyName               string
 }
 
 type projectAccess struct {
@@ -91,11 +96,12 @@ var financialPermissionCatalog = []string{
 	"receivableDocs",
 	"payableDocs",
 	"bankCash",
+	"accounting",
 	"reports",
 	"taxReports",
 	"credit",
 	"advisor",
-	"teamAccess",
+	"mobileApp",
 }
 
 func normalizeAccessRole(role string) string {
@@ -121,13 +127,14 @@ func defaultPermissionsForRole(role string) []string {
 		return []string{
 			"dashboard", "financialHealth", "initialData", "incomingInvoices", "yarnOutInvoices",
 			"invoices", "inventory", "costs", "receivableDocs", "payableDocs", "bankCash",
-			"reports", "taxReports", "credit", "advisor",
+			"accounting", "reports", "taxReports", "credit", "advisor",
 		}
 	case "manager":
 		return []string{
 			"dashboard", "financialHealth", "initialData", "operational", "incomingInvoices",
 			"yarnOutInvoices", "invoices", "inventory", "costs", "receivableDocs",
 			"payableDocs", "bankCash", "reports", "taxReports", "credit", "advisor",
+			"accounting",
 		}
 	default:
 		return append([]string{}, financialPermissionCatalog...)
@@ -334,6 +341,9 @@ func main() {
 	allowOperationalCustomerAccess := envBool("PORTAL_ALLOW_OPERATIONAL_CUSTOMER_ACCESS", false)
 	operationalAdminPassword := strings.TrimSpace(env("OPERATIONAL_ADMIN_PASSWORD", "admin123"))
 	operationalSessionSecret := strings.TrimSpace(env("PORTAL_OPERATIONAL_SECRET", sessionSecret))
+	localMode := envBool("PORTAL_LOCAL_MODE", false)
+	localCompanyID := envInt64("PORTAL_LOCAL_COMPANY_ID", 2)
+	localCompanyName := strings.TrimSpace(env("PORTAL_LOCAL_COMPANY_NAME", "پرگل"))
 	dbPath := strings.TrimSpace(env("ACCESS_DB_PATH", "/data/portal-access.db"))
 	validatePortalProductionConfig(adminPassword, sessionSecret, financialJWTKey, operationalSessionSecret)
 
@@ -357,6 +367,9 @@ func main() {
 		adminPassword:                  adminPassword,
 		sessionSecret:                  sessionSecret,
 		financialJWTKey:                financialJWTKey,
+		localMode:                      localMode,
+		localCompanyID:                 localCompanyID,
+		localCompanyName:               localCompanyName,
 	}
 	if err := app.repairAccessHashes(); err != nil {
 		log.Fatal(err)
@@ -365,7 +378,12 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", app.health)
 	mux.HandleFunc("/downloads/HesabYar.apk", app.downloadMobileApp)
+	mux.HandleFunc("/HesabYar.apk", app.downloadMobileApp)
 	mux.HandleFunc("/login", app.customerLogin)
+	mux.HandleFunc("/logout", app.customerLogout)
+	mux.HandleFunc("/module-login", app.moduleLogin)
+	mux.HandleFunc("/module-logout", app.moduleLogout)
+	mux.HandleFunc("/team", app.teamPage)
 	mux.HandleFunc("/admin/login", app.adminLogin)
 	mux.HandleFunc("/admin/logout", app.adminLogout)
 	mux.HandleFunc("/admin/api/accesses", app.adminAccesses)
@@ -399,8 +417,10 @@ func (a *portalApp) downloadMobileApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/vnd.android.package-archive")
-	w.Header().Set("Content-Disposition", `attachment; filename="HesabYar-Textile-ERP.apk"`)
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Content-Disposition", `attachment; filename="HesabYar.apk"`)
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeFile(w, r, "/app/downloads/HesabYar.apk")
 }
 
@@ -426,9 +446,10 @@ func stripAndProxy(prefix, target string) http.Handler {
 
 func (a *portalApp) requireModuleAccess(module string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		record, err := a.accessRecordFromRequest(r)
+		record, err := a.moduleRecordFromRequest(r, module)
 		if err != nil {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
+			nextPath := safePortalNext(r.URL.RequestURI())
+			http.Redirect(w, r, "/module-login?module="+url.QueryEscape(module)+"&next="+url.QueryEscape(nextPath), http.StatusSeeOther)
 			return
 		}
 		switch module {
@@ -443,7 +464,7 @@ func (a *portalApp) requireModuleAccess(module string, next http.Handler) http.H
 				return
 			}
 			if r.Method == http.MethodGet && (r.URL.Path == "/operational" || r.URL.Path == "/operational/" || strings.Contains(r.Header.Get("Accept"), "text/html")) {
-				if _, err := a.createOperationalSession(w, r); err != nil {
+				if _, err := a.createOperationalSessionForRecord(w, r, record); err != nil {
 					log.Printf("operational single sign-on failed for access=%d: %v", record.ID, err)
 					http.Error(w, "ورود خودکار به بخش عملیاتی برقرار نشد. دوباره از منوی اصلی تلاش کنید.", http.StatusServiceUnavailable)
 					return
@@ -465,7 +486,8 @@ func injectPortalConfig(prefix string) func(*http.Response) error {
 		}
 		_ = resp.Body.Close()
 		body = rewriteAssetRefs(body, prefix)
-		inject := []byte(`<script>window.ERP_PORTAL_PREFIX="` + prefix + `";window.ERP_FINANCIAL_API="/api/financial/api";window.ERP_OPERATIONAL_API="/api/operational/api";window.ERP_PORTAL_FINANCIAL_SESSION="/api/portal/financial-session";window.ERP_PORTAL_OPERATIONAL_SESSION="/api/portal/operational-session";</script>`)
+		mobileBase := strings.TrimRight(strings.TrimSpace(os.Getenv("PORTAL_MOBILE_BASE")), "/")
+		inject := []byte(`<script>window.ERP_PORTAL_PREFIX="` + prefix + `";window.ERP_MOBILE_ORIGIN=` + strconv.Quote(mobileBase) + `;window.ERP_FINANCIAL_API="/api/financial/api";window.ERP_OPERATIONAL_API="/api/operational/api";window.ERP_PORTAL_FINANCIAL_SESSION="/api/portal/financial-session";window.ERP_PORTAL_OPERATIONAL_SESSION="/api/portal/operational-session";</script>`)
 		body = bytes.Replace(body, []byte("</head>"), append(inject, []byte("</head>")...), 1)
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		resp.ContentLength = int64(len(body))
@@ -509,52 +531,25 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := a.accessRecordFromRequest(r)
 	hasAccess := err == nil && record.ProjectKey == "textile-erp"
-	if !hasAccess {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
 	cardParts := make([]string, 0, 4)
-	cardParts = append(cardParts, `<a class="card mobile" href="https://textile.62.60.204.237.nip.io/downloads/HesabYar.apk" download>دانلود اپ حسابیار برای اندروید</a>`)
+	cardParts = append(cardParts, `<a class="card mobile" href="/HesabYar.apk?v=1.0.1-local-20260722-2">دانلود اپ حسابیار برای اندروید</a>`)
 	statusParts := []string{
-		`<div class="pill">مسیر مالی: /financial</div>`,
-		`<div class="pill">مسیر عملیاتی: /operational</div>`,
-		`<div class="pill">پنل مدیریت: /admin</div>`,
+		`<div class="pill">هر بخش ورود مستقل و امن دارد</div>`,
+		`<div class="pill">مدیر: دسترسی کامل</div>`,
 	}
 	title := "درگاه دسترسی ERP نساجی"
-	hint := "با لینک اختصاصی خود فقط وارد ماژول‌هایی شوید که برای حساب شما فعال شده‌اند."
-	foot := "هر شرکت یک بسته مشترک دارد؛ داده‌های عملیاتی و مالی در همان پایگاه داده مشترک شرکت به هم متصل می‌مانند."
+	hint := "برای ورود به هر بخش، نام کاربری و رمز عبور همان کاربر را وارد کنید."
+	foot := "کاربران و سطح دسترسی آن‌ها ابتدا در بخش مدیریت کاربران تعریف می‌شوند. مدیر به همه بخش‌ها دسترسی کامل دارد."
+	cardParts = append(cardParts,
+		`<a class="card" href="/module-login?module=financial">ورود به ماژول مالی</a>`,
+		`<a class="card secondary" href="/module-login?module=operational">ورود به ماژول عملیاتی</a>`,
+		`<a class="card accent" href="/team">مدیریت کاربران</a>`,
+	)
 	if hasAccess {
-		title = "فضای کاری شرکت"
-		hint = "حساب شما فعال است. فقط ماژول‌های اختصاص داده شده به این کاربر را باز کنید."
-		foot = "داده‌های عملیاتی و مالی در یک بسته مشترک باقی می‌مانند و به کار خود در همان پایگاه داده‌ی مشترک شرکت ادامه می‌دهند."
-		if effectiveAllowFinancial(record) {
-			cardParts = append(cardParts, `<a class="card" href="/financial/">ماژول مالی</a>`)
-		}
-		if effectiveAllowOperational(record) {
-			cardParts = append(cardParts, `<a class="card secondary" href="/operational/">ماژول عملیاتی</a>`)
-		}
-		if effectiveCanManageTeam(record) && effectiveAllowFinancial(record) {
-			cardParts = append(cardParts, `<a class="card accent" href="/admin/">مدیریت تیم</a>`)
-		}
 		statusParts = append(statusParts,
 			`<div class="pill">شرکت: `+html.EscapeString(record.CompanyName)+`</div>`,
-			`<div class="pill">دسترسی: `+html.EscapeString(accessModuleLabel(record))+`</div>`,
-			`<div class="pill">نقش پورتال: `+html.EscapeString(accessRoleLabel(effectiveAccessRole(record)))+`</div>`,
+			`<div class="pill">کاربر فعلی: `+html.EscapeString(record.Username)+`</div>`,
 		)
-	} else {
-		financialHref := "/financial/"
-		operationalHref := "/operational/"
-		if isLocalPortalRequest(r) {
-			financialHref = strings.TrimRight(a.financialURL, "/") + "/"
-			operationalHref = strings.TrimRight(a.operationalURL, "/") + "/"
-		}
-		cardParts = append(cardParts,
-			`<a class="card" href="`+html.EscapeString(financialHref)+`">ماژول مالی</a>`,
-			`<a class="card secondary" href="`+html.EscapeString(operationalHref)+`">ماژول عملیاتی</a>`,
-		)
-	}
-	if len(cardParts) == 0 {
-		cardParts = append(cardParts, `<div class="empty">هنوز هیچ ماژولی به این دسترسی اختصاص داده نشده است. از مدیر شرکت بخواهید سطح دسترسی شما را به‌روزرسانی کند.</div>`)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -598,12 +593,21 @@ func (a *portalApp) customerLogin(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	nextValue := r.URL.Query().Get("next")
+	if r.Method == http.MethodPost && strings.TrimSpace(r.Form.Get("next")) != "" {
+		nextValue = r.Form.Get("next")
+	}
+	nextPath := safePortalNext(nextValue)
 	if r.Method == http.MethodGet {
 		if record, err := a.accessRecordFromRequest(r); err == nil && record.ProjectKey == "textile-erp" {
-			http.Redirect(w, r, a.accessTarget(record), http.StatusSeeOther)
+			if nextPath != "" {
+				http.Redirect(w, r, nextPath, http.StatusSeeOther)
+			} else {
+				http.Redirect(w, r, a.accessTarget(record), http.StatusSeeOther)
+			}
 			return
 		}
-		a.renderCustomerLogin(w, "")
+		a.renderCustomerLogin(w, "", nextPath)
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -611,14 +615,31 @@ func (a *portalApp) customerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		a.renderCustomerLogin(w, "درخواست ورود معتبر نیست.")
+		a.renderCustomerLogin(w, "درخواست ورود معتبر نیست.", nextPath)
 		return
 	}
+	nextPath = safePortalNext(r.Form.Get("next"))
 	username := strings.TrimSpace(r.Form.Get("username"))
 	password := r.Form.Get("password")
+	if a.localMode && strings.EqualFold(username, a.adminUsername) && password == a.adminPassword {
+		record, err := a.ensureLocalOwnerAccess()
+		if err != nil {
+			log.Printf("local owner login failed: %v", err)
+			a.renderCustomerLogin(w, "حساب مدیر محلی آماده نشد. چند لحظه بعد دوباره تلاش کنید.", nextPath)
+			return
+		}
+		a.setPortalAccessCookie(w, r, record.AccessToken, record.ExpiresAt)
+		_ = a.markAccessUsed(record.ID)
+		if nextPath != "" {
+			http.Redirect(w, r, nextPath, http.StatusSeeOther)
+		} else {
+			http.Redirect(w, r, a.accessTarget(record), http.StatusSeeOther)
+		}
+		return
+	}
 	items, err := a.listAccesses()
 	if err != nil {
-		a.renderCustomerLogin(w, "سامانه ورود موقتاً در دسترس نیست.")
+		a.renderCustomerLogin(w, "سامانه ورود موقتاً در دسترس نیست.", nextPath)
 		return
 	}
 	for _, record := range items {
@@ -637,13 +658,188 @@ func (a *portalApp) customerLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		a.setPortalAccessCookie(w, r, record.AccessToken, record.ExpiresAt)
 		_ = a.markAccessUsed(record.ID)
-		http.Redirect(w, r, a.accessTarget(record), http.StatusSeeOther)
+		if nextPath != "" {
+			http.Redirect(w, r, nextPath, http.StatusSeeOther)
+		} else {
+			http.Redirect(w, r, a.accessTarget(record), http.StatusSeeOther)
+		}
 		return
 	}
-	a.renderCustomerLogin(w, "نام کاربری یا رمز عبور صحیح نیست.")
+	a.renderCustomerLogin(w, "نام کاربری یا رمز عبور صحیح نیست.", nextPath)
 }
 
-func (a *portalApp) renderCustomerLogin(w http.ResponseWriter, errMsg string) {
+func safePortalNext(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") || strings.Contains(value, "\\") {
+		return ""
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.IsAbs() || (parsed.Path != "/team" && !strings.HasPrefix(parsed.Path, "/operational/") && !strings.HasPrefix(parsed.Path, "/financial/")) {
+		return ""
+	}
+	return parsed.RequestURI()
+}
+
+func (a *portalApp) customerLogout(w http.ResponseWriter, r *http.Request) {
+	for _, cookieName := range []string{accessCookieName, financialAccessCookieName, operationalAccessCookieName, "operational_session"} {
+		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: isSecureRequest(r), MaxAge: -1})
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func moduleCookieName(module string) string {
+	if module == "operational" {
+		return operationalAccessCookieName
+	}
+	return financialAccessCookieName
+}
+
+func moduleTitle(module string) string {
+	if module == "operational" {
+		return "بخش عملیاتی"
+	}
+	return "بخش مالی"
+}
+
+func moduleTarget(module string) string {
+	if module == "operational" {
+		return "/operational/"
+	}
+	return "/financial/"
+}
+
+func moduleAllowed(record projectAccess, module string) bool {
+	if module == "operational" {
+		return effectiveAllowOperational(record)
+	}
+	return module == "financial" && effectiveAllowFinancial(record)
+}
+
+func (a *portalApp) moduleRecordFromRequest(r *http.Request, module string) (projectAccess, error) {
+	if module != "financial" && module != "operational" {
+		return projectAccess{}, errors.New("invalid module")
+	}
+	cookie, err := r.Cookie(moduleCookieName(module))
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return projectAccess{}, errors.New("module login is required")
+	}
+	record, err := a.findAccessByToken(strings.TrimSpace(cookie.Value))
+	if err != nil {
+		return projectAccess{}, err
+	}
+	if record.ProjectKey != "textile-erp" || !record.IsActive || time.Now().After(record.ExpiresAt) || !moduleAllowed(record, module) {
+		return projectAccess{}, errors.New("module access is not valid")
+	}
+	return record, nil
+}
+
+func (a *portalApp) authenticateTextileUser(username, password string) (projectAccess, error) {
+	username = strings.TrimSpace(username)
+	if a.localMode && strings.EqualFold(username, a.adminUsername) && password == a.adminPassword {
+		return a.ensureLocalOwnerAccess()
+	}
+	items, err := a.listAccesses()
+	if err != nil {
+		return projectAccess{}, err
+	}
+	for _, record := range items {
+		if record.ProjectKey != "textile-erp" || !record.IsActive || time.Now().After(record.ExpiresAt) || !strings.EqualFold(username, strings.TrimSpace(record.Username)) {
+			continue
+		}
+		if a.verifyAccessPassword(record.AccessToken, password) == nil {
+			return record, nil
+		}
+	}
+	return projectAccess{}, errors.New("invalid username or password")
+}
+
+func (a *portalApp) setModuleAccessCookie(w http.ResponseWriter, r *http.Request, module string, record projectAccess) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     moduleCookieName(module),
+		Value:    record.AccessToken,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   isSecureRequest(r),
+		Expires:  minTime(record.ExpiresAt, time.Now().Add(12*time.Hour)),
+	})
+}
+
+func (a *portalApp) moduleLogin(w http.ResponseWriter, r *http.Request) {
+	module := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("module")))
+	if r.Method == http.MethodPost {
+		if err := r.ParseForm(); err == nil {
+			module = strings.ToLower(strings.TrimSpace(r.Form.Get("module")))
+		}
+	}
+	if module != "financial" && module != "operational" {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	nextPath := safePortalNext(r.URL.Query().Get("next"))
+	if nextPath == "" || !strings.HasPrefix(nextPath, moduleTarget(module)) {
+		nextPath = moduleTarget(module)
+	}
+	if r.Method == http.MethodGet {
+		if _, err := a.moduleRecordFromRequest(r, module); err == nil {
+			http.Redirect(w, r, nextPath, http.StatusSeeOther)
+			return
+		}
+		a.renderModuleLogin(w, module, nextPath, "")
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	username := strings.TrimSpace(r.Form.Get("username"))
+	password := r.Form.Get("password")
+	record, err := a.authenticateTextileUser(username, password)
+	if err != nil {
+		a.renderModuleLogin(w, module, nextPath, "نام کاربری یا رمز عبور صحیح نیست.")
+		return
+	}
+	if record.MustChangePassword || accessRequiresSetup(record) {
+		a.renderModuleLogin(w, module, nextPath, "حساب کاربر هنوز تکمیل نشده است. مدیر باید برای این کاربر نام کاربری و رمز عبور مشخص کند.")
+		return
+	}
+	if !moduleAllowed(record, module) {
+		a.renderModuleLogin(w, module, nextPath, "این کاربر اجازه ورود به "+moduleTitle(module)+" را ندارد.")
+		return
+	}
+	a.setPortalAccessCookie(w, r, record.AccessToken, record.ExpiresAt)
+	a.setModuleAccessCookie(w, r, module, record)
+	_ = a.markAccessUsed(record.ID)
+	http.Redirect(w, r, nextPath, http.StatusSeeOther)
+}
+
+func (a *portalApp) moduleLogout(w http.ResponseWriter, r *http.Request) {
+	module := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("module")))
+	if module != "financial" && module != "operational" {
+		module = "financial"
+	}
+	for _, name := range []string{moduleCookieName(module), "operational_session"} {
+		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: isSecureRequest(r), MaxAge: -1})
+	}
+	if r.URL.Query().Get("login") == "1" {
+		http.Redirect(w, r, "/module-login?module="+url.QueryEscape(module), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (a *portalApp) renderModuleLogin(w http.ResponseWriter, module, nextPath, errMsg string) {
+	errorHTML := ""
+	if errMsg != "" {
+		errorHTML = `<div class="error">` + html.EscapeString(errMsg) + `</div>`
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(`<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ورود به ` + moduleTitle(module) + `</title><style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#0b1322;color:#eef2ff;font-family:Tahoma,Arial;display:flex;align-items:center;justify-content:center;padding:20px}.panel{width:min(450px,96vw);background:#111c2e;border:1px solid #334155;border-radius:18px;padding:28px;box-shadow:0 24px 80px #0006}h1{margin:0 0 10px}.lead{color:#a8bad3;line-height:1.9}.badge{display:inline-block;margin-bottom:16px;border-radius:999px;background:#1d4ed8;padding:7px 12px;font-size:12px;font-weight:bold}form{display:grid;gap:12px;margin-top:20px}input{width:100%;border:1px solid #475569;border-radius:11px;padding:13px;background:#07101f;color:white}button{border:0;border-radius:11px;padding:13px;background:#2563eb;color:white;font-weight:bold;cursor:pointer}.error{margin-top:14px;border:1px solid #b91c1c;border-radius:11px;background:#7f1d1d;padding:11px;color:#fee2e2}.links{display:flex;justify-content:space-between;margin-top:18px;font-size:13px}.links a{color:#93c5fd;text-decoration:none}
+</style></head><body><main class="panel"><span class="badge">ورود مستقل و امن</span><h1>ورود به ` + moduleTitle(module) + `</h1><div class="lead">فقط کاربری که این بخش برای او فعال شده باشد می‌تواند وارد شود.</div>` + errorHTML + `<form method="post" action="/module-login?module=` + url.QueryEscape(module) + `"><input type="hidden" name="module" value="` + html.EscapeString(module) + `"><input type="hidden" name="next" value="` + html.EscapeString(nextPath) + `"><input name="username" placeholder="نام کاربری" autocomplete="username" required autofocus><input name="password" type="password" placeholder="رمز عبور" autocomplete="current-password" required><button type="submit">ورود به ` + moduleTitle(module) + `</button></form><div class="links"><a href="/">بازگشت به صفحه اصلی</a><a href="/team">مدیریت کاربران</a></div></main></body></html>`))
+}
+
+func (a *portalApp) renderCustomerLogin(w http.ResponseWriter, errMsg, nextPath string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	errorHTML := ""
 	if errMsg != "" {
@@ -654,7 +850,7 @@ func (a *portalApp) renderCustomerLogin(w http.ResponseWriter, errMsg string) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>ورود مشتری ERP نساجی</title>
+  <title>ورود ERP نساجی</title>
   <style>
     *{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f7f1e8;color:#2a1a14;font-family:Tahoma,Arial;display:flex;align-items:center;justify-content:center;padding:24px}
     .panel{width:min(460px,96vw);background:#fffaf4;border:1px solid #dbc7ae;border-radius:20px;padding:28px;box-shadow:0 24px 80px rgba(75,43,24,.12)}
@@ -665,15 +861,16 @@ func (a *portalApp) renderCustomerLogin(w http.ResponseWriter, errMsg string) {
   </style>
 </head>
 <body><main class="panel">
-  <h1>ورود مشتری ERP نساجی</h1>
-  <div class="lead">با نام کاربری و رمز فعلی خود از هر رایانه یا گوشی وارد شوید.</div>
+  <h1>ورود ERP نساجی</h1>
+  <div class="lead">مدیر و کاربران مجموعه از همین صفحه وارد برنامه می‌شوند.</div>
   ` + errorHTML + `
   <form method="post" action="/login">
+    <input type="hidden" name="next" value="` + html.EscapeString(nextPath) + `">
     <input name="username" placeholder="نام کاربری" autocomplete="username" required>
     <input name="password" type="password" placeholder="رمز عبور" autocomplete="current-password" required>
     <button type="submit">ورود به برنامه</button>
   </form>
-  <div class="muted">لینک دعوت فقط برای ساخت اولیه حساب است. برای ورودهای بعدی همین صفحه را ذخیره کنید.</div>
+  <div class="muted">حساب مدیر محلی: admin / admin123</div>
 </main></body></html>`))
 }
 
@@ -1298,7 +1495,9 @@ func (a *portalApp) adminDeprovision(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var payload struct{ Username string `json:"username"` }
+	var payload struct {
+		Username string `json:"username"`
+	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&payload); err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
@@ -1612,7 +1811,7 @@ func (a *portalApp) portalFinancialSession(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	record, err := a.accessRecordFromRequest(r)
+	record, err := a.moduleRecordFromRequest(r, "financial")
 	if err != nil {
 		respondJSON(w, http.StatusUnauthorized, map[string]string{"error": "access session is not valid"})
 		return
@@ -1647,7 +1846,11 @@ func (a *portalApp) portalOperationalSession(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	record, err := a.accessRecordFromRequest(r)
+	if !a.allowOperationalCustomerAccess {
+		respondJSON(w, http.StatusForbidden, map[string]string{"error": "operational customer access is disabled"})
+		return
+	}
+	record, err := a.moduleRecordFromRequest(r, "operational")
 	if err != nil {
 		respondJSON(w, http.StatusUnauthorized, map[string]string{"error": "access session is not valid"})
 		return
@@ -1660,7 +1863,7 @@ func (a *portalApp) portalOperationalSession(w http.ResponseWriter, r *http.Requ
 		respondJSON(w, http.StatusForbidden, map[string]string{"error": "operational access is not enabled for this user"})
 		return
 	}
-	loginData, err := a.createOperationalSession(w, r)
+	loginData, err := a.createOperationalSessionForRecord(w, r, record)
 	if err != nil {
 		respondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
@@ -1685,6 +1888,10 @@ func (a *portalApp) createOperationalSession(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		return nil, err
 	}
+	return a.createOperationalSessionForRecord(w, r, record)
+}
+
+func (a *portalApp) createOperationalSessionForRecord(w http.ResponseWriter, r *http.Request, record projectAccess) (map[string]any, error) {
 	if record.FinancialCompanyID <= 0 || record.ID <= 0 || strings.TrimSpace(record.Username) == "" {
 		return nil, errors.New("operational access is not configured")
 	}
@@ -1745,6 +1952,58 @@ func (a *portalApp) createOperationalSession(w http.ResponseWriter, r *http.Requ
 		})
 	}
 	return data, nil
+}
+
+func (a *portalApp) teamPage(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/team" {
+		http.NotFound(w, r)
+		return
+	}
+	record, err := a.accessRecordFromRequest(r)
+	if err != nil {
+		http.Redirect(w, r, "/login?next=%2Fteam", http.StatusSeeOther)
+		return
+	}
+	if record.ProjectKey != "textile-erp" || !effectiveCanManageTeam(record) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>عدم دسترسی</title><style>body{font-family:Tahoma;background:#0b1322;color:#fff;display:grid;place-items:center;min-height:100vh}.box{padding:28px;border:1px solid #475569;border-radius:16px;background:#111c2e}a{display:inline-block;color:#93c5fd;margin:8px;text-decoration:none}</style><div class="box"><h2>اجازه مدیریت کاربران را ندارید</h2><p>این بخش فقط برای مدیر سیستم یا کاربری با مجوز مدیریت کاربران قابل دسترسی است.</p><a href="/">بازگشت به صفحه اصلی</a><a href="/logout">خروج کاربر فعلی و ورود مدیر</a></div></html>`))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(`<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>مدیریت کاربران ERP</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#08111f;color:#e5edf8;font-family:Tahoma,Arial;min-height:100vh}.top{position:sticky;top:0;z-index:3;background:#0d192b;border-bottom:1px solid #263850;padding:14px 22px;display:flex;align-items:center;justify-content:space-between;gap:12px}.top h1{font-size:21px;margin:0}.top a{color:#bfdbfe;text-decoration:none;border:1px solid #3b4f69;border-radius:10px;padding:9px 12px}.wrap{max-width:1250px;margin:auto;padding:24px}.intro{color:#9fb0c8;line-height:1.9;margin:5px 0 20px}.layout{display:grid;grid-template-columns:390px 1fr;gap:20px}.card{background:#111e31;border:1px solid #2d4059;border-radius:16px;padding:20px;box-shadow:0 16px 45px #0003}h2{margin:0 0 16px;font-size:18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:grid;gap:7px;margin-bottom:12px}.field.full{grid-column:1/-1}label{font-size:13px;color:#b8c5d6}input,select,textarea{width:100%;border:1px solid #40536d;border-radius:10px;padding:11px 12px;background:#081323;color:#f8fafc;font:inherit}textarea{resize:vertical;min-height:75px}.check{display:flex;align-items:center;gap:9px;border:1px solid #40536d;border-radius:10px;padding:11px}.check input{width:auto}.primary,.small{border:0;border-radius:10px;background:#2563eb;color:white;padding:11px 15px;font-weight:bold;cursor:pointer}.primary{width:100%}.mutedBtn{background:#334155}.danger{background:#b91c1c}.warn{background:#b45309}.msg{display:none;margin:14px 0;border-radius:10px;padding:11px;line-height:1.7}.msg.ok{display:block;background:#064e3b;color:#d1fae5}.msg.err{display:block;background:#7f1d1d;color:#fee2e2}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px}.user{border:1px solid #30445d;background:#0a1627;border-radius:13px;padding:15px;margin-bottom:12px}.userHead{display:flex;justify-content:space-between;gap:12px;align-items:start}.name{font-weight:bold;font-size:16px}.sub{color:#94a3b8;font-size:12px;margin-top:7px;line-height:1.9}.tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.tag{border-radius:999px;padding:5px 9px;font-size:11px;font-weight:bold;background:#1e3a5f;color:#bfdbfe}.tag.fin{background:#064e3b;color:#a7f3d0}.tag.op{background:#0c4a6e;color:#bae6fd}.tag.off{background:#7f1d1d;color:#fecaca}.credentials{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}.cred{direction:ltr;text-align:left;border:1px dashed #415a77;border-radius:9px;padding:9px;color:#dbeafe;font-size:12px;overflow-wrap:anywhere}.actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.small{font-size:11px;padding:8px 10px}.empty{text-align:center;color:#94a3b8;padding:35px}.current{color:#fbbf24;font-size:11px}.help{font-size:12px;color:#93a4ba;line-height:1.8;border:1px solid #334155;background:#0a1627;border-radius:10px;padding:10px;margin-bottom:12px}@media(max-width:900px){.layout{grid-template-columns:1fr}.grid{grid-template-columns:1fr}.credentials{grid-template-columns:1fr}.top{align-items:flex-start}.wrap{padding:14px}}
+</style></head><body>
+<header class="top"><div><h1>مدیریت کاربران و سطح دسترسی</h1><div class="sub">مدیر فعلی: ` + html.EscapeString(record.ContactName) + ` (` + html.EscapeString(record.Username) + `)</div></div><div><a href="/">صفحه اصلی</a> <a href="/logout">خروج مدیر</a></div></header>
+<main class="wrap"><p class="intro">در این صفحه فقط کاربر و سطح دسترسی او تعریف می‌شود. ورود به بخش مالی و عملیاتی با نام کاربری و رمز همین کاربران انجام خواهد شد.</p><div id="message" class="msg"></div>
+<div class="layout"><section class="card"><h2 id="formTitle">تعریف کاربر جدید</h2><div class="help">برای اجرای آفلاین، اعتبار پیش‌فرض کاربر ۱۰ سال است. حداقل یکی از بخش‌های مالی یا عملیاتی را فعال کنید.</div>
+<form id="userForm"><input type="hidden" id="editingId"><div class="field"><label>نام و نام خانوادگی</label><input id="contactName" required></div><div class="grid"><div class="field"><label>نام کاربری</label><input id="username" autocomplete="off" required></div><div class="field"><label>رمز عبور</label><input id="password" type="password" autocomplete="new-password" placeholder="در ویرایش برای حفظ رمز خالی بماند"></div><div class="field"><label>نقش کاربر</label><select id="accessRole"><option value="viewer">مشاهده‌گر</option><option value="accountant">حسابدار</option><option value="manager">مدیر اجرایی</option></select></div><div class="field"><label>مدت اعتبار (روز)</label><input id="trialDays" type="number" min="1" value="3650"></div></div><div class="field"><label>بخش‌های قابل ورود</label><select id="moduleAccess"><option value="financial">فقط بخش مالی</option><option value="operational">فقط بخش عملیاتی</option><option value="both">مالی و عملیاتی</option></select></div><label class="check"><input id="canManageTeam" type="checkbox"> اجازه مدیریت و ساخت کاربران دیگر</label><div class="field" style="margin-top:12px"><label>یادداشت</label><textarea id="notes" placeholder="مثلاً واحد حسابداری یا انبار"></textarea></div><button class="primary" id="saveBtn" type="submit">ایجاد کاربر</button><button class="primary mutedBtn" id="cancelBtn" type="button" style="display:none;margin-top:8px">انصراف از ویرایش</button></form></section>
+<section class="card"><div class="toolbar"><div><h2 style="margin:0">کاربران تعریف‌شده</h2><div id="count" class="sub"></div></div><button class="small mutedBtn" id="refreshBtn">بازخوانی</button></div><div id="users"><div class="empty">در حال دریافت کاربران...</div></div></section></div></main>
+<script>
+const state={rows:[],editing:null};const $=id=>document.getElementById(id);const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const permissionCatalog=[['dashboard','داشبورد'],['financialHealth','سلامت مالی'],['initialData','اطلاعات اولیه'],['operational','داده‌های عملیاتی'],['incomingInvoices','فاکتور ورود'],['yarnOutInvoices','خروج نخ'],['invoices','فاکتور مالی'],['inventory','انبار'],['costs','هزینه‌ها'],['receivableDocs','اسناد دریافتی'],['payableDocs','اسناد پرداختی'],['bankCash','بانک و صندوق'],['accounting','دفاتر و تراز'],['reports','گزارش‌ها'],['taxReports','گزارش مالیاتی'],['credit','اعتبارسنجی'],['advisor','مشاور مالی'],['mobileApp','اتصال حسابیار']];
+const rolePermissions={viewer:['dashboard','financialHealth','reports'],accountant:permissionCatalog.map(x=>x[0]).filter(x=>x!=='operational'&&x!=='mobileApp'),manager:permissionCatalog.map(x=>x[0]).filter(x=>x!=='mobileApp')};
+const permissionHost=document.createElement('div');permissionHost.className='field';permissionHost.innerHTML='<label>دسترسی تب‌های بخش مالی</label><div id="permissionGrid" class="grid"></div><div class="help">فقط تب‌های علامت‌خورده برای این کاربر نمایش داده می‌شود. اتصال حسابیار یک دسترسی مستقل است.</div>';$('canManageTeam').closest('label').before(permissionHost);$('permissionGrid').innerHTML=permissionCatalog.map(([key,label])=>'<label class="check"><input type="checkbox" data-permission="'+key+'"> '+label+'</label>').join('');
+function selectedPermissions(){return [...document.querySelectorAll('[data-permission]:checked')].map(x=>x.dataset.permission);}
+function setPermissionChecks(values){const allowed=new Set(values||[]);document.querySelectorAll('[data-permission]').forEach(x=>x.checked=allowed.has(x.dataset.permission));}
+setPermissionChecks(rolePermissions.viewer);$('accessRole').addEventListener('change',()=>setPermissionChecks(rolePermissions[$('accessRole').value]||rolePermissions.viewer));
+const portalFetch=window.fetch.bind(window);window.fetch=(path,options={})=>{if(/^\/api\/portal\/team(?:\/\d+)?$/.test(String(path))&&['POST','PUT'].includes(String(options.method||'').toUpperCase())&&options.body){try{const payload=JSON.parse(options.body);payload.permissions=selectedPermissions();options={...options,body:JSON.stringify(payload)};}catch{}}return portalFetch(path,options);};
+const baseEditUser=editUser;editUser=id=>{baseEditUser(id);const row=state.rows.find(x=>Number(x.id)===Number(id));setPermissionChecks(row?.permissions?.length?row.permissions:(rolePermissions[row?.access_role||row?.accessRole]||rolePermissions.viewer));};
+const baseResetForm=resetForm;resetForm=()=>{baseResetForm();setPermissionChecks(rolePermissions.viewer);};
+function tell(text,type){const el=$('message');el.textContent=text;el.className='msg '+(type||'ok');window.scrollTo({top:0,behavior:'smooth'});}
+async function api(path,options){const res=await fetch(path,{headers:{Accept:'application/json','Content-Type':'application/json'},...(options||{})});const data=await res.json().catch(()=>({}));if(!res.ok)throw new Error(data.error||('خطای '+res.status));return data;}
+function roleLabel(v){return({owner:'مدیر اصلی',manager:'مدیر اجرایی',accountant:'حسابدار',viewer:'مشاهده‌گر'})[v]||v||'-';}
+function resetForm(){$('userForm').reset();$('trialDays').value='3650';$('moduleAccess').value='financial';$('editingId').value='';state.editing=null;$('formTitle').textContent='تعریف کاربر جدید';$('saveBtn').textContent='ایجاد کاربر';$('cancelBtn').style.display='none';}
+function editUser(id){const r=state.rows.find(x=>Number(x.id)===Number(id));if(!r)return;state.editing=r;$('editingId').value=r.id;$('contactName').value=r.contact_name||r.contactName||'';$('username').value=r.username||'';$('password').value='';$('accessRole').value=r.access_role||r.accessRole||'viewer';const f=Boolean(r.allow_financial??r.allowFinancial),o=Boolean(r.allow_operational??r.allowOperational);$('moduleAccess').value=f&&o?'both':(o?'operational':'financial');$('canManageTeam').checked=Boolean(r.can_manage_team??r.canManageTeam);$('notes').value=r.notes||'';$('formTitle').textContent='ویرایش کاربر';$('saveBtn').textContent='ذخیره تغییرات';$('cancelBtn').style.display='block';window.scrollTo({top:0,behavior:'smooth'});}
+async function removeUser(id,name){if(!confirm('کاربر '+name+' حذف شود؟'))return;try{await api('/api/portal/team/'+id,{method:'DELETE'});tell('کاربر حذف شد.','ok');await load();}catch(e){tell(e.message,'err');}}
+async function toggleUser(id,active){try{await api('/api/portal/team/'+id+'/toggle',{method:'POST'});tell(active?'دسترسی کاربر غیرفعال شد.':'دسترسی کاربر فعال شد.','ok');await load();}catch(e){tell(e.message,'err');}}
+function render(){const box=$('users');$('count').textContent=state.rows.length+' کاربر';if(!state.rows.length){box.innerHTML='<div class="empty">هنوز کاربری تعریف نشده است.</div>';return;}box.innerHTML=state.rows.map(r=>{const current=Boolean(r.is_current??r.isCurrent),active=Boolean(r.is_active??r.isActive),f=Boolean(r.allow_financial??r.allowFinancial),o=Boolean(r.allow_operational??r.allowOperational),name=r.contact_name||r.contactName||r.username||'بدون نام',role=r.access_role||r.accessRole,password=r.password||'ثبت شده و مخفی';return '<article class="user"><div class="userHead"><div><div class="name">'+esc(name)+' '+(current?'<span class="current">(مدیر فعلی)</span>':'')+'</div><div class="sub">نقش: '+esc(roleLabel(role))+' | '+(active?'فعال':'غیرفعال')+'</div><div class="tags">'+(f?'<span class="tag fin">مالی</span>':'')+(o?'<span class="tag op">عملیاتی</span>':'')+(!active?'<span class="tag off">غیرفعال</span>':'')+'</div></div></div><div class="credentials"><div class="cred">Username: '+esc(r.username||'-')+'</div><div class="cred">Password: '+esc(password)+'</div></div>'+(!current?'<div class="actions"><button class="small" onclick="editUser('+r.id+')">ویرایش</button><button class="small warn" onclick="toggleUser('+r.id+','+active+')">'+(active?'غیرفعال‌کردن':'فعال‌کردن')+'</button><button class="small danger" onclick="removeUser('+r.id+',\''+esc(name).replace(/'/g,'&#39;')+'\')">حذف</button></div>':'')+'</article>';}).join('');}
+async function load(){try{const data=await api('/api/portal/team');state.rows=data.items||[];render();}catch(e){tell(e.message,'err');$('users').innerHTML='<div class="empty">دریافت فهرست کاربران ممکن نشد.</div>';}}
+$('userForm').addEventListener('submit',async e=>{e.preventDefault();const mode=$('moduleAccess').value;const payload={contactName:$('contactName').value.trim(),username:$('username').value.trim(),password:$('password').value,accessRole:$('accessRole').value,canManageTeam:$('canManageTeam').checked,allowFinancial:mode==='financial'||mode==='both',allowOperational:mode==='operational'||mode==='both',trialDays:Number($('trialDays').value||3650),notes:$('notes').value.trim()};if(!state.editing&&!payload.password){tell('برای کاربر جدید رمز عبور مشخص کنید.','err');return;}try{$('saveBtn').disabled=true;await api(state.editing?'/api/portal/team/'+state.editing.id:'/api/portal/team',{method:state.editing?'PUT':'POST',body:JSON.stringify(payload)});tell(state.editing?'تغییرات کاربر ذخیره شد.':'کاربر جدید ساخته شد و اکنون می‌تواند با همین نام کاربری و رمز وارد بخش مجاز شود.','ok');resetForm();await load();}catch(err){tell(err.message,'err');}finally{$('saveBtn').disabled=false;}});
+$('cancelBtn').addEventListener('click',resetForm);$('refreshBtn').addEventListener('click',load);load();
+</script></body></html>`))
 }
 
 func (a *portalApp) portalTeam(w http.ResponseWriter, r *http.Request) {
@@ -2243,10 +2502,44 @@ func generatedAccessPassword(username string) string {
 }
 
 func validateAccessPassword(password string) error {
-	if len([]rune(strings.TrimSpace(password))) < 10 {
-		return fmt.Errorf("رمز عبور باید حداقل ۱۰ کاراکتر داشته باشد")
+	if len([]rune(strings.TrimSpace(password))) < 8 {
+		return fmt.Errorf("رمز عبور باید حداقل ۸ کاراکتر داشته باشد")
 	}
 	return nil
+}
+
+func (a *portalApp) ensureLocalOwnerAccess() (projectAccess, error) {
+	if !a.localMode || a.localCompanyID <= 0 || strings.TrimSpace(a.localCompanyName) == "" {
+		return projectAccess{}, errors.New("local owner mode is not configured")
+	}
+	items, err := a.listAccesses()
+	if err != nil {
+		return projectAccess{}, err
+	}
+	expiresAt := time.Now().AddDate(10, 0, 0)
+	for _, item := range items {
+		if item.ProjectKey != "textile-erp" || item.FinancialCompanyID != a.localCompanyID || !strings.EqualFold(strings.TrimSpace(item.Username), a.adminUsername) {
+			continue
+		}
+		updated, _, err := a.updateManagedAccess(item.ID, "textile-erp", a.localCompanyName, "مدیر محلی", a.adminUsername, a.adminPassword, a.localCompanyID, expiresAt, "حساب مدیر نسخه آفلاین", "owner", financialPermissionCatalog, true, false, true, true)
+		if err != nil {
+			return projectAccess{}, err
+		}
+		if _, err := a.provisionTextileTenant(updated.FinancialCompanyID, updated.ID, updated.CompanyName, updated.ContactName, updated.Username, a.adminPassword, "owner"); err != nil {
+			return projectAccess{}, err
+		}
+		if !updated.IsActive {
+			if err := a.toggleAccess(updated.ID); err != nil {
+				return projectAccess{}, err
+			}
+		}
+		return a.setAccessMustChangePassword(updated.ID, false)
+	}
+	created, _, err := a.createManagedAccess("textile-erp", a.localCompanyName, "مدیر محلی", a.adminUsername, a.adminPassword, a.localCompanyID, expiresAt, "حساب مدیر نسخه آفلاین", "owner", financialPermissionCatalog, true, false, true, true)
+	if err != nil {
+		return projectAccess{}, err
+	}
+	return a.setAccessMustChangePassword(created.ID, false)
 }
 
 func existingFinancialCompanyID(items []projectAccess, companyName string) int64 {
@@ -2420,7 +2713,7 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 		Permissions:        normalizedPermissions,
 		CanManageTeam:      canManageTeam,
 		RequiresSetup:      requiresSetup,
-		MustChangePassword: !requiresSetup,
+		MustChangePassword: !requiresSetup && !a.localMode,
 		AllowFinancial:     allowFinancial,
 		AllowOperational:   allowOperational,
 		ExpiresAt:          expiresAt.UTC(),
@@ -3126,15 +3419,15 @@ func (a *portalApp) accessTarget(record projectAccess) string {
 	}
 	if record.ProjectKey == "textile-erp" {
 		if effectiveAllowFinancial(record) && effectiveAllowOperational(record) {
-			return a.publicBase + "/"
+			return "/"
 		}
 		if effectiveAllowOperational(record) {
-			return a.publicBase + "/operational/"
+			return "/operational/"
 		}
 		if effectiveAllowFinancial(record) {
-			return a.publicBase + "/financial/"
+			return "/financial/"
 		}
-		return a.publicBase + "/"
+		return "/"
 	}
 	return a.projectTarget(record.ProjectKey)
 }
@@ -3459,6 +3752,18 @@ func envBool(key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func envInt64(key string, fallback int64) int64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func isSecureRequest(r *http.Request) bool {

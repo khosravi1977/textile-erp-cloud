@@ -27,6 +27,7 @@ var workspacePermissionFields = map[string][]string{
 	"receivableDocs":   {"receivableDocs"},
 	"payableDocs":      {"payableDocs", "checkbooks"},
 	"bankCash":         {"accounts", "movements", "smsBankSenders", "mobileTransactions"},
+	"accounting":       {"journalEntries", "accountingSettings", "fiscalPeriods"},
 }
 
 var workspaceReadAllPermissions = map[string]bool{
@@ -212,6 +213,9 @@ func saveWorkspace(r *http.Request, companyID, userID int64, expectedRevision *i
 				return err
 			}
 		}
+		if err := validateWorkspaceAccountingChanges(decodeWorkspaceMap(current.State), decodeWorkspaceMap(state)); err != nil {
+			return err
+		}
 		if current.Revision > 0 && current.Checksum == checksum {
 			saved = current
 			return nil
@@ -241,7 +245,10 @@ func saveWorkspace(r *http.Request, companyID, userID int64, expectedRevision *i
 			INSERT INTO financial_workspace_history (company_id, revision, checksum, state, changed_by)
 			VALUES ($1, $2, $3, $4, $5)
 		`, companyID, saved.Revision, checksum, state, nullUserID(userID))
-		return err
+		if err != nil {
+			return err
+		}
+		return syncWorkspaceLedger(r.Context(), tx, companyID, userID, saved.Revision, decodeWorkspaceMap(current.State), decodeWorkspaceMap(saved.State))
 	})
 	return saved, err
 }
@@ -256,7 +263,7 @@ func validateWorkspaceState(raw json.RawMessage) (json.RawMessage, string, error
 	if err := decoder.Decode(&state); err != nil || state == nil {
 		return nil, "", errors.New("Workspace state must be a JSON object")
 	}
-	for _, key := range []string{"invoices", "incomingInvoices", "yarnOutInvoices", "expenses", "receivableDocs", "payableDocs", "accounts", "movements", "ownedInventory", "openingBalances", "smsGroups", "smsBankSenders", "mobileTransactions"} {
+	for _, key := range []string{"invoices", "incomingInvoices", "yarnOutInvoices", "expenses", "receivableDocs", "payableDocs", "accounts", "movements", "ownedInventory", "openingBalances", "smsGroups", "smsBankSenders", "mobileTransactions", "journalEntries", "fiscalPeriods"} {
 		if value, ok := state[key]; ok {
 			if _, ok := value.([]any); !ok {
 				return nil, "", fmt.Errorf("Workspace field %s must be an array", key)

@@ -3,7 +3,9 @@ package operationalbridge
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -16,6 +18,8 @@ type Bridge struct {
 	conn    *sql.Conn
 	dialect string
 }
+
+var safeSchemaName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 type LookupRow struct {
 	ID   int64  `json:"id"`
@@ -169,13 +173,30 @@ func (b *Bridge) ForCompany(ctx context.Context, companyID int64) (*Bridge, func
 	if err != nil {
 		return nil, func() {}, err
 	}
-	if _, err := conn.ExecContext(ctx, `SELECT set_config('app.company_id', $1, false)`, strconv.FormatInt(companyID, 10)); err != nil {
+	var schemaName string
+	if err := conn.QueryRowContext(ctx, `
+		SELECT schema_name
+		FROM public.operational_tenants
+		WHERE external_company_id=$1 AND active=1
+		ORDER BY id DESC
+		LIMIT 1
+	`, companyID).Scan(&schemaName); err != nil {
+		_ = conn.Close()
+		return nil, func() {}, err
+	}
+	schemaName = strings.TrimSpace(schemaName)
+	if !safeSchemaName.MatchString(schemaName) {
+		_ = conn.Close()
+		return nil, func() {}, errors.New("invalid operational tenant schema")
+	}
+	if _, err := conn.ExecContext(ctx, `SELECT set_config('app.company_id', $1, false), set_config('search_path', $2 || ', public', false)`, strconv.FormatInt(companyID, 10), schemaName); err != nil {
 		_ = conn.Close()
 		return nil, func() {}, err
 	}
 	clone.conn = conn
 	return &clone, func() {
 		_, _ = conn.ExecContext(context.Background(), `RESET app.company_id`)
+		_, _ = conn.ExecContext(context.Background(), `RESET search_path`)
 		_ = conn.Close()
 	}, nil
 }
@@ -372,7 +393,16 @@ func (b *Bridge) tableExists(name string) bool {
 	var n int
 	var err error
 	if b.dialect == "postgres" {
-		err = b.db.QueryRow(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name=$1`, name).Scan(&n)
+		rows, queryErr := b.query(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?`, name)
+		if queryErr != nil {
+			return false
+		}
+		defer rows.Close()
+		if rows.Next() {
+			err = rows.Scan(&n)
+		} else {
+			err = rows.Err()
+		}
 	} else {
 		err = b.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n)
 	}

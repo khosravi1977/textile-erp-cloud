@@ -4,6 +4,10 @@ import { createRoot } from 'react-dom/client';
 
 import JsBarcode from 'jsbarcode';
 
+import QRCode from 'qrcode';
+
+import { BrowserMultiFormatReader } from '@zxing/browser';
+
 import './style.css';
 
 
@@ -128,6 +132,10 @@ const sidebarTabs = [
 
 
 function App() {
+
+  const loadingPathMatch = window.location.pathname.match(/\/operational\/loading\/([^/?#]+)/);
+
+  const loadingToken = loadingPathMatch ? decodeURIComponent(loadingPathMatch[1]) : '';
 
   const [tab, setTab] = useState('dashboard');
 
@@ -381,6 +389,8 @@ function App() {
 
     setSession(null);
 
+    if (window.ERP_PORTAL_PREFIX) window.location.assign('/module-logout?module=operational&login=1');
+
   };
 
   if (!session) {
@@ -398,6 +408,12 @@ function App() {
     </div>;
 
     return <LoginPage onLogin={login} status={status} error={error} />;
+
+  }
+
+  if (loadingToken) {
+
+    return <LoadingMobilePage token={loadingToken} session={session} onLogout={logout} />;
 
   }
 
@@ -425,7 +441,7 @@ function App() {
 
         <nav>{visibleTabs.map(([id, label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}</button>)}</nav>
 
-        <button className="ghost" onClick={logout}>خروج</button>
+        <button className="ghost" onClick={logout}>خروج و ورود کاربر دیگر</button>
 
       </aside>
 
@@ -722,9 +738,9 @@ function DashboardPro() {
 
     <section className="panel">
 
-      <h2>موجودی نخ بر اساس مشتری و همبافت</h2>
+      <h2>موجودی نخ بر اساس مالک، هم‌بافت و نوع نخ</h2>
 
-      <Table rows={data.yarn_inventory || []} columns={[['mosh','مشتری'],['hambaft','همبافت'],['inventory','مانده'],['vorud','ورود'],['to_salon','ارسال سالن'],['khoroj','خروج']]} hideActions />
+      <Table rows={data.yarn_inventory || []} columns={[['mosh','مالک نخ'],['hambaft','همبافت'],['yarn','نوع نخ'],['inventory','مانده'],['vorud','ورود'],['to_salon','خالص ارسال سالن'],['khoroj','سایر خروج']]} hideActions />
 
     </section>
 
@@ -1048,31 +1064,45 @@ function NakhSalon({ lookups, notify }) {
 
     endpoint="/nakh-salon"
 
-    empty={{ machine: '', ham_nakh: '', weight: '', chelle_id: '', mosh_name: '', vor_khor: 'vorud' }}
+    empty={{ machine: '', ham_nakh: '', weight: '', chelle_id: '', mosh_name: '', nakh_name: '', vor_khor: 'vorud' }}
 
     notify={notify}
 
-    filters={[['machine','ماشین'],['ham_nakh','همبافت نخ'],['shom_chelle','چله'],['mosh_name','مشتری'],['vor_khor','نوع']]}
+    filters={[['machine','ماشین'],['ham_nakh','همبافت نخ'],['nakh_name','نوع نخ'],['shom_chelle','چله'],['mosh_name','مالک نخ'],['vor_khor','نوع']]}
 
-    mapEdit={row => ({ id: row.id, machine: row.machine || '', ham_nakh: row.ham_nakh || '', weight: Math.abs(Number(row.weight || 0)), chelle_id: row.chelle_id || '', mosh_name: row.mosh_name || '', vor_khor: row.vor_khor || 'vorud' })}
+    mapEdit={row => ({ id: row.id, machine: row.machine || '', ham_nakh: row.ham_nakh || '', weight: Math.abs(Number(row.weight || 0)), chelle_id: row.chelle_id || '', mosh_name: row.mosh_name || '', nakh_name: row.nakh_name || '', vor_khor: row.vor_khor || 'vorud' })}
 
-    renderForm={(form, set) => <>
+    renderForm={(form, set) => {
+      const chooseChelle = value => {
+        const id = Number(value);
+        const selected = chelles.find(x => Number(x.id) === id);
+        set('chelle_id', id);
+        if (selected) {
+          set('machine', selected.machine || '');
+          set('mosh_name', selected.mosh_name || form.mosh_name || '');
+          set('ham_nakh', selected.hambaft || form.ham_nakh || '');
+        }
+      };
+      return <>
 
-      <Input label="شماره ماشین" value={form.machine} onChange={v => set('machine', v)} />
+      <Input label="شماره ماشین" value={form.machine} onChange={v => set('machine', v)} hint="باید با ماشین چله فعال یکسان باشد." />
 
       <Select label="همبافت نخ" value={form.ham_nakh} onChange={v => set('ham_nakh', v)} items={(lookups.hambaftYarn || []).map(x => ({ id: x, name: x }))} />
 
       <Input label="وزن" type="number" value={form.weight} onChange={v => set('weight', Number(v))} />
 
-      <Select label="شماره چله روی ماشین" value={form.chelle_id} onChange={v => set('chelle_id', Number(v))} items={uniqueOptions(chelles.map(x => ({ id: x.id, name: `${x.shom_chelle} - ماشین ${x.machine}` })), form.chelle_id)} />
+      <Select label="شماره چله فعال روی ماشین" value={form.chelle_id} onChange={chooseChelle} items={uniqueOptions(chelles.map(x => ({ id: x.id, name: `${x.shom_chelle} - ماشین ${x.machine}` })), form.chelle_id)} />
 
-      <Input label="نام مشتری" value={form.mosh_name} onChange={v => set('mosh_name', v)} list={(lookups.customers || []).map(x => x.name)} />
+      <Select label="مالک نخ / مشتری" value={form.mosh_name} onChange={v => set('mosh_name', v)} items={(lookups.customers || []).map(x => ({ id: x.name, name: x.name }))} />
+
+      <Select label="نوع نخ پود" value={form.nakh_name} onChange={v => set('nakh_name', v)} items={(lookups.yarns || []).map(x => ({ id: x.name, name: x.name }))} />
 
       <Select label="نوع" value={form.vor_khor} onChange={v => set('vor_khor', v)} items={[{id:'vorud',name:'ورود'}, {id:'khoroj',name:'خروج'}]} />
 
-    </>}
+    </>;
+    }}
 
-    columns={[['tarikh','تاریخ'],['machine','ماشین'],['ham_nakh','همبافت نخ'],['weight','وزن'],['shom_chelle','چله'],['mosh_name','مشتری'],['vor_khor','نوع']]}
+    columns={[['tarikh','تاریخ'],['machine','ماشین'],['ham_nakh','همبافت نخ'],['nakh_name','نوع نخ'],['weight','وزن'],['shom_chelle','چله'],['mosh_name','مالک نخ'],['vor_khor','نوع']]}
 
   />;
 
@@ -1402,12 +1432,15 @@ function YarnOut({ lookups, notify }) {
 
   const [yarnInRows, setYarnInRows] = useState([]);
   const [warperBalanceRows, setWarperBalanceRows] = useState([]);
+  const [inventoryRows, setInventoryRows] = useState([]);
 
   const loadWarperBalances = () => api('/warper-yarn-balance').then(setWarperBalanceRows).catch(() => setWarperBalanceRows([]));
+  const loadInventory = () => api('/nakh-khor?inventory=1').then(setInventoryRows).catch(() => setInventoryRows([]));
 
   useEffect(() => {
     api('/nakh-vor').then(setYarnInRows).catch(() => setYarnInRows([]));
     loadWarperBalances();
+    loadInventory();
   }, []);
 
   return <CrudPage
@@ -1416,14 +1449,14 @@ function YarnOut({ lookups, notify }) {
 
     endpoint="/nakh-khor"
 
-    empty={{ hambaft: '', weight: '', mosh_name: '', nakh_name: '' }}
+    empty={{ hambaft: '', weight: '', owner_mosh: '', mosh_name: '', nakh_name: '', destination_type: 'warper' }}
 
     notify={notify}
-    afterSave={loadWarperBalances}
+    afterSave={() => { loadWarperBalances(); loadInventory(); }}
 
-    filters={[['mosh','مشتری'],['nakh','نخ'],['hambaft','همبافت']]}
+    filters={[['owner_mosh','مالک نخ'],['mosh','مقصد'],['nakh','نخ'],['hambaft','همبافت']]}
 
-    mapEdit={row => ({ id: row.id, hambaft: row.hambaft || '', weight: Math.abs(Number(row.weight || 0)), mosh_name: row.mosh || '', nakh_name: row.nakh || '' })}
+    mapEdit={row => ({ id: row.id, hambaft: row.hambaft || '', weight: Math.abs(Number(row.weight || 0)), owner_mosh: row.owner_mosh || '', mosh_name: row.mosh || '', nakh_name: row.nakh || '', destination_type: row.destination_type || 'warper' })}
 
     renderForm={(form, set) => {
 
@@ -1433,10 +1466,11 @@ function YarnOut({ lookups, notify }) {
 
       const yarnOptions = [...new Set(yarnInRows.filter(r => !form.hambaft || r.hambaft === form.hambaft).map(r => r.nakh).filter(Boolean))];
 
-      const recipientOptions = uniqueText([
-        ...(lookups.customers || []).map(x => x.name),
-        ...(lookups.warpers || []).map(x => x.name),
-      ]);
+      const recipientOptions = form.destination_type === 'warper'
+        ? (lookups.warpers || []).map(x => x.name)
+        : uniqueText([...(lookups.customers || []).map(x => x.name), ...(lookups.warpers || []).map(x => x.name)]);
+
+      const exactInventory = inventoryRows.find(x => x.mosh === form.owner_mosh && x.hambaft === form.hambaft && x.yarn === form.nakh_name);
 
       const setHambaft = v => {
 
@@ -1464,23 +1498,28 @@ function YarnOut({ lookups, notify }) {
 
       <Input label="وزن خروج" type="number" value={form.weight} onChange={v => set('weight', Number(v))} />
 
-      <Input label="مشتری / چله‌پیچ" value={form.mosh_name} onChange={v => set('mosh_name', v)} list={recipientOptions} />
+      <Select label="مالک نخ / مشتری" value={form.owner_mosh} onChange={v => set('owner_mosh', v)} items={(lookups.customers || []).map(x => ({ id: x.name, name: x.name }))} />
+
+      <Select label="نوع مقصد" value={form.destination_type} onChange={v => { set('destination_type', v); set('mosh_name', ''); }} items={[{id:'warper',name:'چله‌پیچ'}, {id:'customer',name:'مشتری / مصرف دیگر'}]} />
+
+      <Input label="مقصد خروج" value={form.mosh_name} onChange={v => set('mosh_name', v)} list={recipientOptions} />
 
       <Input label="نوع نخ" value={form.nakh_name} onChange={setYarn} list={yarnOptions.length ? yarnOptions : (lookups.yarns || []).map(x => x.name)} />
 
-      {(form.hambaft || form.nakh_name) && <div className="form-help">گزینه‌های نخ و همبافت بر اساس ورود نخ‌های ثبت‌شده فیلتر می‌شوند. موارد مرتبط: {relatedRows.length}</div>}
+      {(form.hambaft || form.nakh_name) && <div className="form-help">گزینه‌ها بر اساس ورود نخ فیلتر شده‌اند. موارد مرتبط: {relatedRows.length} — موجودی دقیق قابل خروج: {exactInventory ? `${fmt(exactInventory.inventory)} کیلو` : 'انتخاب مالک، هم‌بافت و نوع نخ'}</div>}
 
     </>;
 
     }}
 
-    columns={[['tarikh','تاریخ'],['hambaft','همبافت'],['weight','وزن'],['mosh','مشتری'],['nakh','نخ']]}
+    columns={[['tarikh','تاریخ'],['owner_mosh','مالک نخ'],['hambaft','همبافت'],['nakh','نخ'],['weight','وزن'],['mosh','مقصد'],['destination_type','نوع مقصد']]}
 
     extraSections={<section className="panel">
       <div className="panel-title-row"><h2>گزارش مانده نخ نزد چله‌پیچ</h2><button onClick={loadWarperBalances}>بروزرسانی</button></div>
       <p className="hint">این گزارش وزن نخ ارسال‌شده به چله‌پیچی را با چله‌های برگشتی همان چله‌پیچ، همبافت و نوع نخ مقایسه می‌کند.</p>
       <Table rows={warperBalanceRows} columns={[
         ['warper','چله‌پیچ'],
+        ['owner','مالک نخ'],
         ['hambaft','همبافت'],
         ['yarn','نوع نخ'],
         ['sent_weight','ارسال به چله‌پیچی kg'],
@@ -1794,16 +1833,54 @@ function ComingSoon({ title }) {
 function ConsumptionPro() {
 
   const [rows, setRows] = useState([]);
+  const [waste, setWaste] = useState([]);
+  const [form, setForm] = useState({ machine: '', shom_chelle: '', waste_type: 'tar', weight: '', reason: '', description: '' });
+  const [editing, setEditing] = useState(false);
 
-  const load = () => api('/consumption/machines').then(setRows).catch(() => setRows([]));
+  const load = () => Promise.all([api('/consumption/machines'), api('/production-waste')])
+    .then(([machines, wasteRows]) => { setRows(machines); setWaste(wasteRows); })
+    .catch(() => { setRows([]); setWaste([]); });
 
   useEffect(() => { load(); }, []);
 
-  const activeRows = rows.map(r => ({ machine: r.machine, shom_chelle: r.shom_chelle, chelle_weight: r.chelle_weight, pod_assigned: r.pod_assigned, tar_used: r.tar_used, pod_used: r.pod_used, total_weight: r.total_weight, remaining: r.remaining, remaining_percent: r.remaining_percent, tarikh: r.tarikh }));
+  const set = (key, value) => setForm(s => ({ ...s, [key]: value }));
+  const chooseMachine = machine => {
+    const current = rows.find(r => r.machine === machine);
+    setForm(s => ({ ...s, machine, shom_chelle: current?.shom_chelle || '' }));
+  };
+  const saveWaste = async () => {
+    await api('/production-waste', { method: 'POST', body: form });
+    setForm({ machine: '', shom_chelle: '', waste_type: 'tar', weight: '', reason: '', description: '' });
+    setEditing(false);
+    await load();
+  };
+  const editWaste = row => {
+    setForm({ id: row.id, machine: row.machine || '', shom_chelle: row.shom_chelle || '', waste_type: row.waste_type || 'tar', weight: Number(row.weight || 0), reason: row.reason || '', description: row.description || '' });
+    setEditing(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const deleteWaste = async id => { await api(`/production-waste/${id}`, { method: 'DELETE' }); await load(); };
 
-  const wasteRows = rows.map(r => ({ machine: r.machine, shom_chelle: r.shom_chelle, total_meter: r.total_meter, total_weight: r.total_weight, waste_weight: r.waste_weight, waste_per_meter: r.waste_per_meter, waste_per_kg: r.waste_per_kg, waste_percent_per_kg: r.waste_percent_per_kg, tarikh: r.tarikh }));
+  const activeRows = rows.map(r => ({ machine: r.machine, shom_chelle: r.shom_chelle, chelle_weight: r.chelle_weight, pod_assigned: r.pod_assigned, tar_used: r.tar_used, pod_used: r.pod_used, tar_remaining: r.tar_remaining, pod_remaining: r.pod_remaining, actual_waste: r.actual_waste, total_weight: r.total_weight, remaining: r.remaining, remaining_percent: r.remaining_percent, material_shortage: r.material_shortage, tarikh: r.tarikh }));
+
+  const wasteRows = rows.map(r => ({ machine: r.machine, shom_chelle: r.shom_chelle, total_meter: r.total_meter, total_weight: r.total_weight, actual_waste: r.actual_waste, waste_per_meter: r.waste_per_meter, waste_per_kg: r.waste_per_kg, waste_percent_input: r.waste_percent_input, waste_percent_output: r.waste_percent_output, tarikh: r.tarikh }));
+  const wasteHistory = waste.map(r => ({ ...r, waste_type_fa: ({ tar: 'تار', pod: 'پود', fabric: 'پارچه معیوب', selvage: 'کناره', other: 'سایر' })[r.waste_type] || r.waste_type }));
 
   return <Page title="مصرف تار و پود و ضایعات">
+
+    <section className="panel">
+      <h2>{editing ? 'ویرایش ضایعات واقعی' : 'ثبت ضایعات واقعی تولید'}</h2>
+      <p className="hint">مانده نخ، ضایعات نیست. فقط وزن فیزیکی دورریز یا پارچه معیوب را در این فرم ثبت کنید.</p>
+      <div className="form-grid">
+        <Select label="ماشین" value={form.machine} onChange={chooseMachine} items={rows.map(r => ({ id: r.machine, name: `ماشین ${r.machine} — چله ${r.shom_chelle}` }))} />
+        <Input label="شماره چله" value={form.shom_chelle} onChange={v => set('shom_chelle', v)} />
+        <Select label="نوع ضایعات" value={form.waste_type} onChange={v => set('waste_type', v)} items={[{id:'tar',name:'تار'}, {id:'pod',name:'پود'}, {id:'fabric',name:'پارچه معیوب'}, {id:'selvage',name:'کناره'}, {id:'other',name:'سایر'}]} />
+        <Input label="وزن ضایعات (kg)" type="number" value={form.weight} onChange={v => set('weight', Number(v))} />
+        <Input label="علت ضایعات" value={form.reason} onChange={v => set('reason', v)} />
+        <Input label="توضیحات / اقدام اصلاحی" value={form.description} onChange={v => set('description', v)} />
+      </div>
+      <div className="actions-row"><button className="primary" onClick={saveWaste}>{editing ? 'ثبت ویرایش' : 'ثبت ضایعات'}</button>{editing && <button className="ghost" onClick={() => { setEditing(false); setForm({ machine: '', shom_chelle: '', waste_type: 'tar', weight: '', reason: '', description: '' }); }}>لغو</button>}</div>
+    </section>
 
     <section className="panel green-head">
 
@@ -1823,11 +1900,19 @@ function ConsumptionPro() {
 
         ['pod_used','مصرف پود kg'],
 
+        ['tar_remaining','مانده تار kg'],
+
+        ['pod_remaining','مانده پود kg'],
+
+        ['actual_waste','ضایعات واقعی kg'],
+
         ['total_weight','وزن پارچه kg'],
 
         ['remaining','مانده نخ kg'],
 
         ['remaining_percent','درصد مانده'],
+
+        ['material_shortage','کسری ثبت مواد kg'],
 
         ['tarikh','آخرین بروزرسانی']
 
@@ -1837,7 +1922,7 @@ function ConsumptionPro() {
 
     <section className="panel">
 
-      <div className="panel-title-row"><h2>فرم محاسبه ضایعات چله</h2><button onClick={load}>بروزرسانی</button></div>
+      <div className="panel-title-row"><h2>شاخص واقعی ضایعات به تفکیک ماشین و چله</h2><button onClick={load}>بروزرسانی</button></div>
 
       <Table rows={wasteRows} columns={[
 
@@ -1849,18 +1934,25 @@ function ConsumptionPro() {
 
         ['total_weight','وزن پارچه kg'],
 
-        ['waste_weight','وزن ضایعات/مانده kg'],
+        ['actual_waste','وزن ضایعات واقعی kg'],
 
         ['waste_per_meter','ضایعات kg/m'],
 
         ['waste_per_kg','ضایعات kg/kg'],
 
-        ['waste_percent_per_kg','درصد ضایعات وزنی'],
+        ['waste_percent_input','درصد ضایعات از ورودی مواد'],
+
+        ['waste_percent_output','درصد ضایعات نسبت به خروجی'],
 
         ['tarikh','آخرین بروزرسانی']
 
       ]} hideActions />
 
+    </section>
+
+    <section className="panel">
+      <h2>دفتر ثبت ضایعات</h2>
+      <Table rows={wasteHistory} columns={[["tarikh","تاریخ"],["machine","ماشین"],["shom_chelle","چله"],["waste_type_fa","نوع"],["weight","وزن kg"],["reason","علت"],["operator_name","ثبت‌کننده"],["description","توضیحات"]]} onEdit={editWaste} onDelete={deleteWaste} />
     </section>
 
   </Page>;
@@ -1903,9 +1995,273 @@ function MachineFormulas({ notify }) {
 
 
 
+function LoadingMobilePage({ token, session, onLogout }) {
+
+  const videoRef = React.useRef(null);
+
+  const controlsRef = React.useRef(null);
+
+  const scanLockRef = React.useRef(false);
+
+  const [state, setState] = useState(null);
+
+  const [candidate, setCandidate] = useState(null);
+
+  const [manualCode, setManualCode] = useState('');
+
+  const [cameraOn, setCameraOn] = useState(false);
+
+  const [busy, setBusy] = useState(false);
+
+  const [error, setError] = useState('');
+
+  const loadState = async () => {
+
+    try { setState(await api(`/loading/${encodeURIComponent(token)}`)); setError(''); }
+
+    catch (err) { setError(err.message); }
+
+  };
+
+  useEffect(() => {
+
+    loadState();
+
+    const timer = setInterval(loadState, 2000);
+
+    return () => {
+
+      clearInterval(timer);
+
+      controlsRef.current?.stop();
+
+    };
+
+  }, [token]);
+
+  const inspectCode = async rawCode => {
+
+    const code = String(rawCode || '').trim();
+
+    if (!code || scanLockRef.current) return;
+
+    scanLockRef.current = true;
+
+    setBusy(true); setError('');
+
+    try {
+
+      const result = await api(`/loading/${encodeURIComponent(token)}/scan`, { method: 'POST', body: { code } });
+
+      controlsRef.current?.stop();
+
+      controlsRef.current = null;
+
+      setCameraOn(false);
+
+      setCandidate(result.item);
+
+      setManualCode('');
+
+    } catch (err) {
+
+      setError(err.message);
+
+    } finally {
+
+      setBusy(false);
+
+      scanLockRef.current = false;
+
+    }
+
+  };
+
+  const startCamera = async () => {
+
+    setError(''); setCandidate(null);
+
+    controlsRef.current?.stop();
+
+    try {
+
+      const reader = new BrowserMultiFormatReader();
+
+      const controls = await reader.decodeFromVideoDevice(undefined, videoRef.current, (result, err) => {
+
+        if (result && !scanLockRef.current) inspectCode(result.getText());
+
+      });
+
+      controlsRef.current = controls;
+
+      setCameraOn(true);
+
+    } catch (err) {
+
+      setCameraOn(false);
+
+      setError('دوربین باز نشد. اجازه Camera را فعال کنید یا کد را دستی وارد کنید.');
+
+    }
+
+  };
+
+  const scanCapturedImage = async event => {
+
+    const file = event.target.files?.[0];
+
+    event.target.value = '';
+
+    if (!file) return;
+
+    const objectUrl = URL.createObjectURL(file);
+
+    setBusy(true); setError('');
+
+    try {
+
+      const result = await new BrowserMultiFormatReader().decodeFromImageUrl(objectUrl);
+
+      await inspectCode(result.getText());
+
+    } catch (err) {
+
+      setError('بارکد در عکس خوانده نشد؛ عکس را نزدیک‌تر و با نور بهتر بگیرید.');
+
+    } finally {
+
+      URL.revokeObjectURL(objectUrl);
+
+      setBusy(false);
+
+    }
+
+  };
+
+  const confirm = async () => {
+
+    if (!candidate?.id || candidate.matches === false) return;
+
+    setBusy(true); setError('');
+
+    try {
+
+      await api(`/loading/${encodeURIComponent(token)}/confirm`, { method: 'POST', body: { code: String(candidate.id) } });
+
+      setCandidate(null);
+
+      await loadState();
+
+    } catch (err) { setError(err.message); }
+
+    finally { setBusy(false); }
+
+  };
+
+  const item = candidate || {};
+
+  return <div className="loading-mobile-page" dir="rtl">
+
+    <header className="loading-mobile-header">
+
+      <div><h1>اسکن بارگیری فاکتور خروج</h1><p>کاربر: {session?.user?.username || session?.user?.name || '-'}</p></div>
+
+      <button className="ghost" onClick={onLogout}>خروج و ورود کاربر دیگر</button>
+
+    </header>
+
+    {state?.session && <section className="loading-mobile-summary">
+
+      <div><span>فاکتور</span><b>{state.session.invoice_no}</b></div>
+
+      <div><span>مشتری</span><b>{state.session.customer}</b></div>
+
+      <div><span>کالا</span><b>{state.session.kala}</b></div>
+
+      <div><span>تعداد تأیید</span><b>{state.totals?.count || 0}</b></div>
+
+    </section>}
+
+    {error && <div className="error-box">{error}</div>}
+
+    <section className="panel loading-scanner-card">
+
+      <video ref={videoRef} className={cameraOn ? 'loading-camera active' : 'loading-camera'} muted playsInline />
+
+      <div className="actions-row">
+
+        <button className="primary" type="button" onClick={startCamera}>{cameraOn ? 'شروع مجدد دوربین' : 'باز کردن دوربین و اسکن بارکد'}</button>
+
+        <label className="capture-barcode-button">گرفتن عکس لیبل<input type="file" accept="image/*" capture="environment" onChange={scanCapturedImage} /></label>
+
+      </div>
+
+      <small className="loading-camera-hint">اگر مرورگر روی شبکه محلی اجازه پخش زنده دوربین نداد، «گرفتن عکس لیبل» را بزنید؛ این روش بدون اینترنت هم کار می‌کند.</small>
+
+      <div className="loading-manual">
+
+        <input inputMode="numeric" placeholder="یا کد طاقه را دستی وارد کنید" value={manualCode} onChange={e => setManualCode(e.target.value)} onKeyDown={e => e.key === 'Enter' && inspectCode(manualCode)} />
+
+        <button type="button" onClick={() => inspectCode(manualCode)}>بررسی</button>
+
+      </div>
+
+    </section>
+
+    {candidate && <section className={`panel loading-candidate ${item.matches === false ? 'mismatch' : 'match'}`}>
+
+      <h2>{item.matches === false ? 'مغایرت مشخصات؛ تأیید مجاز نیست' : 'مشخصات لیبل را کنترل و تأیید کنید'}</h2>
+
+      {item.mismatch_reason && <div className="error-box">{item.mismatch_reason}</div>}
+
+      <div className="loading-detail-grid">
+
+        <FieldView label="کد طاقه" value={item.id} /><FieldView label="کالا" value={item.kala} />
+
+        <FieldView label="متراژ" value={item.metr} /><FieldView label="وزن" value={item.weight} />
+
+        <FieldView label="ماشین" value={item.machine} /><FieldView label="شماره چله" value={item.shom_chelle} />
+
+        <FieldView label="همبافت تار" value={item.ham_chelle} /><FieldView label="همبافت پود" value={item.ham_pod} />
+
+      </div>
+
+      <div className="actions-row">
+
+        <button className="primary" disabled={busy || item.matches === false} onClick={confirm}>{busy ? 'در حال ثبت...' : 'تأیید و افزودن به فاکتور'}</button>
+
+        <button className="ghost" onClick={() => setCandidate(null)}>رد کردن</button>
+
+      </div>
+
+    </section>}
+
+    <section className="panel"><h2>طاقه‌های تأییدشده</h2>
+
+      <Table rows={state?.items || []} columns={[["id","کد"],["metr","متراژ"],["weight","وزن"],["kala","کالا"],["confirmed_by","تأییدکننده"]]} hideActions />
+
+      <div className="invoice-total"><b>جمع:</b><span>{fmt(state?.totals?.count || 0)} طاقه</span><span>{fmt(state?.totals?.metr || 0)} متر</span><span>{fmt(state?.totals?.weight || 0)} کیلو</span></div>
+
+    </section>
+
+  </div>;
+
+}
+
+function FieldView({ label, value }) {
+
+  return <div><span>{label}</span><b>{display(value)}</b></div>;
+
+}
+
 function OutInvoicePro({ lookups, notify }) {
 
   const inputRef = React.useRef(null);
+
+  const mobileCountRef = React.useRef(0);
+
+  const mobileIdsRef = React.useRef(new Set());
 
   const [rows, setRows] = useState([]);
 
@@ -1915,9 +2271,81 @@ function OutInvoicePro({ lookups, notify }) {
 
   const [editing, setEditing] = useState(false);
 
+  const [loadingSession, setLoadingSession] = useState(null);
+
+  const [loadingQr, setLoadingQr] = useState('');
+
+  const [loadingBusy, setLoadingBusy] = useState(false);
+
+  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
+
+  const [mobileItems, setMobileItems] = useState([]);
+
   const load = async () => setRows(await api('/out-invoice'));
 
   useEffect(() => { load(); api('/out-invoice/next-sanad').then(x => setForm(s => ({ ...s, sanad_no: x.sanad_number || '' }))).catch(() => {}); }, []);
+
+  useEffect(() => {
+
+    if (!loadingSession?.token) return undefined;
+
+    let cancelled = false;
+
+    const sync = async () => {
+
+      try {
+
+        const state = await api(`/loading/${encodeURIComponent(loadingSession.token)}`);
+
+        if (!cancelled) {
+
+          const incoming = state.items || [];
+
+          setMobileItems(incoming);
+
+          setForm(current => {
+
+            const incomingIds = new Set(incoming.map(item => String(item.id)));
+
+            const merged = current.items.filter(item => !mobileIdsRef.current.has(String(item.id)) || incomingIds.has(String(item.id)));
+
+            incoming.forEach(item => {
+
+              const index = merged.findIndex(existing => String(existing.id) === String(item.id));
+
+              if (index >= 0) merged[index] = { ...merged[index], ...item };
+
+              else merged.push(item);
+
+            });
+
+            mobileIdsRef.current = incomingIds;
+
+            return { ...current, items: merged };
+
+          });
+
+          if (incoming.length > mobileCountRef.current) notify(`${incoming.length - mobileCountRef.current} طاقه جدید از موبایل به فاکتور اضافه شد`);
+
+          mobileCountRef.current = incoming.length;
+
+        }
+
+      } catch (err) {
+
+        if (!cancelled && !String(err.message || '').includes('پایان')) notify(err.message);
+
+      }
+
+    };
+
+    sync();
+
+    const timer = setInterval(sync, 2000);
+
+    return () => { cancelled = true; clearInterval(timer); };
+
+  }, [loadingSession?.token]);
 
   const set = (k, v) => setForm(s => ({ ...s, [k]: v }));
 
@@ -1983,15 +2411,87 @@ function OutInvoicePro({ lookups, notify }) {
 
   };
 
-  const removeItem = (row) => {
+  const removeItem = async (row) => {
 
     const id = typeof row === 'object' ? row.id : row;
+
+    if (loadingSession?.token) {
+
+      await api(`/loading/${encodeURIComponent(loadingSession.token)}/items/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(err => notify(err.message));
+
+      setMobileItems(items => {
+
+        const next = items.filter(x => String(x.id) !== String(id));
+
+        mobileCountRef.current = next.length;
+
+        return next;
+
+      });
+
+    }
 
     setForm(s => ({ ...s, items: s.items.filter(x => String(x.id) !== String(id)) }));
 
   };
 
+  const stopLoading = async () => {
+
+    const token = loadingSession?.token;
+
+    setLoadingSession(null); setLoadingQr('');
+
+    if (token) await api(`/out-invoice/loading/${encodeURIComponent(token)}`, { method: 'DELETE' }).catch(() => {});
+
+  };
+
+  const startLoading = async () => {
+
+    if (!String(form.invoice_no || '').trim() || !String(form.customer || '').trim() || !String(form.kala || '').trim()) {
+
+      notify('برای ساخت QR، شماره فاکتور، مشتری و نام کالا را وارد کنید');
+
+      return;
+
+    }
+
+    setLoadingBusy(true);
+
+    try {
+
+      if (loadingSession?.token) await stopLoading();
+
+      setMobileItems([]);
+
+      mobileCountRef.current = 0;
+
+      mobileIdsRef.current = new Set();
+
+      const result = await api('/out-invoice/loading', { method: 'POST', body: { invoice_no: form.invoice_no, sanad_no: form.sanad_no, customer: form.customer, kala: form.kala, items: form.items.map(item => String(item.id)), old_invoice_no: form.old_invoice_no } });
+
+      setLoadingSession(result);
+
+      setLoadingQr(await QRCode.toDataURL(result.url, { width: 420, margin: 2, errorCorrectionLevel: 'M' }));
+
+      notify('QR بارگیری ساخته شد؛ آن را با دوربین موبایل اسکن کنید');
+
+    } catch (err) { notify(err.message); }
+
+    finally { setLoadingBusy(false); }
+
+  };
+
   const clearInvoice = () => {
+
+    stopLoading();
+
+    setMobilePanelOpen(false);
+
+    setMobileItems([]);
+
+    mobileCountRef.current = 0;
+
+    mobileIdsRef.current = new Set();
 
     setForm({ invoice_no: '', sanad_no: form.sanad_no, customer: '', kala: '', taghe_code: '', items: [], old_invoice_no: '' });
 
@@ -2003,9 +2503,15 @@ function OutInvoicePro({ lookups, notify }) {
 
   const save = async () => {
 
-    await api('/out-invoice', { method: 'POST', body: { invoice_no: form.invoice_no, sanad_no: form.sanad_no, customer: form.customer, kala: form.kala, items: form.items.map(x => String(x.id)), old_invoice_no: form.old_invoice_no } });
+    await api('/out-invoice', { method: 'POST', body: { invoice_no: form.invoice_no, sanad_no: form.sanad_no, customer: form.customer, kala: form.kala, items: form.items.map(x => String(x.id)), old_invoice_no: form.old_invoice_no, loading_session_token: loadingSession?.token || '' } });
 
-    clearInvoice();
+    setLoadingSession(null); setLoadingQr('');
+
+    setMobilePanelOpen(false); setMobileItems([]); mobileCountRef.current = 0; mobileIdsRef.current = new Set();
+
+    setForm({ invoice_no: '', sanad_no: form.sanad_no, customer: '', kala: '', taghe_code: '', items: [], old_invoice_no: '' });
+
+    setEditing(false);
 
     const next = await api('/out-invoice/next-sanad').catch(() => null);
 
@@ -2037,9 +2543,9 @@ function OutInvoicePro({ lookups, notify }) {
 
         <Input label="شماره فاکتور" value={form.invoice_no} onChange={v => set('invoice_no', v)} />
 
-        <Input label="مشتری" value={form.customer} onChange={v => set('customer', v)} list={(lookups.customers || []).map(x => x.name)} />
+        <Select label="مشتری" value={form.customer} onChange={v => set('customer', v)} items={(lookups.customers || []).map(x => ({ id: x.name, name: x.name }))} />
 
-        <Input label="نام کالا" value={form.kala} onChange={v => set('kala', v)} list={(lookups.fabrics || []).map(x => x.name)} />
+        <Select label="نام کالا" value={form.kala} onChange={v => set('kala', v)} items={(lookups.fabrics || []).map(x => ({ id: x.name, name: x.name }))} />
 
         <label><span>کد طاقه / بارکد</span><input ref={inputRef} value={form.taghe_code} onChange={e => set('taghe_code', e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTaghe(); } }} /></label>
 
@@ -2047,11 +2553,57 @@ function OutInvoicePro({ lookups, notify }) {
 
       </div>
 
+      <div className="mobile-feature-toggle">
+
+        <button className={mobilePanelOpen ? 'ghost' : 'primary'} type="button" onClick={async () => {
+
+          if (mobilePanelOpen) { await stopLoading(); setMobilePanelOpen(false); }
+
+          else setMobilePanelOpen(true);
+
+        }}>{mobilePanelOpen ? 'بستن بارگیری با موبایل' : 'بارگیری با موبایل (اختیاری)'}</button>
+
+        <small>در بارگیری دستی نیازی به فعال‌کردن این بخش نیست.</small>
+
+      </div>
+
+      {mobilePanelOpen && <section className="invoice-mobile-sync">
+
+        <div className="invoice-mobile-copy">
+
+          <h2>بارکدخوان موبایل برای فاکتور خروج</h2>
+
+          <p>پس از تکمیل شماره فاکتور، مشتری و کالا، QR را بسازید. کارمند QR را با دوربین گوشی باز می‌کند، با نام کاربری خودش وارد می‌شود و بارکد لیبل طاقه‌ها را یکی‌یکی تأیید می‌کند.</p>
+
+          <div className="actions-row">
+
+            <button className="primary" type="button" disabled={loadingBusy} onClick={startLoading}>{loadingBusy ? 'در حال ساخت...' : loadingSession ? 'ساخت QR جدید' : 'ساخت QR اتصال موبایل'}</button>
+
+            {loadingSession && <button className="ghost" type="button" onClick={stopLoading}>پایان اتصال موبایل</button>}
+
+          </div>
+
+          {loadingSession && <small>لیست این فاکتور هر ۲ ثانیه با تأییدهای موبایل به‌روز می‌شود. تاکنون {fmt(mobileItems.length)} طاقه از موبایل تأیید شده است.</small>}
+
+          {mobileItems.length > 0 && <div className="mobile-confirmed-list">
+
+            <b>آخرین رکوردهای تأییدشده در موبایل</b>
+
+            <Table rows={mobileItems.map((x, i) => ({ ...x, row: i + 1 }))} columns={[["row","ردیف"],["id","کد طاقه"],["metr","متراژ"],["weight","وزن"],["confirmed_by","کاربر موبایل"]]} hideActions />
+
+          </div>}
+
+        </div>
+
+        {loadingQr && <div className="invoice-mobile-qr"><img src={loadingQr} alt="QR اتصال بارکدخوان موبایل" /><a href={loadingSession.url} target="_blank" rel="noreferrer">باز کردن صفحه موبایل برای تست</a></div>}
+
+      </section>}
+
       <section className="invoice-taghe-list">
 
         <div className="invoice-taghe-head"><h2>لیست طاقه‌های خروجی</h2></div>
 
-        <Table rows={form.items.map((x, i) => ({ ...x, row: i + 1 }))} columns={[['row','ردیف'],['id','کد طاقه'],['metr','متراژ (m)'],['weight','وزن (kg)'],['ham_chelle','همبافت تار'],['ham_pod','همبافت پود'],['shom_chelle','شماره چله'],['kala','کالا']]} onEdit={() => {}} onDelete={removeItem} />
+        <Table rows={form.items.map((x, i) => ({ ...x, row: i + 1, entry_source: x.confirmed_by ? `موبایل (${x.confirmed_by})` : 'ثبت دستی' }))} columns={[['row','ردیف'],['id','کد طاقه'],['metr','متراژ (m)'],['weight','وزن (kg)'],['ham_chelle','همبافت تار'],['ham_pod','همبافت پود'],['shom_chelle','شماره چله'],['kala','کالا'],['entry_source','روش ثبت']]} onEdit={() => {}} onDelete={removeItem} />
 
         <div className="invoice-total"><b>جمع کل:</b><span>{fmt(form.items.length)} عدد طاقه</span><span>{fmt(totalMetr)} متر</span><span>{fmt(totalWeight)} kg</span></div>
 
@@ -2061,7 +2613,7 @@ function OutInvoicePro({ lookups, notify }) {
 
         <button onClick={async () => printReport('موجودی طاقه‌های خروج‌نخورده', await api('/out-invoice/stock'), [['id','کد طاقه'],['tarikh','تاریخ'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['machine','ماشین'],['shom_chelle','چله']])}>گزارش موجودی انبار</button>
 
-        <button onClick={() => printReport('لیست طاقه‌های خروجی', form.items.map((x, i) => ({ ...x, row: i + 1 })), [['row','ردیف'],['id','کد طاقه'],['metr','متراژ'],['weight','وزن'],['ham_chelle','همبافت تار'],['ham_pod','همبافت پود'],['shom_chelle','شماره چله'],['kala','کالا']])}>چاپ لیست طاقه‌ها</button>
+        <button className="printer-picker" title="پنجره چاپ ویندوز/مرورگر باز می‌شود و می‌توانید چاپگر A4 را انتخاب کنید" onClick={() => printInvoiceTaghes(form)}>انتخاب چاپگر و چاپ فاکتور</button>
 
         <button onClick={() => printReport('گزارش فاکتور خروج', visible, invoiceCols)}>گزارش فاکتورها</button>
 
@@ -2091,13 +2643,13 @@ function OutInvoicePro({ lookups, notify }) {
 
 function ReportsPro2() {
 
-  const [data, setData] = useState({ yarnOut: [], invoices: [], expenses: [] });
+  const [data, setData] = useState({ yarnOut: [], invoices: [], expenses: [], management: {} });
 
   const [filters, setFilters] = useState({});
 
   useEffect(() => {
 
-    Promise.all([api('/nakh-khor'), api('/out-invoice'), api('/expenses')]).then(([yarnOut, invoices, expenses]) => setData({ yarnOut, invoices, expenses })).catch(() => {});
+    Promise.all([api('/nakh-khor'), api('/out-invoice'), api('/expenses'), api('/management-report')]).then(([yarnOut, invoices, expenses, management]) => setData({ yarnOut, invoices, expenses, management })).catch(() => {});
 
   }, []);
 
@@ -2108,8 +2660,42 @@ function ReportsPro2() {
   const invoices = filterRows(data.invoices, filters);
 
   const expenses = filterRows(data.expenses, filters);
+  const management = data.management || {};
+  const today = management.today || {};
+  const month = management.month || {};
+  const stock = management.stock || {};
 
   return <Page title="گزارشات عملیاتی">
+
+    <div className="metrics">
+      {[
+        ['تولید امروز', fmt(today.metr), 'متر'],
+        ['وزن تولید امروز', fmt(today.weight), 'کیلو'],
+        ['تولید ماه', fmt(month.metr), 'متر'],
+        ['وزن تولید ماه', fmt(month.weight), 'کیلو'],
+        ['طاقه آماده خروج', fmt(stock.total_taghe), 'طاقه'],
+        ['وزن پارچه موجود', fmt(stock.total_weight), 'کیلو'],
+      ].map(([title, value, unit]) => <div className="metric" key={title}><span>{title}</span><b>{value}</b><small>{unit}</small></div>)}
+    </div>
+
+    <section className="panel report-card">
+      <h2>هشدارهای مدیریتی و کنترلی</h2>
+      {(management.notifications || []).length ? <div className="notice-list">{management.notifications.map((x, i) => <div key={`${x.code || 'n'}-${i}`}><b>{x.title}</b><span>{x.message}</span></div>)}</div> : <div className="empty">هشدار فعالی وجود ندارد.</div>}
+    </section>
+
+    <section className="panel report-card"><h2>کنترل کیفیت داده‌های سیکل</h2><Table rows={management.data_quality || []} columns={[["title","کنترل"],["count","تعداد مورد"],["status","وضعیت"]]} hideActions /></section>
+
+    <section className="panel report-card"><h2>دفتر موجودی نخ انبار</h2><Table rows={management.yarn_inventory || []} columns={[["mosh","مالک نخ"],["hambaft","هم‌بافت"],["yarn","نوع نخ"],["vorud","ورود kg"],["to_salon","خالص ارسال سالن kg"],["khoroj","سایر خروج kg"],["inventory","مانده انبار kg"]]} hideActions /></section>
+
+    <section className="panel report-card"><h2>مانده نخ نزد چله‌پیچ</h2><Table rows={management.warper_balances || []} columns={[["warper","چله‌پیچ"],["owner","مالک نخ"],["hambaft","هم‌بافت"],["yarn","نوع نخ"],["sent_weight","ارسال kg"],["returned_weight","چله برگشتی kg"],["balance_weight","مانده kg"],["chelle_count","تعداد چله"]]} hideActions /></section>
+
+    <section className="panel report-card"><h2>وضعیت چله و مواد روی ماشین</h2><Table rows={management.machines || []} columns={[["machine","ماشین"],["shom_chelle","چله"],["chelle_weight","تار اولیه kg"],["pod_assigned","پود تخصیصی kg"],["tar_used","تار مصرفی kg"],["pod_used","پود مصرفی kg"],["tar_remaining","مانده تار kg"],["pod_remaining","مانده پود kg"],["actual_waste","ضایعات واقعی kg"],["remaining_percent","درصد مانده"],["material_shortage","کسری مواد kg"]]} hideActions /></section>
+
+    <section className="panel report-card"><h2>تولید ماه به تفکیک ماشین</h2><Table rows={management.month_by_machine || []} columns={[["machine","ماشین"],["pieces","طاقه"],["metr","متراژ"],["weight","وزن kg"]]} hideActions /></section>
+
+    <section className="panel report-card"><h2>دفتر ضایعات واقعی</h2><Table rows={management.waste || []} columns={[["tarikh","تاریخ"],["machine","ماشین"],["shom_chelle","چله"],["waste_type","نوع"],["weight","وزن kg"],["reason","علت"],["operator_name","ثبت‌کننده"],["description","اقدام اصلاحی"]]} hideActions /></section>
+
+    <section className="panel report-card"><h2>موجودی پارچه آماده خروج</h2><Table rows={stock.items || []} columns={[["kala","کالا"],["taghe_count","تعداد طاقه"],["metr","متراژ"],["weight","وزن kg"]]} hideActions /></section>
 
     <section className="panel">
 
@@ -2121,7 +2707,7 @@ function ReportsPro2() {
 
     <section className="panel report-card"><h2>گزارش فاکتور خروج</h2><Table rows={invoices} columns={[['tarikh','تاریخ'],['invoice_no','شماره فاکتور'],['sanad','شماره سند'],['mosh','مشتری'],['kala','کالا'],['taghe_count','تعداد طاقه'],['metr','متراژ'],['weight','وزن']]} hideActions /></section>
 
-    <section className="panel report-card"><h2>گزارش خروج نخ</h2><Table rows={yarnOut} columns={[['tarikh','تاریخ'],['hambaft','همبافت'],['weight','وزن'],['mosh','مشتری'],['nakh','نخ']]} hideActions /></section>
+    <section className="panel report-card"><h2>گزارش خروج نخ</h2><Table rows={yarnOut} columns={[['tarikh','تاریخ'],['owner_mosh','مالک نخ'],['hambaft','همبافت'],['nakh','نخ'],['weight','وزن'],['mosh','مقصد']]} hideActions /></section>
 
     <section className="panel report-card"><h2>گزارش هزینه‌ها</h2><Table rows={expenses} columns={[['tarikh','تاریخ'],['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','بافنده'],['mablagh','مبلغ'],['shomare_sanad','شماره سند'],['tozih','توضیحات']]} hideActions /></section>
 
