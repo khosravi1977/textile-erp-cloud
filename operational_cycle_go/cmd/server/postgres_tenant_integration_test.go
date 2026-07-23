@@ -126,6 +126,13 @@ func TestPostgresOperationalTenantIsolation(t *testing.T) {
 	if duplicateExit.Code != http.StatusConflict {
 		t.Fatalf("expected duplicate unresolved beam conflict, got %d: %s", duplicateExit.Code, duplicateExit.Body.String())
 	}
+	if _, err := application.exec(`INSERT INTO nakh_khor (
+		tarikh_nakh_khor, hambaft_nakh_khor, w_vor_nakh_khor,
+		moshname_nakh_khor, nakh_name_nakh_khor, owner_mosh_nakh_khor,
+		destination_type_nakh_khor
+	) VALUES (?,?,?,?,?,?,?)`, jalaliToday(), "HB-TEST", -100, warper, yarn, customer, "warper"); err != nil {
+		t.Fatal(err)
+	}
 	var yarnID, warperID, customerID, beamID int64
 	if err := application.queryRow(`SELECT id_nakh_name FROM nakh_name WHERE name_nakh_name=?`, yarn).Scan(&yarnID); err != nil {
 		t.Fatal(err)
