@@ -15,6 +15,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -249,7 +250,7 @@ var operationalTenantTables = []string{
 	"machine_consumption", "machine_formul", "f_khor", "hazine", "operator_name", "driver_name",
 	"weaver_name", "h_rozmare", "service_type", "spare_part", "spare_parts_inventory",
 	"machinery_service", "users", "menu_items", "user_menu_access", "loading_sessions",
-	"loading_session_items", "loading_reservations", "v_kh_moto",
+	"loading_session_items", "loading_reservations", "v_kh_moto", "production_waste",
 }
 
 func (a *app) setSearchPath(schema string) error {
@@ -386,8 +387,11 @@ func (a *app) syncTenantUsers(tenantID int64) error {
 		return err
 	}
 	for _, item := range users {
+		platformUsername := fmt.Sprintf("tenant_%d_user_%d", tenantID, item.id)
 		if _, err := a.exec(`INSERT INTO public.operational_platform_users(tenant_id,local_user_id,username,password_hash,active)
-			VALUES(?,?,?,?,?) ON CONFLICT(tenant_id,local_user_id) DO UPDATE SET username=excluded.username,password_hash=excluded.password_hash,active=excluded.active`, tenantID, item.id, item.username, item.hash, item.active); err != nil {
+			VALUES(?,?,?,?,?) ON CONFLICT(tenant_id,local_user_id) DO UPDATE SET
+			username=CASE WHEN operational_platform_users.portal_access_id IS NULL THEN excluded.username ELSE operational_platform_users.username END,
+			password_hash=excluded.password_hash,active=excluded.active`, tenantID, item.id, platformUsername, item.hash, item.active); err != nil {
 			return err
 		}
 	}
@@ -457,6 +461,9 @@ func (a *app) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/users/", a.requireMenu("users", a.userByID))
 	mux.HandleFunc("/api/next-salon-id", a.requireMenu("salon", a.nextSalonID))
 	mux.HandleFunc("/api/consumption/machines", a.requireMenu("consumption", a.consumptionMachines))
+	mux.HandleFunc("/api/production-waste", a.requireMenu("consumption", a.productionWaste))
+	mux.HandleFunc("/api/production-waste/", a.requireMenu("consumption", a.productionWasteByID))
+	mux.HandleFunc("/api/management-report", a.requireMenu("reports", a.managementReport))
 	mux.HandleFunc("/api/reset-cycle", a.requireMenu("initial", a.resetCycle))
 	mux.HandleFunc("/", staticHandler())
 }
@@ -603,6 +610,7 @@ func (a *app) migrate() error {
 		`CREATE TABLE IF NOT EXISTS salon (id_salon INTEGER PRIMARY KEY, metr_salon REAL, w_salon REAL, machin_salon TEXT, user_salon TEXT, tarikh_salon TEXT, kala_salon TEXT, ham_pod_salon TEXT, ham_chelle_salon TEXT, shom_chelle_salon TEXT)`,
 		`CREATE TABLE IF NOT EXISTS machine_consumption (id_consumption INTEGER PRIMARY KEY AUTOINCREMENT, machine TEXT, shom_chelle TEXT, tar_used REAL, pod_used REAL, total_weight REAL, remaining_weight REAL, tarikh_consumption TEXT)`,
 		`CREATE TABLE IF NOT EXISTS machine_formul (id_formul INTEGER PRIMARY KEY AUTOINCREMENT, machine TEXT UNIQUE, tar_percent REAL DEFAULT 50, pod_percent REAL DEFAULT 50, tozih_formul TEXT)`,
+		`CREATE TABLE IF NOT EXISTS production_waste (id_waste INTEGER PRIMARY KEY AUTOINCREMENT, waste_date TEXT, machine TEXT NOT NULL, shom_chelle TEXT NOT NULL, waste_type TEXT NOT NULL, weight REAL NOT NULL, reason TEXT, operator_name TEXT, description TEXT, created_at TEXT DEFAULT (datetime('now','localtime')))`,
 		`CREATE TABLE IF NOT EXISTS f_khor (id_f_khor INTEGER PRIMARY KEY AUTOINCREMENT, tarikh_f_khor TEXT, shom_f_khor TEXT, taghe_cod_f_khor TEXT, mosh_f_khor TEXT, shomare_sanad TEXT, kala_name_f_khor TEXT)`,
 		`CREATE TABLE IF NOT EXISTS hazine (id_hazine INTEGER PRIMARY KEY AUTOINCREMENT, onvan_hazine TEXT UNIQUE)`,
 		`CREATE TABLE IF NOT EXISTS operator_name (id_operator INTEGER PRIMARY KEY AUTOINCREMENT, name_operator TEXT UNIQUE)`,
@@ -654,6 +662,11 @@ func (a *app) migrate() error {
 		{"menu_items", "sort_order", "INTEGER DEFAULT 0"},
 		{"user_menu_access", "granted_by", "INTEGER"},
 		{"user_menu_access", "granted_at", "TEXT"},
+		{"nakh_khor", "owner_mosh_nakh_khor", "TEXT"},
+		{"nakh_khor", "destination_type_nakh_khor", "TEXT DEFAULT 'warper'"},
+		{"nakh_salon", "nakh_name_nakh_salon", "TEXT"},
+		{"nakh_salon", "chelle_id_nakh_salon", "INTEGER"},
+		{"gere", "chelle_id_gere", "INTEGER"},
 	} {
 		if err := a.ensureColumn(col.table, col.name, col.typ); err != nil {
 			return err
@@ -674,7 +687,69 @@ func (a *app) migrate() error {
 	if err := a.seedMenus(); err != nil {
 		return err
 	}
+	// Keep legacy rows available, but make new material movements fully traceable.
+	_, _ = a.exec(`UPDATE nakh_khor SET owner_mosh_nakh_khor=moshname_nakh_khor WHERE COALESCE(owner_mosh_nakh_khor,'')=''`)
+	_, _ = a.exec(`UPDATE nakh_khor SET destination_type_nakh_khor='warper' WHERE COALESCE(destination_type_nakh_khor,'')=''`)
+	_, _ = a.exec(`UPDATE gere SET chelle_id_gere=(SELECT MAX(c.id_chelle) FROM chelle c WHERE c.shom_chelle=gere.shom_chelle_gere) WHERE chelle_id_gere IS NULL`)
+	_, _ = a.exec(`UPDATE nakh_salon SET chelle_id_nakh_salon=(SELECT MAX(c.id_chelle) FROM chelle c WHERE c.shom_chelle=nakh_salon.shom_chelle_nakh_salon AND c.machin_chelle=nakh_salon.shom_machin_nakh_salon) WHERE chelle_id_nakh_salon IS NULL`)
+	_, _ = a.exec(`UPDATE machine_formul SET tar_percent=50,pod_percent=50 WHERE COALESCE(tar_percent,0)+COALESCE(pod_percent,0)<=0`)
+	_, _ = a.exec(`UPDATE machine_formul SET tar_percent=tar_percent*100.0/(tar_percent+pod_percent), pod_percent=pod_percent*100.0/(tar_percent+pod_percent) WHERE ABS((tar_percent+pod_percent)-100)>0.001 AND tar_percent+pod_percent>0`)
+	if err := a.reconcileActiveChelles(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// reconcileActiveChelles guarantees one current beam per machine without deleting
+// the assignment history kept in gere. Only machines that have a gere record are
+// reconciled, so old direct assignments are not lost.
+func (a *app) reconcileActiveChelles() error {
+	rows, err := a.query(`SELECT id_gere, COALESCE(machin_gere,''), COALESCE(chelle_id_gere,0)
+		FROM gere WHERE COALESCE(machin_gere,'')<>''
+		ORDER BY machin_gere, COALESCE(tarikh_gere,'') DESC, id_gere DESC`)
+	if err != nil {
+		return err
+	}
+	type assignment struct {
+		machine string
+		chelle  int64
+	}
+	latest := []assignment{}
+	seen := map[string]bool{}
+	for rows.Next() {
+		var id, chelleID int64
+		var machine string
+		if err := rows.Scan(&id, &machine, &chelleID); err != nil {
+			rows.Close()
+			return err
+		}
+		machine = strings.TrimSpace(machine)
+		if machine == "" || chelleID == 0 || seen[machine] {
+			continue
+		}
+		seen[machine] = true
+		latest = append(latest, assignment{machine: machine, chelle: chelleID})
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(latest) == 0 {
+		return nil
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, item := range latest {
+		if _, err = txExec(a.dialect, tx, `UPDATE chelle SET machin_chelle='' WHERE machin_chelle=?`, item.machine); err != nil {
+			return err
+		}
+		if _, err = txExec(a.dialect, tx, `UPDATE chelle SET machin_chelle=? WHERE id_chelle=?`, item.machine, item.chelle); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (a *app) importSQLiteOnEmpty() error {
@@ -1031,7 +1106,9 @@ func (a *app) portalDeprovision(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	var payload struct{ Username string `json:"username"` }
+	var payload struct {
+		Username string `json:"username"`
+	}
 	if !decode(w, r, &payload) {
 		return
 	}
@@ -1191,7 +1268,6 @@ func (a *app) provisionTenantAccess(companyID, accessID int64, companyName, cont
 	if err := a.ensureFinancialCompany(companyID, companyName); err != nil {
 		return err
 	}
-
 	var tenantID int64
 	var schemaName string
 	err = a.queryRow(`SELECT id,schema_name FROM public.operational_tenants WHERE external_company_id=? AND active=1`, companyID).Scan(&tenantID, &schemaName)
@@ -1216,6 +1292,7 @@ func (a *app) provisionTenantAccess(companyID, accessID int64, companyName, cont
 			return err
 		}
 	}
+	platformUsername := fmt.Sprintf("portal_%d_%d", tenantID, accessID)
 	provisioned := false
 	if newTenant {
 		defer func() {
@@ -1239,9 +1316,10 @@ func (a *app) provisionTenantAccess(companyID, accessID int64, companyName, cont
 	_, _ = a.exec(`UPDATE public.operational_tenants SET company_name=? WHERE id=?`, companyName, tenantID)
 
 	var localUserID int64
-	err = a.queryRow(`SELECT local_user_id FROM public.operational_platform_users WHERE tenant_id=? AND portal_access_id=?`, tenantID, accessID).Scan(&localUserID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+	createdUser := false
+	err = a.queryRow(`SELECT id_user FROM users WHERE LOWER(username)=LOWER(?) ORDER BY id_user LIMIT 1`, username).Scan(&localUserID)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = a.queryRow(`SELECT local_user_id FROM public.operational_platform_users WHERE tenant_id=? AND portal_access_id=?`, tenantID, accessID).Scan(&localUserID)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		var mappedUsers int64
@@ -1259,17 +1337,21 @@ func (a *app) provisionTenantAccess(companyID, accessID int64, companyName, cont
 			if err := a.queryRow(`INSERT INTO users(username,password_hash,role,is_active) VALUES(?,?,?,1) RETURNING id_user`, username, passwordHash, role).Scan(&localUserID); err != nil {
 				return err
 			}
+			createdUser = true
 		}
-		if _, err := a.exec(`INSERT INTO public.operational_platform_users(tenant_id,local_user_id,portal_access_id,username,password_hash,active) VALUES(?,?,?,?,?,1)`, tenantID, localUserID, accessID, username, passwordHash); err != nil {
-			return err
-		}
-	} else {
+	} else if err != nil {
+		return err
+	}
+	if !createdUser {
 		if _, err := a.exec(`UPDATE users SET username=?,password_hash=?,role=?,is_active=1 WHERE id_user=?`, username, passwordHash, role, localUserID); err != nil {
 			return err
 		}
-		if _, err := a.exec(`UPDATE public.operational_platform_users SET username=?,password_hash=?,active=1 WHERE tenant_id=? AND portal_access_id=?`, username, passwordHash, tenantID, accessID); err != nil {
-			return err
-		}
+	}
+	if _, err := a.exec(`DELETE FROM public.operational_platform_users WHERE tenant_id=? AND (local_user_id=? OR portal_access_id=?)`, tenantID, localUserID, accessID); err != nil {
+		return err
+	}
+	if _, err := a.exec(`INSERT INTO public.operational_platform_users(tenant_id,local_user_id,portal_access_id,username,password_hash,active) VALUES(?,?,?,?,?,1)`, tenantID, localUserID, accessID, platformUsername, passwordHash); err != nil {
+		return err
 	}
 	provisioned = true
 	return nil
@@ -1507,6 +1589,38 @@ func (a *app) nakhVorByID(w http.ResponseWriter, r *http.Request) {
 	writeSave(w, execErr(a.exec(`DELETE FROM nakh_vor WHERE id_nakh_vor=?`, id)))
 }
 
+func (a *app) warehouseYarnBalance(owner, hambaft, yarn string, excludeOutID, excludeSalonID int64) float64 {
+	var inbound, outbound, salonNet float64
+	_ = a.queryRow(`SELECT COALESCE(SUM(w_vor_nakh_vor),0) FROM nakh_vor
+		WHERE moshname_nakh_vor=? AND hambaft_nakh_vor=? AND nakh_name_nakh_vor=?`, owner, hambaft, yarn).Scan(&inbound)
+	_ = a.queryRow(`SELECT COALESCE(SUM(ABS(w_vor_nakh_khor)),0) FROM nakh_khor
+		WHERE COALESCE(NULLIF(owner_mosh_nakh_khor,''),moshname_nakh_khor)=? AND hambaft_nakh_khor=? AND nakh_name_nakh_khor=? AND id_nakh_khor<>?`, owner, hambaft, yarn, excludeOutID).Scan(&outbound)
+	_ = a.queryRow(`SELECT COALESCE(SUM(w_nakh_salon),0) FROM nakh_salon
+		WHERE mosh_name_nakh_salon=? AND ham_nakh_salon=? AND COALESCE(nakh_name_nakh_salon,'')=? AND id_nakh_salon<>?`, owner, hambaft, yarn, excludeSalonID).Scan(&salonNet)
+	return inbound - outbound - salonNet
+}
+
+func (a *app) machineYarnBalance(machine string, chelleID int64, owner, hambaft, yarn string, excludeID int64) float64 {
+	var balance float64
+	_ = a.queryRow(`SELECT COALESCE(SUM(w_nakh_salon),0) FROM nakh_salon
+		WHERE shom_machin_nakh_salon=? AND chelle_id_nakh_salon=? AND mosh_name_nakh_salon=?
+		AND ham_nakh_salon=? AND COALESCE(nakh_name_nakh_salon,'')=? AND id_nakh_salon<>?`,
+		machine, chelleID, owner, hambaft, yarn, excludeID).Scan(&balance)
+	return balance
+}
+
+func (a *app) warperYarnAmounts(warper, owner, hambaft, yarn string, excludeChelleID int64) (float64, float64) {
+	var sent, returned float64
+	_ = a.queryRow(`SELECT COALESCE(SUM(ABS(w_vor_nakh_khor)),0) FROM nakh_khor
+		WHERE moshname_nakh_khor=? AND hambaft_nakh_khor=? AND nakh_name_nakh_khor=?
+		AND (COALESCE(NULLIF(owner_mosh_nakh_khor,''),moshname_nakh_khor)=? OR COALESCE(NULLIF(owner_mosh_nakh_khor,''),moshname_nakh_khor)=moshname_nakh_khor)`,
+		warper, hambaft, yarn, owner).Scan(&sent)
+	_ = a.queryRow(`SELECT COALESCE(SUM(w_chelle),0) FROM chelle
+		WHERE pich_chelle=? AND mosh_chelle=? AND hambaft_chelle=? AND nakh_chelle=? AND id_chelle<>?`,
+		warper, owner, hambaft, yarn, excludeChelleID).Scan(&returned)
+	return sent, returned
+}
+
 func (a *app) chelle(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -1532,6 +1646,23 @@ func (a *app) chelle(w http.ResponseWriter, r *http.Request) {
 		kod, err4 := a.nameByID("kod_navard", "id_kod_navard", "kod_kod_navard", p.KodNavardID)
 		if errors.Join(err1, err2, err3, err4) != nil || p.ShomChelle == "" || p.Hambaft == "" || p.Weight <= 0 {
 			fail(w, 400, "اطلاعات چله کامل نیست")
+			return
+		}
+		p.ShomChelle = strings.TrimSpace(p.ShomChelle)
+		p.Hambaft = strings.TrimSpace(p.Hambaft)
+		var duplicate int64
+		_ = a.queryRow(`SELECT COUNT(*) FROM chelle WHERE shom_chelle=? AND id_chelle<>?`, p.ShomChelle, p.ID).Scan(&duplicate)
+		if duplicate > 0 {
+			fail(w, 400, "شماره چله تکراری است؛ برای ردیابی صحیح یک شماره یکتا وارد کنید")
+			return
+		}
+		sent, returned := a.warperYarnAmounts(pich, mosh, p.Hambaft, nakh, p.ID)
+		if sent <= 0 {
+			fail(w, 400, "برای این مالک، هم‌بافت و نوع نخ هیچ خروجی به چله‌پیچ انتخاب‌شده ثبت نشده است")
+			return
+		}
+		if returned+p.Weight > sent+0.001 {
+			fail(w, 400, fmt.Sprintf("وزن چله از مانده نخ نزد چله‌پیچ بیشتر است؛ مانده قابل ثبت %.3f کیلوگرم", sent-returned))
 			return
 		}
 		var err error
@@ -1563,7 +1694,7 @@ func (a *app) gere(w http.ResponseWriter, r *http.Request) {
 			writeRows(w, rows, err, []string{"id", "shom_chelle", "weight", "hambaft"})
 			return
 		}
-		rows, err := a.query(`SELECT g.id_gere, g.tarikh_gere, g.name_gere, g.shom_chelle_gere, g.machin_gere, COALESCE(gr.id_gerezan,0), COALESCE(c.id_chelle,0) FROM gere g LEFT JOIN gerezan gr ON gr.name_gerezan=g.name_gere LEFT JOIN chelle c ON c.shom_chelle=g.shom_chelle_gere ORDER BY COALESCE(g.tarikh_gere,'') DESC, g.id_gere DESC LIMIT 200`)
+		rows, err := a.query(`SELECT g.id_gere, g.tarikh_gere, g.name_gere, g.shom_chelle_gere, g.machin_gere, COALESCE(gr.id_gerezan,0), COALESCE(g.chelle_id_gere,0) FROM gere g LEFT JOIN gerezan gr ON gr.name_gerezan=g.name_gere ORDER BY COALESCE(g.tarikh_gere,'') DESC, g.id_gere DESC LIMIT 200`)
 		writeRows(w, rows, err, []string{"id", "tarikh", "name_gere", "shom_chelle", "machine", "gerezan_id", "chelle_id"})
 	case http.MethodPost:
 		var p struct {
@@ -1581,12 +1712,17 @@ func (a *app) gere(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var shom string
-		var old string
+		var oldChelleID int64
 		if p.ID > 0 {
-			_ = a.queryRow(`SELECT shom_chelle_gere FROM gere WHERE id_gere=?`, p.ID).Scan(&old)
+			_ = a.queryRow(`SELECT COALESCE(chelle_id_gere,0) FROM gere WHERE id_gere=?`, p.ID).Scan(&oldChelleID)
 		}
-		if err := a.queryRow(`SELECT shom_chelle FROM chelle WHERE id_chelle=?`, p.ChelleID).Scan(&shom); err != nil {
+		var assignedMachine string
+		if err := a.queryRow(`SELECT shom_chelle,COALESCE(machin_chelle,'') FROM chelle WHERE id_chelle=?`, p.ChelleID).Scan(&shom, &assignedMachine); err != nil {
 			fail(w, 400, "چله معتبر نیست")
+			return
+		}
+		if assignedMachine != "" && assignedMachine != p.Machine && oldChelleID != p.ChelleID {
+			fail(w, 400, "این چله هم‌اکنون روی ماشین دیگری فعال است")
 			return
 		}
 		tx, err := a.db.Begin()
@@ -1595,12 +1731,15 @@ func (a *app) gere(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if p.ID > 0 {
-			if old != "" && old != shom {
-				_, _ = txExec(a.dialect, tx, `UPDATE chelle SET machin_chelle='' WHERE shom_chelle=?`, old)
+			if oldChelleID > 0 && oldChelleID != p.ChelleID {
+				_, _ = txExec(a.dialect, tx, `UPDATE chelle SET machin_chelle='' WHERE id_chelle=?`, oldChelleID)
 			}
-			_, err = txExec(a.dialect, tx, `UPDATE gere SET name_gere=?, shom_chelle_gere=?, machin_gere=?, tarikh_gere=? WHERE id_gere=?`, gerezan, shom, p.Machine, jalaliToday(), p.ID)
+			_, err = txExec(a.dialect, tx, `UPDATE gere SET name_gere=?, shom_chelle_gere=?, machin_gere=?, tarikh_gere=?, chelle_id_gere=? WHERE id_gere=?`, gerezan, shom, p.Machine, jalaliToday(), p.ChelleID, p.ID)
 		} else {
-			_, err = txExec(a.dialect, tx, `INSERT INTO gere (name_gere, shom_chelle_gere, machin_gere, tarikh_gere) VALUES (?,?,?,?)`, gerezan, shom, p.Machine, jalaliToday())
+			_, err = txExec(a.dialect, tx, `INSERT INTO gere (name_gere, shom_chelle_gere, machin_gere, tarikh_gere, chelle_id_gere) VALUES (?,?,?,?,?)`, gerezan, shom, p.Machine, jalaliToday(), p.ChelleID)
+		}
+		if err == nil {
+			_, err = txExec(a.dialect, tx, `UPDATE chelle SET machin_chelle='' WHERE machin_chelle=? AND id_chelle<>?`, p.Machine, p.ChelleID)
 		}
 		if err == nil {
 			_, err = txExec(a.dialect, tx, `UPDATE chelle SET machin_chelle=? WHERE id_chelle=?`, p.Machine, p.ChelleID)
@@ -1622,14 +1761,14 @@ func (a *app) gereByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := strconv.Atoi(pathLast(r.URL.Path))
-	var shom string
-	_ = a.queryRow(`SELECT shom_chelle_gere FROM gere WHERE id_gere=?`, id).Scan(&shom)
+	var chelleID int64
+	_ = a.queryRow(`SELECT COALESCE(chelle_id_gere,0) FROM gere WHERE id_gere=?`, id).Scan(&chelleID)
 	tx, err := a.db.Begin()
 	if err == nil {
 		_, err = txExec(a.dialect, tx, `DELETE FROM gere WHERE id_gere=?`, id)
 	}
-	if err == nil && shom != "" {
-		_, err = txExec(a.dialect, tx, `UPDATE chelle SET machin_chelle='' WHERE shom_chelle=?`, shom)
+	if err == nil && chelleID > 0 {
+		_, err = txExec(a.dialect, tx, `UPDATE chelle SET machin_chelle='' WHERE id_chelle=?`, chelleID)
 	}
 	if err != nil {
 		_ = tx.Rollback()
@@ -1643,12 +1782,12 @@ func (a *app) nakhSalon(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		if r.URL.Query().Get("chelles") == "1" {
-			rows, err := a.query(`SELECT id_chelle, shom_chelle, machin_chelle, w_chelle, hambaft_chelle FROM chelle WHERE COALESCE(machin_chelle,'')<>'' ORDER BY id_chelle DESC`)
-			writeRows(w, rows, err, []string{"id", "shom_chelle", "machine", "weight", "hambaft"})
+			rows, err := a.query(`SELECT id_chelle, shom_chelle, machin_chelle, w_chelle, hambaft_chelle, COALESCE(mosh_chelle,''), COALESCE(nakh_chelle,'') FROM chelle WHERE COALESCE(machin_chelle,'')<>'' ORDER BY id_chelle DESC`)
+			writeRows(w, rows, err, []string{"id", "shom_chelle", "machine", "weight", "hambaft", "mosh_name", "nakh_name"})
 			return
 		}
-		rows, err := a.query(`SELECT ns.id_nakh_salon, ns.tarikh_nakh_salon, ns.shom_machin_nakh_salon, ns.ham_nakh_salon, ns.w_nakh_salon, ns.shom_chelle_nakh_salon, ns.mosh_name_nakh_salon, ns.vor_khor_nakh_salon, COALESCE(c.id_chelle,0) FROM nakh_salon ns LEFT JOIN chelle c ON c.shom_chelle=ns.shom_chelle_nakh_salon ORDER BY ns.id_nakh_salon DESC LIMIT 200`)
-		writeRows(w, rows, err, []string{"id", "tarikh", "machine", "ham_nakh", "weight", "shom_chelle", "mosh_name", "vor_khor", "chelle_id"})
+		rows, err := a.query(`SELECT ns.id_nakh_salon, ns.tarikh_nakh_salon, ns.shom_machin_nakh_salon, ns.ham_nakh_salon, ns.w_nakh_salon, ns.shom_chelle_nakh_salon, ns.mosh_name_nakh_salon, ns.vor_khor_nakh_salon, COALESCE(ns.chelle_id_nakh_salon,0), COALESCE(ns.nakh_name_nakh_salon,'') FROM nakh_salon ns ORDER BY ns.id_nakh_salon DESC LIMIT 200`)
+		writeRows(w, rows, err, []string{"id", "tarikh", "machine", "ham_nakh", "weight", "shom_chelle", "mosh_name", "vor_khor", "chelle_id", "nakh_name"})
 	case http.MethodPost:
 		var p struct {
 			ID       int64   `json:"id"`
@@ -1657,19 +1796,41 @@ func (a *app) nakhSalon(w http.ResponseWriter, r *http.Request) {
 			Weight   float64 `json:"weight"`
 			ChelleID int64   `json:"chelle_id"`
 			MoshName string  `json:"mosh_name"`
+			NakhName string  `json:"nakh_name"`
 			VorKhor  string  `json:"vor_khor"`
 		}
 		if !decode(w, r, &p) {
 			return
 		}
-		if p.Machine == "" || p.HamNakh == "" || p.Weight <= 0 || p.ChelleID == 0 || p.MoshName == "" || p.VorKhor == "" {
+		p.Machine = strings.TrimSpace(p.Machine)
+		p.HamNakh = strings.TrimSpace(p.HamNakh)
+		p.MoshName = strings.TrimSpace(p.MoshName)
+		p.NakhName = strings.TrimSpace(p.NakhName)
+		if p.Machine == "" || p.HamNakh == "" || p.Weight <= 0 || p.ChelleID == 0 || p.MoshName == "" || p.NakhName == "" || (p.VorKhor != "vorud" && p.VorKhor != "khoroj") {
 			fail(w, 400, "اطلاعات نخ سالن کامل نیست")
 			return
 		}
-		var shom string
-		if err := a.queryRow(`SELECT shom_chelle FROM chelle WHERE id_chelle=?`, p.ChelleID).Scan(&shom); err != nil {
+		var shom, activeMachine string
+		if err := a.queryRow(`SELECT shom_chelle,COALESCE(machin_chelle,'') FROM chelle WHERE id_chelle=?`, p.ChelleID).Scan(&shom, &activeMachine); err != nil {
 			fail(w, 400, "چله معتبر نیست")
 			return
+		}
+		if activeMachine == "" || activeMachine != p.Machine {
+			fail(w, 400, "چله انتخاب‌شده روی این ماشین فعال نیست")
+			return
+		}
+		if p.VorKhor == "vorud" {
+			available := a.warehouseYarnBalance(p.MoshName, p.HamNakh, p.NakhName, 0, p.ID)
+			if p.Weight > available+0.001 {
+				fail(w, 400, fmt.Sprintf("موجودی انبار این نخ کافی نیست؛ موجودی قابل تخصیص %.3f کیلوگرم", available))
+				return
+			}
+		} else {
+			assigned := a.machineYarnBalance(p.Machine, p.ChelleID, p.MoshName, p.HamNakh, p.NakhName, p.ID)
+			if p.Weight > assigned+0.001 {
+				fail(w, 400, fmt.Sprintf("وزن مرجوعی از مانده پود روی ماشین بیشتر است؛ مانده قابل مرجوع %.3f کیلوگرم", assigned))
+				return
+			}
 		}
 		finalWeight := p.Weight
 		if p.VorKhor == "khoroj" {
@@ -1677,9 +1838,9 @@ func (a *app) nakhSalon(w http.ResponseWriter, r *http.Request) {
 		}
 		var err error
 		if p.ID > 0 {
-			_, err = a.exec(`UPDATE nakh_salon SET shom_machin_nakh_salon=?, ham_nakh_salon=?, w_nakh_salon=?, shom_chelle_nakh_salon=?, mosh_name_nakh_salon=?, vor_khor_nakh_salon=? WHERE id_nakh_salon=?`, p.Machine, p.HamNakh, finalWeight, shom, p.MoshName, p.VorKhor, p.ID)
+			_, err = a.exec(`UPDATE nakh_salon SET shom_machin_nakh_salon=?, ham_nakh_salon=?, w_nakh_salon=?, shom_chelle_nakh_salon=?, mosh_name_nakh_salon=?, vor_khor_nakh_salon=?, nakh_name_nakh_salon=?, chelle_id_nakh_salon=? WHERE id_nakh_salon=?`, p.Machine, p.HamNakh, finalWeight, shom, p.MoshName, p.VorKhor, p.NakhName, p.ChelleID, p.ID)
 		} else {
-			_, err = a.exec(`INSERT INTO nakh_salon (tarikh_nakh_salon, shom_machin_nakh_salon, ham_nakh_salon, w_nakh_salon, shom_chelle_nakh_salon, mosh_name_nakh_salon, vor_khor_nakh_salon) VALUES (?,?,?,?,?,?,?)`, jalaliToday(), p.Machine, p.HamNakh, finalWeight, shom, p.MoshName, p.VorKhor)
+			_, err = a.exec(`INSERT INTO nakh_salon (tarikh_nakh_salon, shom_machin_nakh_salon, ham_nakh_salon, w_nakh_salon, shom_chelle_nakh_salon, mosh_name_nakh_salon, vor_khor_nakh_salon, nakh_name_nakh_salon, chelle_id_nakh_salon) VALUES (?,?,?,?,?,?,?,?,?)`, jalaliToday(), p.Machine, p.HamNakh, finalWeight, shom, p.MoshName, p.VorKhor, p.NakhName, p.ChelleID)
 		}
 		writeSave(w, err)
 	default:
@@ -1699,28 +1860,47 @@ func (a *app) nakhSalonByID(w http.ResponseWriter, r *http.Request) {
 func (a *app) nakhKhor(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.query(`SELECT id_nakh_khor, tarikh_nakh_khor, hambaft_nakh_khor, ABS(COALESCE(w_vor_nakh_khor,0)), moshname_nakh_khor, nakh_name_nakh_khor FROM nakh_khor ORDER BY id_nakh_khor DESC LIMIT 300`)
-		writeRows(w, rows, err, []string{"id", "tarikh", "hambaft", "weight", "mosh", "nakh"})
+		if r.URL.Query().Get("inventory") == "1" {
+			writeJSON(w, a.yarnInventory())
+			return
+		}
+		rows, err := a.query(`SELECT id_nakh_khor, tarikh_nakh_khor, hambaft_nakh_khor, ABS(COALESCE(w_vor_nakh_khor,0)), moshname_nakh_khor, nakh_name_nakh_khor, COALESCE(NULLIF(owner_mosh_nakh_khor,''),moshname_nakh_khor), COALESCE(destination_type_nakh_khor,'warper') FROM nakh_khor ORDER BY id_nakh_khor DESC LIMIT 300`)
+		writeRows(w, rows, err, []string{"id", "tarikh", "hambaft", "weight", "mosh", "nakh", "owner_mosh", "destination_type"})
 	case http.MethodPost:
 		var p struct {
-			ID       int64   `json:"id"`
-			Hambaft  string  `json:"hambaft"`
-			Weight   float64 `json:"weight"`
-			MoshName string  `json:"mosh_name"`
-			NakhName string  `json:"nakh_name"`
+			ID              int64   `json:"id"`
+			Hambaft         string  `json:"hambaft"`
+			Weight          float64 `json:"weight"`
+			MoshName        string  `json:"mosh_name"`
+			OwnerMosh       string  `json:"owner_mosh"`
+			NakhName        string  `json:"nakh_name"`
+			DestinationType string  `json:"destination_type"`
 		}
 		if !decode(w, r, &p) {
 			return
 		}
-		if p.Hambaft == "" || p.Weight <= 0 || p.MoshName == "" || p.NakhName == "" {
+		p.Hambaft = strings.TrimSpace(p.Hambaft)
+		p.MoshName = strings.TrimSpace(p.MoshName)
+		p.OwnerMosh = strings.TrimSpace(p.OwnerMosh)
+		p.NakhName = strings.TrimSpace(p.NakhName)
+		p.DestinationType = strings.TrimSpace(p.DestinationType)
+		if p.DestinationType == "" {
+			p.DestinationType = "warper"
+		}
+		if p.Hambaft == "" || p.Weight <= 0 || p.MoshName == "" || p.OwnerMosh == "" || p.NakhName == "" {
 			fail(w, 400, "اطلاعات خروج نخ کامل نیست")
+			return
+		}
+		available := a.warehouseYarnBalance(p.OwnerMosh, p.Hambaft, p.NakhName, p.ID, 0)
+		if p.Weight > available+0.001 {
+			fail(w, 400, fmt.Sprintf("موجودی انبار این نخ کافی نیست؛ موجودی قابل خروج %.3f کیلوگرم", available))
 			return
 		}
 		var err error
 		if p.ID > 0 {
-			_, err = a.exec(`UPDATE nakh_khor SET hambaft_nakh_khor=?, w_vor_nakh_khor=?, moshname_nakh_khor=?, nakh_name_nakh_khor=? WHERE id_nakh_khor=?`, p.Hambaft, -p.Weight, p.MoshName, p.NakhName, p.ID)
+			_, err = a.exec(`UPDATE nakh_khor SET hambaft_nakh_khor=?, w_vor_nakh_khor=?, moshname_nakh_khor=?, nakh_name_nakh_khor=?, owner_mosh_nakh_khor=?, destination_type_nakh_khor=? WHERE id_nakh_khor=?`, p.Hambaft, -p.Weight, p.MoshName, p.NakhName, p.OwnerMosh, p.DestinationType, p.ID)
 		} else {
-			_, err = a.exec(`INSERT INTO nakh_khor (tarikh_nakh_khor,hambaft_nakh_khor,w_vor_nakh_khor,moshname_nakh_khor,nakh_name_nakh_khor) VALUES (?,?,?,?,?)`, jalaliToday(), p.Hambaft, -p.Weight, p.MoshName, p.NakhName)
+			_, err = a.exec(`INSERT INTO nakh_khor (tarikh_nakh_khor,hambaft_nakh_khor,w_vor_nakh_khor,moshname_nakh_khor,nakh_name_nakh_khor,owner_mosh_nakh_khor,destination_type_nakh_khor) VALUES (?,?,?,?,?,?,?)`, jalaliToday(), p.Hambaft, -p.Weight, p.MoshName, p.NakhName, p.OwnerMosh, p.DestinationType)
 		}
 		writeSave(w, err)
 	default:
@@ -1805,12 +1985,52 @@ func (a *app) emptyBeamOut(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "اطلاعات خروج نورد خالی کامل نیست")
 			return
 		}
-		if p.ID > 0 {
-			_, err = a.exec(`UPDATE empty_beam_out SET kod_navard=?, chellepich_name=?, description=? WHERE id_empty_beam_out=?`, beam, warper, strings.TrimSpace(p.Description), p.ID)
-		} else {
-			_, err = a.exec(`INSERT INTO empty_beam_out (tarikh_empty_beam_out,kod_navard,chellepich_name,description) VALUES (?,?,?,?)`, jalaliToday(), beam, warper, strings.TrimSpace(p.Description))
+		tx, err := a.db.Begin()
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
 		}
-		writeSave(w, err)
+		defer tx.Rollback()
+		if a.dialect == "postgres" {
+			if _, err = tx.Exec(`SELECT pg_advisory_xact_lock(hashtext($1))`, beam); err != nil {
+				fail(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+		var unresolved int
+		err = txQueryRow(a.dialect, tx, `
+			SELECT COUNT(*)
+			FROM empty_beam_out e
+			WHERE e.kod_navard=? AND e.id_empty_beam_out<>?
+			  AND NOT EXISTS (
+				SELECT 1 FROM chelle c
+				WHERE c.codnavard_chelle=e.kod_navard
+				  AND c.pich_chelle=e.chellepich_name
+				  AND COALESCE(c.tarikh_chelle,'')>=COALESCE(e.tarikh_empty_beam_out,'')
+			  )
+		`, beam, p.ID).Scan(&unresolved)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if unresolved > 0 {
+			fail(w, http.StatusConflict, "این نورد هنوز نزد چله‌پیچ است و خروج تکراری مجاز نیست")
+			return
+		}
+		if p.ID > 0 {
+			_, err = txExec(a.dialect, tx, `UPDATE empty_beam_out SET kod_navard=?, chellepich_name=?, description=? WHERE id_empty_beam_out=?`, beam, warper, strings.TrimSpace(p.Description), p.ID)
+		} else {
+			_, err = txExec(a.dialect, tx, `INSERT INTO empty_beam_out (tarikh_empty_beam_out,kod_navard,chellepich_name,description) VALUES (?,?,?,?)`, jalaliToday(), beam, warper, strings.TrimSpace(p.Description))
+		}
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err = tx.Commit(); err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, record{"success": true})
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
@@ -1823,6 +2043,14 @@ func (a *app) emptyBeamOutByID(w http.ResponseWriter, r *http.Request) {
 	}
 	id, _ := strconv.Atoi(pathLast(r.URL.Path))
 	writeSave(w, execErr(a.exec(`DELETE FROM empty_beam_out WHERE id_empty_beam_out=?`, id)))
+}
+
+func (a *app) activeChelleInfo(machine, shom string) (int64, string, error) {
+	var id int64
+	var hambaft string
+	err := a.queryRow(`SELECT id_chelle,COALESCE(hambaft_chelle,'') FROM chelle
+		WHERE machin_chelle=? AND shom_chelle=? ORDER BY id_chelle DESC LIMIT 1`, machine, shom).Scan(&id, &hambaft)
+	return id, hambaft, err
 }
 
 func (a *app) salon(w http.ResponseWriter, r *http.Request) {
@@ -1850,21 +2078,62 @@ func (a *app) salon(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "اطلاعات تولید کامل نیست")
 			return
 		}
-		if p.User == "" {
-			p.User = "admin"
+		p.Machine = strings.TrimSpace(p.Machine)
+		p.ShomChelle = strings.TrimSpace(p.ShomChelle)
+		_, activeHambaft, activeErr := a.activeChelleInfo(p.Machine, p.ShomChelle)
+		if activeErr != nil {
+			fail(w, 400, "چله انتخاب‌شده روی این ماشین فعال نیست؛ ابتدا ثبت گره را کنترل کنید")
+			return
 		}
+		if !sameText(activeHambaft, p.HamChelle) {
+			fail(w, 400, "هم‌بافت چله با چله فعال ماشین تطابق ندارد")
+			return
+		}
+		if p.User == "" {
+			if session, ok := a.currentSession(r); ok {
+				p.User = session.Username
+			} else {
+				p.User = "admin"
+			}
+		}
+		tx, txErr := a.db.Begin()
+		if txErr != nil {
+			fail(w, 500, txErr.Error())
+			return
+		}
+		defer tx.Rollback()
 		if p.ID > 0 {
-			_, err = a.exec(`UPDATE salon SET metr_salon=?, w_salon=?, machin_salon=?, user_salon=?, kala_salon=?, ham_pod_salon=?, ham_chelle_salon=?, shom_chelle_salon=? WHERE id_salon=?`, p.Metr, p.Weight, p.Machine, p.User, kala, p.HamPod, p.HamChelle, p.ShomChelle, p.ID)
-			writeSave(w, err)
+			var oldMachine, oldChelle string
+			_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(machin_salon,''),COALESCE(shom_chelle_salon,'') FROM salon WHERE id_salon=?`, p.ID).Scan(&oldMachine, &oldChelle)
+			_, err = txExec(a.dialect, tx, `UPDATE salon SET metr_salon=?, w_salon=?, machin_salon=?, user_salon=?, kala_salon=?, ham_pod_salon=?, ham_chelle_salon=?, shom_chelle_salon=? WHERE id_salon=?`, p.Metr, p.Weight, p.Machine, p.User, kala, p.HamPod, p.HamChelle, p.ShomChelle, p.ID)
+			if err == nil {
+				err = a.rebuildConsumptionTx(tx, oldMachine, oldChelle)
+			}
+			if err == nil && (oldMachine != p.Machine || oldChelle != p.ShomChelle) {
+				err = a.rebuildConsumptionTx(tx, p.Machine, p.ShomChelle)
+			}
+			if err != nil {
+				fail(w, 500, err.Error())
+				return
+			}
+			writeSave(w, tx.Commit())
 			return
 		}
 		next := int64(1)
-		_ = a.queryRow(`SELECT COALESCE(MAX(id_salon),0)+1 FROM salon`).Scan(&next)
-		_, err = a.exec(`INSERT INTO salon (id_salon, metr_salon, w_salon, machin_salon, user_salon, tarikh_salon, kala_salon, ham_pod_salon, ham_chelle_salon, shom_chelle_salon) VALUES (?,?,?,?,?,?,?,?,?,?)`, next, p.Metr, p.Weight, p.Machine, p.User, jalaliToday(), kala, p.HamPod, p.HamChelle, p.ShomChelle)
+		_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(MAX(id_salon),0)+1 FROM salon`).Scan(&next)
+		_, err = txExec(a.dialect, tx, `INSERT INTO salon (id_salon, metr_salon, w_salon, machin_salon, user_salon, tarikh_salon, kala_salon, ham_pod_salon, ham_chelle_salon, shom_chelle_salon) VALUES (?,?,?,?,?,?,?,?,?,?)`, next, p.Metr, p.Weight, p.Machine, p.User, jalaliToday(), kala, p.HamPod, p.HamChelle, p.ShomChelle)
 		if err == nil {
-			_ = a.updateConsumption(p.Machine, p.ShomChelle, p.Weight)
+			err = a.rebuildConsumptionTx(tx, p.Machine, p.ShomChelle)
 		}
-		writeJSON(w, record{"success": err == nil, "id": next, "error": errString(err)})
+		if err != nil {
+			fail(w, 500, err.Error())
+			return
+		}
+		if err = tx.Commit(); err != nil {
+			fail(w, 500, err.Error())
+			return
+		}
+		writeJSON(w, record{"success": true, "id": next})
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
@@ -1916,6 +2185,7 @@ func (a *app) outInvoice(w http.ResponseWriter, r *http.Request) {
 			fail(w, 500, err.Error())
 			return
 		}
+		conflict := false
 		sort.Strings(p.Items)
 		for _, code := range p.Items {
 			taghe, lockErr := a.tagheForUpdate(tx, code)
@@ -1930,6 +2200,7 @@ func (a *app) outInvoice(w http.ResponseWriter, r *http.Request) {
 			var existingInvoice string
 			existingErr := txQueryRow(a.dialect, tx, `SELECT shom_f_khor FROM f_khor WHERE taghe_cod_f_khor=? AND (?='' OR shom_f_khor<>?) LIMIT 1`, code, p.OldNo, p.OldNo).Scan(&existingInvoice)
 			if existingErr == nil && existingInvoice != "" {
+				conflict = true
 				err = fmt.Errorf("طاقه %s قبلاً در فاکتور %s ثبت شده است", code, existingInvoice)
 				break
 			}
@@ -1940,6 +2211,7 @@ func (a *app) outInvoice(w http.ResponseWriter, r *http.Request) {
 			var reservationSession string
 			reservationErr := txQueryRow(a.dialect, tx, `SELECT session_id FROM loading_reservations WHERE taghe_code=?`, code).Scan(&reservationSession)
 			if reservationErr == nil && (loading == nil || reservationSession != loading.ID) {
+				conflict = true
 				err = fmt.Errorf("طاقه %s در یک بارگیری دیگر رزرو شده است", code)
 				break
 			}
@@ -1965,7 +2237,11 @@ func (a *app) outInvoice(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			_ = tx.Rollback()
-			fail(w, http.StatusBadRequest, err.Error())
+			status := http.StatusBadRequest
+			if conflict {
+				status = http.StatusConflict
+			}
+			fail(w, status, err.Error())
 			return
 		}
 		if err := tx.Commit(); err != nil {
@@ -2060,6 +2336,10 @@ func loadingPublicBase(r *http.Request) string {
 	return scheme + "://" + host + prefix
 }
 
+func loadingPublicURL(r *http.Request, token string) string {
+	return loadingPublicBase(r) + "/login?next=" + url.QueryEscape("/operational/loading/"+url.PathEscape(token))
+}
+
 func (a *app) cleanupExpiredLoadingSessions() {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, _ = a.exec(`UPDATE loading_sessions SET status='expired' WHERE status='active' AND expires_at<=?`, now)
@@ -2072,10 +2352,12 @@ func (a *app) createLoadingSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		InvoiceNo string `json:"invoice_no"`
-		SanadNo   string `json:"sanad_no"`
-		Customer  string `json:"customer"`
-		Kala      string `json:"kala"`
+		InvoiceNo string   `json:"invoice_no"`
+		SanadNo   string   `json:"sanad_no"`
+		Customer  string   `json:"customer"`
+		Kala      string   `json:"kala"`
+		Items     []string `json:"items"`
+		OldNo     string   `json:"old_invoice_no"`
 	}
 	if !decode(w, r, &payload) {
 		return
@@ -2084,6 +2366,8 @@ func (a *app) createLoadingSession(w http.ResponseWriter, r *http.Request) {
 	payload.SanadNo = strings.TrimSpace(payload.SanadNo)
 	payload.Customer = strings.TrimSpace(payload.Customer)
 	payload.Kala = strings.TrimSpace(payload.Kala)
+	payload.OldNo = strings.TrimSpace(payload.OldNo)
+	payload.Items = uniqueCodes(payload.Items)
 	if payload.InvoiceNo == "" || payload.Customer == "" || payload.Kala == "" {
 		fail(w, http.StatusBadRequest, "شماره فاکتور، مشتری و نام کالا برای شروع بارگیری الزامی است")
 		return
@@ -2118,6 +2402,35 @@ func (a *app) createLoadingSession(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		_, err = txExec(a.dialect, tx, `INSERT INTO loading_sessions (id,token_hash,invoice_no,sanad_no,customer,kala,status,created_by,created_by_username,created_at,expires_at) VALUES (?,?,?,?,?,?,'active',?,?,?,?)`, id, loadingTokenHash(token), payload.InvoiceNo, payload.SanadNo, payload.Customer, payload.Kala, employee.UserID, employee.Username, now.Format(time.RFC3339Nano), expiresAt.Format(time.RFC3339Nano))
 	}
+	if err == nil {
+		sort.Strings(payload.Items)
+		for _, code := range payload.Items {
+			taghe, lockErr := a.tagheForUpdate(tx, code)
+			if lockErr != nil {
+				err = fmt.Errorf("طاقه %s در دیتابیس موجود نیست", code)
+				break
+			}
+			if !sameText(taghe.Kala, payload.Kala) {
+				err = fmt.Errorf("کالای طاقه %s با کالای فاکتور مغایرت دارد", code)
+				break
+			}
+			var existingInvoice string
+			existingErr := txQueryRow(a.dialect, tx, `SELECT shom_f_khor FROM f_khor WHERE taghe_cod_f_khor=? AND (?='' OR shom_f_khor<>?) LIMIT 1`, code, payload.OldNo, payload.OldNo).Scan(&existingInvoice)
+			if existingErr == nil && existingInvoice != "" {
+				err = fmt.Errorf("طاقه %s قبلاً در فاکتور %s ثبت شده است", code, existingInvoice)
+				break
+			}
+			if existingErr != nil && !errors.Is(existingErr, sql.ErrNoRows) {
+				err = existingErr
+				break
+			}
+			_, err = txExec(a.dialect, tx, `INSERT INTO loading_reservations (taghe_code,session_id,reserved_at) VALUES (?,?,?)`, code, id, now.Format(time.RFC3339Nano))
+			if err != nil {
+				err = fmt.Errorf("طاقه %s در یک بارگیری دیگر رزرو شده است", code)
+				break
+			}
+		}
+	}
 	if err != nil {
 		_ = tx.Rollback()
 		fail(w, http.StatusInternalServerError, err.Error())
@@ -2130,7 +2443,7 @@ func (a *app) createLoadingSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, record{
 		"success":    true,
 		"token":      token,
-		"url":        loadingPublicBase(r) + "/loading/" + token,
+		"url":        loadingPublicURL(r, token),
 		"expires_at": expiresAt.Format(time.RFC3339),
 	})
 }
@@ -2314,6 +2627,14 @@ func (a *app) scanLoadingTaghe(w http.ResponseWriter, r *http.Request, session l
 		fail(w, http.StatusConflict, "این طاقه در یک بارگیری دیگر رزرو شده است")
 		return
 	}
+	if reservationErr == nil && reservedBy == session.ID {
+		fail(w, http.StatusConflict, "این طاقه قبلاً در همین فاکتور اضافه شده است")
+		return
+	}
+	if reservationErr != nil && !errors.Is(reservationErr, sql.ErrNoRows) {
+		fail(w, http.StatusInternalServerError, reservationErr.Error())
+		return
+	}
 	matches := sameText(taghe.Kala, session.Kala)
 	reason := ""
 	if !matches {
@@ -2322,7 +2643,7 @@ func (a *app) scanLoadingTaghe(w http.ResponseWriter, r *http.Request, session l
 	item := taghe.record()
 	item["matches"] = matches
 	item["mismatch_reason"] = reason
-	item["already_confirmed"] = reservationErr == nil && reservedBy == session.ID
+	item["already_confirmed"] = false
 	writeJSON(w, record{"success": true, "item": item})
 }
 
@@ -2371,6 +2692,11 @@ func (a *app) confirmLoadingTaghe(w http.ResponseWriter, r *http.Request, sessio
 	if reservationErr == nil && reservedBy != session.ID {
 		_ = tx.Rollback()
 		fail(w, http.StatusConflict, "این طاقه در یک بارگیری دیگر رزرو شده است")
+		return
+	}
+	if reservationErr == nil && reservedBy == session.ID {
+		_ = tx.Rollback()
+		fail(w, http.StatusConflict, "این طاقه قبلاً در همین فاکتور اضافه شده است")
 		return
 	}
 	if reservationErr != nil && !errors.Is(reservationErr, sql.ErrNoRows) {
@@ -2500,6 +2826,96 @@ func (a *app) expenseByID(w http.ResponseWriter, r *http.Request) {
 	writeSave(w, execErr(a.exec(`DELETE FROM h_rozmare WHERE id_h_rozmare=?`, id)))
 }
 
+func (a *app) productionWaste(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := a.query(`SELECT id_waste,COALESCE(waste_date,''),machine,shom_chelle,waste_type,weight,COALESCE(reason,''),COALESCE(operator_name,''),COALESCE(description,'') FROM production_waste ORDER BY id_waste DESC LIMIT 500`)
+		writeRows(w, rows, err, []string{"id", "tarikh", "machine", "shom_chelle", "waste_type", "weight", "reason", "operator_name", "description"})
+	case http.MethodPost:
+		var p struct {
+			ID          int64   `json:"id"`
+			Machine     string  `json:"machine"`
+			ShomChelle  string  `json:"shom_chelle"`
+			WasteType   string  `json:"waste_type"`
+			Weight      float64 `json:"weight"`
+			Reason      string  `json:"reason"`
+			Description string  `json:"description"`
+		}
+		if !decode(w, r, &p) {
+			return
+		}
+		p.Machine = strings.TrimSpace(p.Machine)
+		p.ShomChelle = strings.TrimSpace(p.ShomChelle)
+		p.WasteType = strings.TrimSpace(p.WasteType)
+		allowed := map[string]bool{"tar": true, "pod": true, "fabric": true, "selvage": true, "other": true}
+		if p.Machine == "" || p.ShomChelle == "" || !allowed[p.WasteType] || p.Weight <= 0 || strings.TrimSpace(p.Reason) == "" {
+			fail(w, 400, "ماشین، چله، نوع، وزن و علت ضایعات الزامی است")
+			return
+		}
+		var exists int64
+		_ = a.queryRow(`SELECT COUNT(*) FROM chelle WHERE shom_chelle=? AND (machin_chelle=? OR EXISTS(SELECT 1 FROM salon s WHERE s.machin_salon=? AND s.shom_chelle_salon=?))`, p.ShomChelle, p.Machine, p.Machine, p.ShomChelle).Scan(&exists)
+		if exists == 0 {
+			fail(w, 400, "چله برای ماشین انتخاب‌شده سابقه معتبر ندارد")
+			return
+		}
+		operator := "admin"
+		if session, ok := a.currentSession(r); ok {
+			operator = session.Username
+		}
+		tx, err := a.db.Begin()
+		if err != nil {
+			fail(w, 500, err.Error())
+			return
+		}
+		defer tx.Rollback()
+		oldMachine, oldChelle := "", ""
+		if p.ID > 0 {
+			_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(machine,''),COALESCE(shom_chelle,'') FROM production_waste WHERE id_waste=?`, p.ID).Scan(&oldMachine, &oldChelle)
+			_, err = txExec(a.dialect, tx, `UPDATE production_waste SET waste_date=?,machine=?,shom_chelle=?,waste_type=?,weight=?,reason=?,operator_name=?,description=? WHERE id_waste=?`, jalaliToday(), p.Machine, p.ShomChelle, p.WasteType, p.Weight, p.Reason, operator, p.Description, p.ID)
+		} else {
+			_, err = txExec(a.dialect, tx, `INSERT INTO production_waste(waste_date,machine,shom_chelle,waste_type,weight,reason,operator_name,description) VALUES(?,?,?,?,?,?,?,?)`, jalaliToday(), p.Machine, p.ShomChelle, p.WasteType, p.Weight, p.Reason, operator, p.Description)
+		}
+		if err == nil && oldMachine != "" {
+			err = a.rebuildConsumptionTx(tx, oldMachine, oldChelle)
+		}
+		if err == nil && (oldMachine != p.Machine || oldChelle != p.ShomChelle) {
+			err = a.rebuildConsumptionTx(tx, p.Machine, p.ShomChelle)
+		}
+		if err != nil {
+			fail(w, 500, err.Error())
+			return
+		}
+		writeSave(w, tx.Commit())
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *app) productionWasteByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	id, _ := strconv.Atoi(pathLast(r.URL.Path))
+	var machine, shom string
+	_ = a.queryRow(`SELECT COALESCE(machine,''),COALESCE(shom_chelle,'') FROM production_waste WHERE id_waste=?`, id).Scan(&machine, &shom)
+	tx, err := a.db.Begin()
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	defer tx.Rollback()
+	_, err = txExec(a.dialect, tx, `DELETE FROM production_waste WHERE id_waste=?`, id)
+	if err == nil {
+		err = a.rebuildConsumptionTx(tx, machine, shom)
+	}
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	writeSave(w, tx.Commit())
+}
+
 func (a *app) formulas(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -2517,8 +2933,8 @@ func (a *app) formulas(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.Machine = strings.TrimSpace(p.Machine)
-		if p.Machine == "" || p.TarPercent < 0 || p.PodPercent < 0 || p.TarPercent+p.PodPercent <= 0 {
-			fail(w, 400, "اطلاعات فرمول ماشین کامل نیست")
+		if p.Machine == "" || p.TarPercent < 0 || p.PodPercent < 0 || absFloat((p.TarPercent+p.PodPercent)-100) > 0.001 {
+			fail(w, 400, "جمع درصد تار و پود باید دقیقاً ۱۰۰ باشد")
 			return
 		}
 		var err error
@@ -2527,6 +2943,9 @@ func (a *app) formulas(w http.ResponseWriter, r *http.Request) {
 		} else {
 			_, err = a.exec(`INSERT INTO machine_formul (machine, tar_percent, pod_percent, tozih_formul) VALUES (?,?,?,?)
 				ON CONFLICT(machine) DO UPDATE SET tar_percent=excluded.tar_percent, pod_percent=excluded.pod_percent, tozih_formul=excluded.tozih_formul`, p.Machine, p.TarPercent, p.PodPercent, p.Tozih)
+		}
+		if err == nil {
+			err = a.rebuildMachineConsumption(p.Machine)
 		}
 		writeSave(w, err)
 	default:
@@ -3161,7 +3580,8 @@ func (a *app) users(w http.ResponseWriter, r *http.Request) {
 				fail(w, 500, err.Error())
 				return
 			}
-			if _, err := txExec(a.dialect, tx, `INSERT INTO public.operational_platform_users(tenant_id,local_user_id,username,password_hash,active) VALUES(?,?,?,?,1)`, session.CompanyID, userID, p.Username, hash); err != nil {
+			platformUsername := fmt.Sprintf("tenant_%d_user_%d", session.CompanyID, userID)
+			if _, err := txExec(a.dialect, tx, `INSERT INTO public.operational_platform_users(tenant_id,local_user_id,username,password_hash,active) VALUES(?,?,?,?,1)`, session.CompanyID, userID, platformUsername, hash); err != nil {
 				fail(w, 500, err.Error())
 				return
 			}
@@ -3355,7 +3775,23 @@ func (a *app) salonByPath(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodDelete {
 		id, _ := strconv.Atoi(pathLast(r.URL.Path))
-		writeSave(w, execErr(a.exec(`DELETE FROM salon WHERE id_salon=?`, id)))
+		var machine, shom string
+		_ = a.queryRow(`SELECT COALESCE(machin_salon,''),COALESCE(shom_chelle_salon,'') FROM salon WHERE id_salon=?`, id).Scan(&machine, &shom)
+		tx, err := a.db.Begin()
+		if err != nil {
+			fail(w, 500, err.Error())
+			return
+		}
+		defer tx.Rollback()
+		_, err = txExec(a.dialect, tx, `DELETE FROM salon WHERE id_salon=?`, id)
+		if err == nil {
+			err = a.rebuildConsumptionTx(tx, machine, shom)
+		}
+		if err != nil {
+			fail(w, 500, err.Error())
+			return
+		}
+		writeSave(w, tx.Commit())
 		return
 	}
 	w.WriteHeader(http.StatusNotFound)
@@ -3394,6 +3830,12 @@ func (a *app) podCarryover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	note := "مرجوع پود باقیمانده به انبار"
+	var yarn string
+	var oldChelleID, newChelleID int64
+	_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(nakh_name_nakh_salon,''),COALESCE(chelle_id_nakh_salon,0) FROM nakh_salon WHERE shom_machin_nakh_salon=? AND shom_chelle_nakh_salon=? AND COALESCE(nakh_name_nakh_salon,'')<>'' ORDER BY id_nakh_salon DESC LIMIT 1`, p.Machine, p.OldChelle).Scan(&yarn, &oldChelleID)
+	if oldChelleID == 0 {
+		_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(id_chelle,0) FROM chelle WHERE shom_chelle=? ORDER BY id_chelle DESC LIMIT 1`, p.OldChelle).Scan(&oldChelleID)
+	}
 	if p.Action == "assign_new" {
 		if p.NewChelle == "" {
 			_ = tx.Rollback()
@@ -3401,10 +3843,11 @@ func (a *app) podCarryover(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		note = "انتقال پود باقیمانده به چله جدید"
+		_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(id_chelle,0) FROM chelle WHERE shom_chelle=? AND machin_chelle=? ORDER BY id_chelle DESC LIMIT 1`, p.NewChelle, p.Machine).Scan(&newChelleID)
 	}
-	_, err = txExec(a.dialect, tx, `INSERT INTO nakh_salon (tarikh_nakh_salon, shom_machin_nakh_salon, ham_nakh_salon, w_nakh_salon, shom_chelle_nakh_salon, mosh_name_nakh_salon, vor_khor_nakh_salon) VALUES (?,?,?,?,?,?,?)`, jalaliToday(), p.Machine, ham, -leftover, p.OldChelle, mosh, note)
+	_, err = txExec(a.dialect, tx, `INSERT INTO nakh_salon (tarikh_nakh_salon, shom_machin_nakh_salon, ham_nakh_salon, w_nakh_salon, shom_chelle_nakh_salon, mosh_name_nakh_salon, vor_khor_nakh_salon, nakh_name_nakh_salon, chelle_id_nakh_salon) VALUES (?,?,?,?,?,?,?,?,?)`, jalaliToday(), p.Machine, ham, -leftover, p.OldChelle, mosh, note, yarn, oldChelleID)
 	if err == nil && p.Action == "assign_new" {
-		_, err = txExec(a.dialect, tx, `INSERT INTO nakh_salon (tarikh_nakh_salon, shom_machin_nakh_salon, ham_nakh_salon, w_nakh_salon, shom_chelle_nakh_salon, mosh_name_nakh_salon, vor_khor_nakh_salon) VALUES (?,?,?,?,?,?,?)`, jalaliToday(), p.Machine, ham, leftover, p.NewChelle, mosh, note)
+		_, err = txExec(a.dialect, tx, `INSERT INTO nakh_salon (tarikh_nakh_salon, shom_machin_nakh_salon, ham_nakh_salon, w_nakh_salon, shom_chelle_nakh_salon, mosh_name_nakh_salon, vor_khor_nakh_salon, nakh_name_nakh_salon, chelle_id_nakh_salon) VALUES (?,?,?,?,?,?,?,?,?)`, jalaliToday(), p.Machine, ham, leftover, p.NewChelle, mosh, note, yarn, newChelleID)
 	}
 	if err != nil {
 		_ = tx.Rollback()
@@ -3415,7 +3858,7 @@ func (a *app) podCarryover(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) podLeftover(machine, shom string) (float64, string, string) {
-	assigned, used := 0.0, 0.0
+	assigned, used, podWaste, generalWaste := 0.0, 0.0, 0.0, 0.0
 	ham, mosh := "", ""
 	whereMachine, args := machineWhere("shom_machin_nakh_salon", machine)
 	args = append(args, shom)
@@ -3430,7 +3873,8 @@ func (a *app) podLeftover(machine, shom string) (float64, string, string) {
 	whereSalon, salonArgs := machineWhere("machin_salon", machine)
 	salonArgs = append(salonArgs, shom)
 	_ = a.queryRow(`SELECT COALESCE(SUM(w_salon),0) FROM salon WHERE `+whereSalon+` AND shom_chelle_salon=?`, salonArgs...).Scan(&used)
-	leftover := assigned - (used * pod / 100)
+	_ = a.queryRow(`SELECT COALESCE(SUM(CASE WHEN waste_type='pod' THEN weight ELSE 0 END),0), COALESCE(SUM(CASE WHEN waste_type NOT IN ('tar','pod') THEN weight ELSE 0 END),0) FROM production_waste WHERE machine=? AND shom_chelle=?`, machine, shom).Scan(&podWaste, &generalWaste)
+	leftover := assigned - (used * pod / 100) - podWaste - generalWaste*pod/100
 	if leftover < 0 {
 		leftover = 0
 	}
@@ -3467,7 +3911,7 @@ func (a *app) salonDefaults(w http.ResponseWriter, machine string) {
 
 func (a *app) recentChelles(w http.ResponseWriter, machine string) {
 	where, args := machineWhere("g.machin_gere", machine)
-	rows, err := a.query(`SELECT g.id_gere, COALESCE(g.tarikh_gere,''), g.shom_chelle_gere, g.machin_gere, COALESCE(c.w_chelle,0), COALESCE(c.hambaft_chelle,'') FROM gere g LEFT JOIN chelle c ON c.shom_chelle=g.shom_chelle_gere WHERE `+where+` AND COALESCE(g.shom_chelle_gere,'')<>'' ORDER BY COALESCE(g.tarikh_gere,'') DESC, g.id_gere DESC`, args...)
+	rows, err := a.query(`SELECT g.id_gere, COALESCE(g.tarikh_gere,''), g.shom_chelle_gere, g.machin_gere, COALESCE(c.w_chelle,0), COALESCE(c.hambaft_chelle,'') FROM gere g LEFT JOIN chelle c ON c.id_chelle=g.chelle_id_gere WHERE `+where+` AND COALESCE(g.shom_chelle_gere,'')<>'' ORDER BY COALESCE(g.tarikh_gere,'') DESC, g.id_gere DESC`, args...)
 	if err != nil {
 		fail(w, 500, err.Error())
 		return
@@ -3516,17 +3960,63 @@ func (a *app) resetCycle(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, record{"success": true})
 }
 
-func (a *app) updateConsumption(machine, shom string, weight float64) error {
+func (a *app) rebuildConsumptionTx(tx *sql.Tx, machine, shom string) error {
+	machine = strings.TrimSpace(machine)
+	shom = strings.TrimSpace(shom)
+	if machine == "" || shom == "" {
+		return nil
+	}
+	if _, err := txExec(a.dialect, tx, `DELETE FROM machine_consumption WHERE machine=? AND shom_chelle=?`, machine, shom); err != nil {
+		return err
+	}
 	tar, pod := 50.0, 50.0
-	_ = a.queryRow(`SELECT COALESCE(tar_percent,50), COALESCE(pod_percent,50) FROM machine_formul WHERE machine=?`, machine).Scan(&tar, &pod)
-	tarUsed := weight * tar / 100
-	podUsed := weight * pod / 100
-	initial := 0.0
-	_ = a.queryRow(`SELECT COALESCE(w_chelle,0) FROM chelle WHERE shom_chelle=?`, shom).Scan(&initial)
-	prevTar, prevPod, prevTotal := 0.0, 0.0, 0.0
-	_ = a.queryRow(`SELECT COALESCE(tar_used,0), COALESCE(pod_used,0), COALESCE(total_weight,0) FROM machine_consumption WHERE machine=? AND shom_chelle=? ORDER BY id_consumption DESC LIMIT 1`, machine, shom).Scan(&prevTar, &prevPod, &prevTotal)
-	_, err := a.exec(`INSERT INTO machine_consumption (machine, shom_chelle, tar_used, pod_used, total_weight, remaining_weight, tarikh_consumption) VALUES (?,?,?,?,?,?,?)`, machine, shom, prevTar+tarUsed, prevPod+podUsed, prevTotal+weight, initial-(prevTar+tarUsed)-(prevPod+podUsed), jalaliToday())
+	_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(tar_percent,50),COALESCE(pod_percent,50) FROM machine_formul WHERE machine=?`, machine).Scan(&tar, &pod)
+	totalFormula := tar + pod
+	if totalFormula <= 0 {
+		tar, pod = 50, 50
+	} else {
+		tar, pod = tar*100/totalFormula, pod*100/totalFormula
+	}
+	var output, chelleWeight, podAssigned, waste float64
+	_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(SUM(w_salon),0) FROM salon WHERE machin_salon=? AND shom_chelle_salon=?`, machine, shom).Scan(&output)
+	_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(w_chelle,0) FROM chelle WHERE shom_chelle=? ORDER BY id_chelle DESC LIMIT 1`, shom).Scan(&chelleWeight)
+	_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(SUM(w_nakh_salon),0) FROM nakh_salon WHERE shom_machin_nakh_salon=? AND shom_chelle_nakh_salon=?`, machine, shom).Scan(&podAssigned)
+	_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(SUM(weight),0) FROM production_waste WHERE machine=? AND shom_chelle=?`, machine, shom).Scan(&waste)
+	tarUsed := output * tar / 100
+	podUsed := output * pod / 100
+	remaining := chelleWeight + podAssigned - output - waste
+	_, err := txExec(a.dialect, tx, `INSERT INTO machine_consumption (machine,shom_chelle,tar_used,pod_used,total_weight,remaining_weight,tarikh_consumption) VALUES (?,?,?,?,?,?,?)`, machine, shom, tarUsed, podUsed, output, remaining, jalaliToday())
 	return err
+}
+
+func (a *app) rebuildMachineConsumption(machine string) error {
+	rows, err := a.query(`SELECT DISTINCT shom_chelle_salon FROM salon WHERE machin_salon=? AND COALESCE(shom_chelle_salon,'')<>''`, machine)
+	if err != nil {
+		return err
+	}
+	chelles := []string{}
+	for rows.Next() {
+		var shom string
+		if err := rows.Scan(&shom); err != nil {
+			rows.Close()
+			return err
+		}
+		chelles = append(chelles, shom)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, shom := range chelles {
+		if err := a.rebuildConsumptionTx(tx, machine, shom); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (a *app) lookup(table, idCol, nameCol string) []lookupItem {
@@ -3601,35 +4091,30 @@ func (a *app) stockSummary() record {
 func (a *app) yarnInventory() []record {
 	rows, err := a.query(`
 		WITH yarn_keys AS (
-			SELECT hambaft_nakh_vor AS hambaft, moshname_nakh_vor AS mosh FROM nakh_vor
+			SELECT hambaft_nakh_vor AS hambaft, moshname_nakh_vor AS mosh, COALESCE(nakh_name_nakh_vor,'') AS yarn FROM nakh_vor
 			UNION
-			SELECT hambaft_nakh_khor AS hambaft, moshname_nakh_khor AS mosh FROM nakh_khor
+			SELECT hambaft_nakh_khor AS hambaft, COALESCE(NULLIF(owner_mosh_nakh_khor,''),moshname_nakh_khor) AS mosh, COALESCE(nakh_name_nakh_khor,'') AS yarn FROM nakh_khor
 			UNION
-			SELECT ham_nakh_salon AS hambaft, mosh_name_nakh_salon AS mosh FROM nakh_salon
+			SELECT ham_nakh_salon AS hambaft, mosh_name_nakh_salon AS mosh, COALESCE(nakh_name_nakh_salon,'') AS yarn FROM nakh_salon
 		)
-		SELECT k.hambaft, k.mosh,
-			COALESCE((SELECT SUM(w_vor_nakh_vor) FROM nakh_vor v WHERE v.hambaft_nakh_vor=k.hambaft AND v.moshname_nakh_vor=k.mosh),0) AS vorud,
-			COALESCE((SELECT SUM(w_nakh_salon) FROM nakh_salon s WHERE s.ham_nakh_salon=k.hambaft AND s.mosh_name_nakh_salon=k.mosh),0) AS salon,
-			COALESCE((SELECT SUM(w_vor_nakh_khor) FROM nakh_khor kh WHERE kh.hambaft_nakh_khor=k.hambaft AND kh.moshname_nakh_khor=k.mosh),0) AS khoroj
+		SELECT k.hambaft, k.mosh, k.yarn,
+			COALESCE((SELECT SUM(w_vor_nakh_vor) FROM nakh_vor v WHERE v.hambaft_nakh_vor=k.hambaft AND v.moshname_nakh_vor=k.mosh AND COALESCE(v.nakh_name_nakh_vor,'')=k.yarn),0) AS vorud,
+			COALESCE((SELECT SUM(w_nakh_salon) FROM nakh_salon s WHERE s.ham_nakh_salon=k.hambaft AND s.mosh_name_nakh_salon=k.mosh AND COALESCE(s.nakh_name_nakh_salon,'')=k.yarn),0) AS salon,
+			COALESCE((SELECT SUM(ABS(w_vor_nakh_khor)) FROM nakh_khor kh WHERE kh.hambaft_nakh_khor=k.hambaft AND COALESCE(NULLIF(kh.owner_mosh_nakh_khor,''),kh.moshname_nakh_khor)=k.mosh AND COALESCE(kh.nakh_name_nakh_khor,'')=k.yarn),0) AS khoroj
 		FROM yarn_keys k
 		WHERE COALESCE(k.hambaft,'')<>'' AND COALESCE(k.mosh,'')<>''
-		ORDER BY k.hambaft, k.mosh`)
+		ORDER BY k.mosh, k.hambaft, k.yarn`)
 	if err != nil {
 		return []record{}
 	}
 	defer rows.Close()
 	items := []record{}
 	for rows.Next() {
-		var h, m string
+		var h, m, yarn string
 		var vor, salon, khor float64
-		_ = rows.Scan(&h, &m, &vor, &salon, &khor)
-		if salon < 0 {
-			salon = 0
-		}
-		inv := vor - absFloat(salon) - absFloat(khor)
-		if inv != 0 {
-			items = append(items, record{"hambaft": h, "mosh": m, "inventory": inv, "vorud": vor, "to_salon": absFloat(salon), "khoroj": absFloat(khor)})
-		}
+		_ = rows.Scan(&h, &m, &yarn, &vor, &salon, &khor)
+		inv := vor - salon - khor
+		items = append(items, record{"hambaft": h, "mosh": m, "yarn": yarn, "inventory": inv, "vorud": vor, "to_salon": salon, "khoroj": khor, "data_complete": yarn != ""})
 	}
 	return items
 }
@@ -3644,16 +4129,9 @@ func (a *app) machineStatus() []record {
 
 func (a *app) activeMachineStatus() ([]record, error) {
 	rows, err := a.query(`
-		SELECT machine, shom_chelle, tarikh, sort_id
-		FROM (
-			SELECT machin_gere AS machine, shom_chelle_gere AS shom_chelle, COALESCE(tarikh_gere,'') AS tarikh, id_gere AS sort_id
-			FROM gere
-			WHERE COALESCE(machin_gere,'')<>'' AND COALESCE(shom_chelle_gere,'')<>''
-			UNION ALL
-			SELECT machin_chelle AS machine, shom_chelle AS shom_chelle, COALESCE(tarikh_chelle,'') AS tarikh, id_chelle AS sort_id
-			FROM chelle
-			WHERE COALESCE(machin_chelle,'')<>'' AND COALESCE(shom_chelle,'')<>''
-		) active_sources
+		SELECT machin_chelle AS machine, shom_chelle, COALESCE(tarikh_chelle,'') AS tarikh, id_chelle AS sort_id
+		FROM chelle
+		WHERE COALESCE(machin_chelle,'')<>'' AND COALESCE(shom_chelle,'')<>''
 		ORDER BY machine, tarikh DESC, sort_id DESC`)
 	if err != nil {
 		return nil, err
@@ -3686,34 +4164,66 @@ func (a *app) activeMachineStatus() ([]record, error) {
 	for _, row := range active {
 		machine, shom, tarikh := row.machine, row.shom, row.tarikh
 		var chelleWeight, totalWeight, totalMeter, podAssigned, tarPercent, podPercent float64
+		var tarWaste, podWaste, generalWaste float64
 		tarPercent, podPercent = 50, 50
-		_ = a.queryRow(`SELECT COALESCE(w_chelle,0) FROM chelle WHERE shom_chelle=? ORDER BY id_chelle DESC LIMIT 1`, shom).Scan(&chelleWeight)
+		_ = a.queryRow(`SELECT COALESCE(w_chelle,0) FROM chelle WHERE shom_chelle=? AND machin_chelle=? ORDER BY id_chelle DESC LIMIT 1`, shom, machine).Scan(&chelleWeight)
 		_ = a.queryRow(`SELECT COALESCE(SUM(w_salon),0), COALESCE(SUM(metr_salon),0) FROM salon WHERE machin_salon=? AND shom_chelle_salon=?`, machine, shom).Scan(&totalWeight, &totalMeter)
 		_ = a.queryRow(`SELECT COALESCE(SUM(w_nakh_salon),0) FROM nakh_salon WHERE shom_machin_nakh_salon=? AND shom_chelle_nakh_salon=?`, machine, shom).Scan(&podAssigned)
 		_ = a.queryRow(`SELECT COALESCE(tar_percent,50), COALESCE(pod_percent,50) FROM machine_formul WHERE machine=?`, machine).Scan(&tarPercent, &podPercent)
+		formulaTotal := tarPercent + podPercent
+		if formulaTotal <= 0 {
+			tarPercent, podPercent = 50, 50
+		} else {
+			tarPercent = tarPercent * 100 / formulaTotal
+			podPercent = podPercent * 100 / formulaTotal
+		}
+		_ = a.queryRow(`SELECT
+			COALESCE(SUM(CASE WHEN waste_type='tar' THEN weight ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN waste_type='pod' THEN weight ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN waste_type NOT IN ('tar','pod') THEN weight ELSE 0 END),0)
+			FROM production_waste WHERE machine=? AND shom_chelle=?`, machine, shom).Scan(&tarWaste, &podWaste, &generalWaste)
 		tarUsed := totalWeight * tarPercent / 100
 		podUsed := totalWeight * podPercent / 100
+		actualWaste := tarWaste + podWaste + generalWaste
 		used := tarUsed + podUsed
 		totalAvailable := chelleWeight + podAssigned
-		remaining := totalAvailable - used
-		if remaining < 0 {
-			remaining = 0
+		tarRemainingRaw := chelleWeight - tarUsed - tarWaste - generalWaste*tarPercent/100
+		podRemainingRaw := podAssigned - podUsed - podWaste - generalWaste*podPercent/100
+		materialShortage := 0.0
+		if tarRemainingRaw < 0 {
+			materialShortage += -tarRemainingRaw
 		}
+		if podRemainingRaw < 0 {
+			materialShortage += -podRemainingRaw
+		}
+		tarRemaining := tarRemainingRaw
+		podRemaining := podRemainingRaw
+		if tarRemaining < 0 {
+			tarRemaining = 0
+		}
+		if podRemaining < 0 {
+			podRemaining = 0
+		}
+		remaining := tarRemaining + podRemaining
 		remainingPercent := 0.0
 		if totalAvailable > 0 {
 			remainingPercent = remaining * 100 / totalAvailable
 		}
 		wastePerMeter := 0.0
 		if totalMeter > 0 {
-			wastePerMeter = remaining / totalMeter
+			wastePerMeter = actualWaste / totalMeter
 		}
 		wastePerKg := 0.0
 		if totalWeight > 0 {
-			wastePerKg = remaining / totalWeight
+			wastePerKg = actualWaste / totalWeight
 		}
-		wastePercentPerKg := 0.0
-		if totalWeight+remaining > 0 {
-			wastePercentPerKg = remaining * 100 / (totalWeight + remaining)
+		wastePercentInput := 0.0
+		if totalAvailable > 0 {
+			wastePercentInput = actualWaste * 100 / totalAvailable
+		}
+		wastePercentOutput := 0.0
+		if totalWeight+actualWaste > 0 {
+			wastePercentOutput = actualWaste * 100 / (totalWeight + actualWaste)
 		}
 		items = append(items, record{
 			"machine": machine, "shom_chelle": shom, "tarikh": tarikh,
@@ -3721,9 +4231,12 @@ func (a *app) activeMachineStatus() ([]record, error) {
 			"tar_percent": tarPercent, "pod_percent": podPercent,
 			"tar_used": tarUsed, "pod_used": podUsed, "total_used": used,
 			"total_weight": totalWeight, "total_meter": totalMeter,
-			"remaining": remaining, "remaining_percent": remainingPercent,
-			"waste_weight": remaining, "waste_per_meter": wastePerMeter,
-			"waste_per_kg": wastePerKg, "waste_percent_per_kg": wastePercentPerKg,
+			"tar_remaining": tarRemaining, "pod_remaining": podRemaining,
+			"remaining": remaining, "remaining_percent": remainingPercent, "material_shortage": materialShortage,
+			"actual_waste": actualWaste, "tar_waste": tarWaste, "pod_waste": podWaste, "general_waste": generalWaste,
+			"waste_weight": actualWaste, "waste_per_meter": wastePerMeter,
+			"waste_per_kg": wastePerKg, "waste_percent_per_kg": wastePercentOutput,
+			"waste_percent_input": wastePercentInput, "waste_percent_output": wastePercentOutput,
 		})
 	}
 	return items, nil
@@ -3784,56 +4297,57 @@ func (a *app) latestNakhKhor(limit int) []record {
 	return items
 }
 
-func (a *app) warperYarnBalance(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
+func (a *app) warperYarnBalances() []record {
 	rows, err := a.query(`
 		WITH keys AS (
-			SELECT kh.moshname_nakh_khor AS warper, kh.hambaft_nakh_khor AS hambaft, kh.nakh_name_nakh_khor AS yarn
+			SELECT kh.moshname_nakh_khor AS warper, COALESCE(NULLIF(kh.owner_mosh_nakh_khor,''),kh.moshname_nakh_khor) AS owner, kh.hambaft_nakh_khor AS hambaft, kh.nakh_name_nakh_khor AS yarn
 			FROM nakh_khor kh
-			INNER JOIN chellepich cp ON cp.name_chellepich=kh.moshname_nakh_khor
+			WHERE COALESCE(kh.destination_type_nakh_khor,'warper')='warper'
 			UNION
-			SELECT c.pich_chelle AS warper, c.hambaft_chelle AS hambaft, c.nakh_chelle AS yarn
+			SELECT c.pich_chelle AS warper, c.mosh_chelle AS owner, c.hambaft_chelle AS hambaft, c.nakh_chelle AS yarn
 			FROM chelle c
 			WHERE COALESCE(c.pich_chelle,'')<>''
 		)
-		SELECT k.warper, k.hambaft, k.yarn,
-			COALESCE((SELECT SUM(ABS(COALESCE(kh.w_vor_nakh_khor,0))) FROM nakh_khor kh WHERE kh.moshname_nakh_khor=k.warper AND kh.hambaft_nakh_khor=k.hambaft AND kh.nakh_name_nakh_khor=k.yarn),0) AS sent_weight,
-			COALESCE((SELECT SUM(COALESCE(c.w_chelle,0)) FROM chelle c WHERE c.pich_chelle=k.warper AND c.hambaft_chelle=k.hambaft AND c.nakh_chelle=k.yarn),0) AS returned_weight,
-			COALESCE((SELECT COUNT(*) FROM chelle c WHERE c.pich_chelle=k.warper AND c.hambaft_chelle=k.hambaft AND c.nakh_chelle=k.yarn),0) AS chelle_count,
-			COALESCE((SELECT MAX(kh.tarikh_nakh_khor) FROM nakh_khor kh WHERE kh.moshname_nakh_khor=k.warper AND kh.hambaft_nakh_khor=k.hambaft AND kh.nakh_name_nakh_khor=k.yarn),'') AS last_sent_date,
-			COALESCE((SELECT MAX(c.tarikh_chelle) FROM chelle c WHERE c.pich_chelle=k.warper AND c.hambaft_chelle=k.hambaft AND c.nakh_chelle=k.yarn),'') AS last_return_date
+		SELECT k.warper, k.owner, k.hambaft, k.yarn,
+			COALESCE((SELECT SUM(ABS(COALESCE(kh.w_vor_nakh_khor,0))) FROM nakh_khor kh WHERE kh.moshname_nakh_khor=k.warper AND COALESCE(NULLIF(kh.owner_mosh_nakh_khor,''),kh.moshname_nakh_khor)=k.owner AND kh.hambaft_nakh_khor=k.hambaft AND kh.nakh_name_nakh_khor=k.yarn),0) AS sent_weight,
+			COALESCE((SELECT SUM(COALESCE(c.w_chelle,0)) FROM chelle c WHERE c.pich_chelle=k.warper AND c.mosh_chelle=k.owner AND c.hambaft_chelle=k.hambaft AND c.nakh_chelle=k.yarn),0) AS returned_weight,
+			COALESCE((SELECT COUNT(*) FROM chelle c WHERE c.pich_chelle=k.warper AND c.mosh_chelle=k.owner AND c.hambaft_chelle=k.hambaft AND c.nakh_chelle=k.yarn),0) AS chelle_count,
+			COALESCE((SELECT MAX(kh.tarikh_nakh_khor) FROM nakh_khor kh WHERE kh.moshname_nakh_khor=k.warper AND COALESCE(NULLIF(kh.owner_mosh_nakh_khor,''),kh.moshname_nakh_khor)=k.owner AND kh.hambaft_nakh_khor=k.hambaft AND kh.nakh_name_nakh_khor=k.yarn),'') AS last_sent_date,
+			COALESCE((SELECT MAX(c.tarikh_chelle) FROM chelle c WHERE c.pich_chelle=k.warper AND c.mosh_chelle=k.owner AND c.hambaft_chelle=k.hambaft AND c.nakh_chelle=k.yarn),'') AS last_return_date
 		FROM keys k
-		WHERE COALESCE(k.warper,'')<>'' AND COALESCE(k.hambaft,'')<>'' AND COALESCE(k.yarn,'')<>''
-		ORDER BY k.warper, k.hambaft, k.yarn`)
+		WHERE COALESCE(k.warper,'')<>'' AND COALESCE(k.owner,'')<>'' AND COALESCE(k.hambaft,'')<>'' AND COALESCE(k.yarn,'')<>''
+		ORDER BY k.warper, k.owner, k.hambaft, k.yarn`)
 	if err != nil {
-		fail(w, 500, err.Error())
-		return
+		return []record{}
 	}
 	defer rows.Close()
 	items := []record{}
 	for rows.Next() {
-		var warper, hambaft, yarn, lastSent, lastReturn string
+		var warper, owner, hambaft, yarn, lastSent, lastReturn string
 		var sent, returned float64
 		var chelleCount int64
-		if err := rows.Scan(&warper, &hambaft, &yarn, &sent, &returned, &chelleCount, &lastSent, &lastReturn); err != nil {
-			fail(w, 500, err.Error())
-			return
+		if err := rows.Scan(&warper, &owner, &hambaft, &yarn, &sent, &returned, &chelleCount, &lastSent, &lastReturn); err != nil {
+			return []record{}
 		}
 		balance := sent - returned
 		items = append(items, record{
-			"warper": warper, "hambaft": hambaft, "yarn": yarn,
+			"warper": warper, "owner": owner, "hambaft": hambaft, "yarn": yarn,
 			"sent_weight": sent, "returned_weight": returned, "balance_weight": balance,
 			"chelle_count": chelleCount, "last_sent_date": lastSent, "last_return_date": lastReturn,
 		})
 	}
 	if err := rows.Err(); err != nil {
-		fail(w, 500, err.Error())
+		return []record{}
+	}
+	return items
+}
+
+func (a *app) warperYarnBalance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, items)
+	writeJSON(w, a.warperYarnBalances())
 }
 
 func (a *app) latestOutInvoices(limit int) []record {
@@ -3857,15 +4371,111 @@ func (a *app) notifications() []record {
 	items := []record{}
 	for _, y := range a.yarnInventory() {
 		inv, _ := y["inventory"].(float64)
-		if inv > 0 && inv < 10 {
-			items = append(items, record{"type": "warning", "title": "موجودی نخ کم", "message": fmt.Sprintf("همبافت %v برای %v فقط %.1f کیلو موجودی دارد", y["hambaft"], y["mosh"], inv)})
+		if complete, _ := y["data_complete"].(bool); !complete {
+			items = append(items, record{"type": "warning", "code": "yarn-type-missing", "title": "نوع نخ نامشخص", "message": fmt.Sprintf("گردش قدیمی هم‌بافت %v برای %v نوع نخ ندارد و باید تکمیل شود", y["hambaft"], y["mosh"])})
+		} else if inv < -0.001 {
+			items = append(items, record{"type": "critical", "code": "negative-yarn", "title": "کسری موجودی نخ", "message": fmt.Sprintf("%v / %v / %v دارای %.1f کیلو کسری است", y["mosh"], y["hambaft"], y["yarn"], -inv)})
+		} else if inv < 10 {
+			items = append(items, record{"type": "warning", "code": "low-yarn", "title": "موجودی نخ کم", "message": fmt.Sprintf("%v / %v / %v فقط %.1f کیلو موجودی دارد", y["mosh"], y["hambaft"], y["yarn"], inv)})
 		}
+	}
+	for _, wb := range a.warperYarnBalances() {
+		balance, _ := wb["balance_weight"].(float64)
+		if balance < -0.001 {
+			items = append(items, record{"type": "critical", "code": "warper-over-return", "title": "برگشت چله بیش از نخ ارسالی", "message": fmt.Sprintf("چله‌پیچ %v برای مالک %v مقدار %.1f کیلو بیش از ارسال، چله برگشت داده است", wb["warper"], wb["owner"], -balance)})
+		} else if balance > 0.001 {
+			items = append(items, record{"type": "info", "code": "warper-pending", "title": "نخ نزد چله‌پیچ", "message": fmt.Sprintf("%.1f کیلو نخ %v متعلق به %v نزد چله‌پیچ %v مانده است", balance, wb["yarn"], wb["owner"], wb["warper"])})
+		}
+	}
+	if machines, err := a.activeMachineStatus(); err == nil {
+		for _, machine := range machines {
+			shortage, _ := machine["material_shortage"].(float64)
+			remainingPct, _ := machine["remaining_percent"].(float64)
+			wastePct, _ := machine["waste_percent_input"].(float64)
+			if shortage > 0.001 {
+				items = append(items, record{"type": "critical", "code": "machine-shortage", "title": "کسری مواد روی ماشین", "message": fmt.Sprintf("ماشین %v چله %v حدود %.1f کیلو کسری ثبت مواد دارد", machine["machine"], machine["shom_chelle"], shortage)})
+			} else if remainingPct <= 10 {
+				items = append(items, record{"type": "critical", "code": "machine-low", "title": "اتمام نزدیک مواد ماشین", "message": fmt.Sprintf("مانده مواد ماشین %v چله %v به %.1f%% رسیده است", machine["machine"], machine["shom_chelle"], remainingPct)})
+			} else if remainingPct <= 25 {
+				items = append(items, record{"type": "warning", "code": "machine-warning", "title": "مانده مواد ماشین کم", "message": fmt.Sprintf("مانده مواد ماشین %v چله %v برابر %.1f%% است", machine["machine"], machine["shom_chelle"], remainingPct)})
+			}
+			if wastePct > 5 {
+				items = append(items, record{"type": "warning", "code": "high-waste", "title": "ضایعات بالاتر از حد کنترل", "message": fmt.Sprintf("ضایعات ماشین %v چله %v برابر %.1f%% ورودی مواد است", machine["machine"], machine["shom_chelle"], wastePct)})
+			}
+		}
+	}
+	var lowParts int64
+	_ = a.queryRow(`SELECT COUNT(*) FROM spare_parts_inventory WHERE COALESCE(quantity,0)<=0`).Scan(&lowParts)
+	if lowParts > 0 {
+		items = append(items, record{"type": "warning", "code": "parts-empty", "title": "کسری قطعات یدکی", "message": fmt.Sprintf("موجودی %d قلم قطعه صفر است", lowParts)})
 	}
 	stock := a.stockSummary()
 	if total, ok := stock["total_taghe"].(int64); ok && total > 30 {
 		items = append(items, record{"type": "info", "title": "طاقه‌های خروج نخورده", "message": fmt.Sprintf("%d طاقه در انبار موجود است که هنوز فاکتور خروج نخورده‌اند", total)})
 	}
 	return items
+}
+
+func (a *app) operationalDataQuality() []record {
+	checks := []struct{ code, title, query string }{
+		{"salon-yarn-missing", "گردش نخ سالن بدون نوع نخ", `SELECT COUNT(*) FROM nakh_salon WHERE COALESCE(nakh_name_nakh_salon,'')=''`},
+		{"out-owner-ambiguous", "خروج نخ قدیمی با مالک/مقصد مبهم", `SELECT COUNT(*) FROM nakh_khor WHERE COALESCE(owner_mosh_nakh_khor,'')='' OR owner_mosh_nakh_khor=moshname_nakh_khor`},
+		{"duplicate-chelle", "شماره چله تکراری", `SELECT COUNT(*) FROM (SELECT shom_chelle FROM chelle WHERE COALESCE(shom_chelle,'')<>'' GROUP BY shom_chelle HAVING COUNT(*)>1) q`},
+		{"invalid-formula", "فرمول تار و پود نامعتبر", `SELECT COUNT(*) FROM machine_formul WHERE ABS(COALESCE(tar_percent,0)+COALESCE(pod_percent,0)-100)>0.001`},
+		{"multi-active", "بیش از یک چله فعال روی ماشین", `SELECT COUNT(*) FROM (SELECT machin_chelle FROM chelle WHERE COALESCE(machin_chelle,'')<>'' GROUP BY machin_chelle HAVING COUNT(*)>1) q`},
+	}
+	out := []record{}
+	for _, check := range checks {
+		var count int64
+		if err := a.queryRow(check.query).Scan(&count); err == nil {
+			out = append(out, record{"code": check.code, "title": check.title, "count": count, "status": map[bool]string{true: "ok", false: "attention"}[count == 0]})
+		}
+	}
+	return out
+}
+
+func (a *app) productionWasteRows() []record {
+	rows, err := a.query(`SELECT id_waste,COALESCE(waste_date,''),machine,shom_chelle,waste_type,weight,COALESCE(reason,''),COALESCE(operator_name,''),COALESCE(description,'') FROM production_waste ORDER BY id_waste DESC LIMIT 500`)
+	if err != nil {
+		return []record{}
+	}
+	defer rows.Close()
+	out := []record{}
+	for rows.Next() {
+		var id int64
+		var date, machine, shom, typ, reason, operator, description string
+		var weight float64
+		if rows.Scan(&id, &date, &machine, &shom, &typ, &weight, &reason, &operator, &description) == nil {
+			out = append(out, record{"id": id, "tarikh": date, "machine": machine, "shom_chelle": shom, "waste_type": typ, "weight": weight, "reason": reason, "operator_name": operator, "description": description})
+		}
+	}
+	return out
+}
+
+func (a *app) managementReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	today := jalaliToday()
+	month := today
+	if len(today) >= 7 {
+		month = today[:7]
+	}
+	machines, _ := a.activeMachineStatus()
+	writeJSON(w, record{
+		"date":             today,
+		"today":            a.productionSummary("tarikh_salon = ?", today),
+		"month":            a.productionSummary("SUBSTR(tarikh_salon,1,7) = ?", month),
+		"month_by_machine": a.monthProduction(month),
+		"yarn_inventory":   a.yarnInventory(),
+		"warper_balances":  a.warperYarnBalances(),
+		"machines":         machines,
+		"waste":            a.productionWasteRows(),
+		"stock":            a.stockSummary(),
+		"notifications":    a.notifications(),
+		"data_quality":     a.operationalDataQuality(),
+	})
 }
 
 func (a *app) tagheInfo(w http.ResponseWriter, code string) {

@@ -41,6 +41,30 @@ func TestRestrictedWorkspaceMergePreservesOtherModules(t *testing.T) {
 	}
 }
 
+func TestAccountingValidationAllowsUnchangedLegacyRows(t *testing.T) {
+	legacy := decodeWorkspaceMap(json.RawMessage(`{"invoices":[{"id":"legacy"}]}`))
+	updated := decodeWorkspaceMap(json.RawMessage(`{"invoices":[{"id":"legacy"}],"expenses":[{"id":"cost-1","date":"2026-07-23","amount":100,"accountId":"cash"}]}`))
+	if err := validateWorkspaceAccountingChanges(legacy, updated); err != nil {
+		t.Fatalf("unchanged legacy row blocked an unrelated valid change: %v", err)
+	}
+}
+
+func TestAccountingValidationRejectsChangedInvalidLegacyRow(t *testing.T) {
+	legacy := decodeWorkspaceMap(json.RawMessage(`{"invoices":[{"id":"legacy"}]}`))
+	updated := decodeWorkspaceMap(json.RawMessage(`{"invoices":[{"id":"legacy","total":100}]}`))
+	if err := validateWorkspaceAccountingChanges(legacy, updated); err == nil {
+		t.Fatal("modified invalid legacy row must be rejected")
+	}
+}
+
+func TestAccountingValidationRejectsDuplicateChequeAcrossExistingRows(t *testing.T) {
+	oldState := decodeWorkspaceMap(json.RawMessage(`{"receivableDocs":[{"id":"c1","checkNo":"42","amount":100,"dueDate":"2026-08-01"}]}`))
+	newState := decodeWorkspaceMap(json.RawMessage(`{"receivableDocs":[{"id":"c1","checkNo":"42","amount":100,"dueDate":"2026-08-01"},{"id":"c2","checkNo":"42","amount":200,"dueDate":"2026-08-02"}]}`))
+	if err := validateWorkspaceAccountingChanges(oldState, newState); err == nil {
+		t.Fatal("duplicate cheque number must be rejected")
+	}
+}
+
 func TestWorkspaceDocumentFiltering(t *testing.T) {
 	ctx := requestctx.WithAccess(context.Background(), []string{"costs"}, true)
 	doc := workspaceDocument{State: json.RawMessage(`{"invoices":[{"id":1}],"expenses":[{"id":2}],"movements":[]}`)}
