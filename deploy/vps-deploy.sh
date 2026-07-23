@@ -25,7 +25,7 @@ if [ -f "$PUBLIC_COMPOSE_FILE" ]; then
   COMPOSE_ARGS+=(-f "$PUBLIC_COMPOSE_FILE")
 fi
 
-docker compose "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" up -d --build
+docker compose --project-directory "$APP_DIR" "${COMPOSE_ARGS[@]}" --env-file "$ENV_FILE" up -d --build
 
 if [ -n "$DOMAIN" ]; then
   APP_DOMAIN="$DOMAIN" APP_DIR="$APP_DIR" bash "$APP_DIR/deploy/vps-nginx.sh"
