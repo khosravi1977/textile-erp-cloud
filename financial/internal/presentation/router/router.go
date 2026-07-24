@@ -23,6 +23,7 @@ func SetupRouter() http.Handler {
 	mux.HandleFunc("/api/settlements", h.CreateSettlement)
 	mux.HandleFunc("/api/advisor/advice", h.GetAdvice)
 	mux.HandleFunc("/api/advisor/credit-report/", h.GetCreditReport)
+	mux.HandleFunc("/api/intelligence/ai-advisor", h.GenerateAIAnalysis)
 	mux.HandleFunc("/api/commission/calculate", h.CalculateCommission)
 	mux.HandleFunc("/api/costs", h.AddCost)
 	mux.HandleFunc("/api/costs/", h.GetCosts)

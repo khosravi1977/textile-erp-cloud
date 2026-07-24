@@ -4467,6 +4467,12 @@ function AdvisorPage({ finance }) {
 
   const [months, setMonths] = useState(3);
 
+  const [aiBusy, setAiBusy] = useState(false);
+
+  const [aiResult, setAiResult] = useState(null);
+
+  const [aiError, setAiError] = useState('');
+
   const horizonMonths = Number(months || 1);
 
   const assignedDebt = finance.receivableDocs.filter(x => x.assignedTo).reduce((s, x) => s + Number(x.amount || 0), 0);
@@ -4610,6 +4616,44 @@ function AdvisorPage({ finance }) {
 
   ].filter(Boolean);
 
+  const runAIAnalysis = async () => {
+
+    setAiBusy(true);
+    setAiError('');
+
+    try {
+      const response = await fetch(`${API_BASE}/intelligence/ai-advisor`, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          period_months: horizonMonths,
+          health_score: healthScore,
+          data_completeness: dataCompleteness,
+          revenue: totalRevenue,
+          expenses: totalExpenses,
+          cash_balance: cashBalance,
+          customer_debt: totalDebt,
+          forecast_expenses: forecastTotal,
+          forecast_liquidity_gap: liquidityGap,
+          receivables_in_horizon: horizonReceivables,
+          payables_in_horizon: horizonPayables,
+          unposted_operational_invoices: unpostedOperationalInvoices,
+          top_expenses: expensesByTitle.slice(0, 5).map(row => ({ name: row.title, value: row.amount })),
+          priorities: priorities.slice(0, 5).map(row => ({ level: row.level, title: row.title, detail: row.detail })),
+          data_gaps: dataGaps,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'تحلیل AI در دسترس نیست.');
+      setAiResult(payload);
+    } catch (error) {
+      setAiError(error.message || 'تحلیل AI در دسترس نیست.');
+    } finally {
+      setAiBusy(false);
+    }
+
+  };
+
   const printAdvisor = () => {
 
     const forecastBody = forecastRows.map(x => '<tr><td>' + x.title + '</td><td>' + money(x.monthly_average) + '</td><td>' + num(x.forecast_months) + '</td><td>' + money(x.forecast_amount) + '</td></tr>').join('');
@@ -4627,6 +4671,8 @@ function AdvisorPage({ finance }) {
     <div className="space-y-5">
 
       <Card><div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="text-xl font-extrabold text-white">تحلیل و مشاور هوشمند Textile ERP</h2><p className="mt-2 max-w-3xl text-sm leading-7 text-slate-300">فروش، مطالبات، نقدینگی، هزینه‌ها و داده‌های عملیاتی را کنار هم می‌گذارد و مهم‌ترین تصمیم‌های مدیریتی را به ترتیب اولویت نشان می‌دهد.</p><div className="mt-3 flex flex-wrap gap-2 text-xs"><span className="rounded-full border border-emerald-800 bg-emerald-950 px-3 py-1 text-emerald-200">محاسبه امن داخل سامانه</span><span className="rounded-full border border-blue-800 bg-blue-950 px-3 py-1 text-blue-200">بدون نمایش کلید یا اطلاعات فنی</span></div></div><div className="flex gap-2"><SelectInput value={months} onChange={e => setMonths(e.target.value)}><option value="1">۱ ماه</option><option value="2">۲ ماه</option><option value="3">۳ ماه</option><option value="6">۶ ماه</option></SelectInput><PrimaryButton onClick={printAdvisor}>چاپ گزارش مدیریتی</PrimaryButton></div></div></Card>
+
+      <Card><div className="flex flex-wrap items-start justify-between gap-4"><div><h3 className="font-bold text-white">جمع‌بندی تکمیلی با AI</h3><p className="mt-2 max-w-3xl text-sm leading-7 text-slate-300">فقط شاخص‌های تجمیعی همین گزارش از سرور امن Viora برای تفسیر مدیریتی ارسال می‌شوند. هیچ کلید، رمز یا سند خامی در مرورگر قرار نمی‌گیرد.</p></div><PrimaryButton onClick={runAIAnalysis} disabled={aiBusy}>{aiBusy ? 'در حال تحلیل…' : 'تحلیل تکمیلی با AI'}</PrimaryButton></div>{aiError && <div className="mt-4 rounded-lg border border-amber-800 bg-amber-950/50 p-4 text-sm leading-7 text-amber-100">{aiError}</div>}{aiResult?.narrative && <div className="mt-4 grid gap-4 xl:grid-cols-2"><div className="rounded-lg border border-blue-800 bg-blue-950/40 p-4"><h4 className="font-bold text-blue-100">خلاصه مدیر</h4><p className="mt-2 text-sm leading-7 text-slate-200">{aiResult.narrative.executive_summary}</p><p className="mt-3 text-sm font-bold leading-7 text-emerald-200">تمرکز پیشنهادی: {aiResult.narrative.recommended_focus}</p></div><div className="grid gap-3"><div className="rounded-lg border border-emerald-800 bg-emerald-950/40 p-4"><h4 className="font-bold text-emerald-100">نقاط مهم</h4><ul className="mt-2 list-disc space-y-1 pr-5 text-sm leading-7 text-slate-200">{aiResult.narrative.highlights.map((item, index) => <li key={index}>{item}</li>)}</ul></div><div className="rounded-lg border border-red-800 bg-red-950/40 p-4"><h4 className="font-bold text-red-100">ریسک‌ها</h4><ul className="mt-2 list-disc space-y-1 pr-5 text-sm leading-7 text-slate-200">{aiResult.narrative.risks.map((item, index) => <li key={index}>{item}</li>)}</ul></div></div><p className="text-xs text-slate-400 xl:col-span-2">مدل: {aiResult.model} · مصرف این تحلیل: {num(aiResult.total_tokens || 0)} توکن · شناسه: {aiResult.run_id}</p></div>}</Card>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4"><Field label="امتیاز سلامت کسب‌وکار" value={num(healthScore) + ' از ۱۰۰ — ' + healthLabel} tone={healthTone} /><Field label="کامل بودن داده‌ها" value={num(dataCompleteness) + '٪'} tone={dataCompleteness >= 80 ? 'text-emerald-300' : 'text-amber-300'} /><Field label="شکاف نقدینگی با پیش‌بینی هزینه" value={money(liquidityGap) + ' تومان'} tone={liquidityGap >= 0 ? 'text-emerald-300' : 'text-red-300'} /><Field label="مانده مشتریان و واگذاری‌ها" value={money(totalDebt) + ' تومان'} tone="text-amber-300" /></div>
 

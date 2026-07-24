@@ -205,6 +205,8 @@ func requiredPermissions(path string) []string {
 		return []string{"costs"}
 	case strings.HasPrefix(path, "/api/advisor"):
 		return []string{"advisor", "credit"}
+	case strings.HasPrefix(path, "/api/intelligence"):
+		return []string{"advisor", "reports", "financialHealth"}
 	case strings.HasPrefix(path, "/api/commission"):
 		return []string{"invoices"}
 	case strings.HasPrefix(path, "/api/settlements"):
