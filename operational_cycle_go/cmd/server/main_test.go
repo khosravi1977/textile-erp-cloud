@@ -221,3 +221,53 @@ func TestPortalManagerRespectsAssignedMenus(t *testing.T) {
 		t.Fatalf("unassigned restricted menu allowed: allowed=%v err=%v", allowed, err)
 	}
 }
+
+func TestAdvisorMenuIsSeededAndReadOnlyUsersCanOpenIt(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:advisor-menu-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	application := &app{db: db, dialect: "sqlite", dbLabel: "test"}
+	if err := application.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	var name string
+	var restricted int
+	if err := application.queryRow(`SELECT menu_name, is_restricted FROM menu_items WHERE menu_key='advisor'`).Scan(&name, &restricted); err != nil {
+		t.Fatal(err)
+	}
+	if name != "تحلیل و مشاور هوشمند" || restricted != 0 {
+		t.Fatalf("unexpected advisor menu: name=%q restricted=%d", name, restricted)
+	}
+	if allowed, err := application.userHasMenuAccess(99, "viewer", "advisor"); err != nil || !allowed {
+		t.Fatalf("advisor must be available as read-only analysis: allowed=%v err=%v", allowed, err)
+	}
+}
+
+func TestAdvisorPayloadUsesOperationalManagementData(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:advisor-payload-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	application := &app{db: db, dialect: "sqlite", dbLabel: "test"}
+	if err := application.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/advisor", nil)
+	response := httptest.NewRecorder()
+	application.managementReport(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("advisor payload failed: %d %s", response.Code, response.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"today", "month", "machines", "stock", "notifications", "data_quality"} {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("advisor payload is missing %q: %#v", key, payload)
+		}
+	}
+}

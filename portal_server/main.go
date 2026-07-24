@@ -134,14 +134,14 @@ func defaultPermissionsForRole(role string) []string {
 		return []string{
 			"dashboard", "financialHealth", "initialData", "incomingInvoices", "yarnOutInvoices",
 			"invoices", "inventory", "costs", "receivableDocs", "payableDocs", "bankCash",
-			"accounting", "reports", "taxReports", "credit", "advisor",
+			"accounting", "reports", "taxReports", "credit", "advisor", "mobileApp",
 		}
 	case "manager":
 		return []string{
 			"dashboard", "financialHealth", "initialData", "operational", "incomingInvoices",
 			"yarnOutInvoices", "invoices", "inventory", "costs", "receivableDocs",
 			"payableDocs", "bankCash", "reports", "taxReports", "credit", "advisor",
-			"accounting",
+			"accounting", "mobileApp",
 		}
 	default:
 		return append([]string{}, financialPermissionCatalog...)
@@ -168,6 +168,12 @@ func normalizePermissions(input []string, role string) []string {
 	}
 	if len(out) == 0 {
 		return defaultPermissionsForRole(role)
+	}
+	normalizedRole := normalizeAccessRole(role)
+	if normalizedRole != "viewer" {
+		if _, ok := seen["mobileApp"]; !ok {
+			out = append(out, "mobileApp")
+		}
 	}
 	return out
 }
@@ -2109,8 +2115,8 @@ func (a *portalApp) teamPage(w http.ResponseWriter, r *http.Request) {
 <script>
 const state={rows:[],editing:null};const $=id=>document.getElementById(id);const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const permissionCatalog=[['dashboard','داشبورد'],['financialHealth','سلامت مالی'],['initialData','اطلاعات اولیه'],['operational','داده‌های عملیاتی'],['incomingInvoices','فاکتور ورود'],['yarnOutInvoices','خروج نخ'],['invoices','فاکتور مالی'],['inventory','انبار'],['costs','هزینه‌ها'],['receivableDocs','اسناد دریافتی'],['payableDocs','اسناد پرداختی'],['bankCash','بانک و صندوق'],['accounting','دفاتر و تراز'],['reports','گزارش‌ها'],['taxReports','گزارش مالیاتی'],['credit','اعتبارسنجی'],['advisor','مشاور مالی'],['mobileApp','اتصال حسابیار']];
-const rolePermissions={viewer:['dashboard','financialHealth','reports'],accountant:permissionCatalog.map(x=>x[0]).filter(x=>x!=='operational'&&x!=='mobileApp'),manager:permissionCatalog.map(x=>x[0]).filter(x=>x!=='mobileApp')};
-const permissionHost=document.createElement('div');permissionHost.className='field';permissionHost.innerHTML='<label>دسترسی تب‌های بخش مالی</label><div id="permissionGrid" class="grid"></div><div class="help">فقط تب‌های علامت‌خورده برای این کاربر نمایش داده می‌شود. اتصال حسابیار یک دسترسی مستقل است.</div>';$('canManageTeam').closest('label').before(permissionHost);$('permissionGrid').innerHTML=permissionCatalog.map(([key,label])=>'<label class="check"><input type="checkbox" data-permission="'+key+'"> '+label+'</label>').join('');
+const rolePermissions={viewer:['dashboard','financialHealth','reports'],accountant:permissionCatalog.map(x=>x[0]).filter(x=>x!=='operational'),manager:permissionCatalog.map(x=>x[0])};
+const permissionHost=document.createElement('div');permissionHost.className='field';permissionHost.innerHTML='<label>دسترسی تب‌های بخش مالی</label><div id="permissionGrid" class="grid"></div><div class="help">فقط تب‌های علامت‌خورده برای این کاربر نمایش داده می‌شود. اتصال حسابیار برای مدیر و حسابدار یک پل مالی اصلی است.</div>';$('canManageTeam').closest('label').before(permissionHost);$('permissionGrid').innerHTML=permissionCatalog.map(([key,label])=>'<label class="check"><input type="checkbox" data-permission="'+key+'"> '+label+'</label>').join('');
 function selectedPermissions(){return [...document.querySelectorAll('[data-permission]:checked')].map(x=>x.dataset.permission);}
 function setPermissionChecks(values){const allowed=new Set(values||[]);document.querySelectorAll('[data-permission]').forEach(x=>x.checked=allowed.has(x.dataset.permission));}
 setPermissionChecks(rolePermissions.viewer);$('accessRole').addEventListener('change',()=>setPermissionChecks(rolePermissions[$('accessRole').value]||rolePermissions.viewer));
@@ -3837,12 +3843,12 @@ func operationalMenuKeys(record projectAccess) []string {
 		return []string{
 			"dashboard", "initial", "nakh-vor", "chelle", "gere", "nakh-salon", "formulas",
 			"salon", "consumption", "yarn-out", "empty-beam-out", "out-invoice", "expenses",
-			"reports", "machinery-services", "spare-parts",
+			"advisor", "reports", "machinery-services", "spare-parts",
 		}
 	case "accountant":
-		return []string{"dashboard", "reports", "out-invoice", "expenses"}
+		return []string{"dashboard", "advisor", "reports", "out-invoice", "expenses"}
 	default:
-		return []string{"dashboard", "reports"}
+		return []string{"dashboard", "advisor", "reports"}
 	}
 }
 

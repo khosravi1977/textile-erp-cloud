@@ -463,6 +463,7 @@ func (a *app) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/consumption/machines", a.requireMenu("consumption", a.consumptionMachines))
 	mux.HandleFunc("/api/production-waste", a.requireMenu("consumption", a.productionWaste))
 	mux.HandleFunc("/api/production-waste/", a.requireMenu("consumption", a.productionWasteByID))
+	mux.HandleFunc("/api/advisor", a.requireMenu("advisor", a.managementReport))
 	mux.HandleFunc("/api/management-report", a.requireMenu("reports", a.managementReport))
 	mux.HandleFunc("/api/reset-cycle", a.requireMenu("initial", a.resetCycle))
 	mux.HandleFunc("/", staticHandler())
@@ -963,11 +964,12 @@ func (a *app) seedMenus() error {
 		{"empty-beam-out", "خروج نورد خالی", "/empty-beam-out", "📍", 0, 11},
 		{"out-invoice", "فاکتور خروج", "/out-invoice", "🧾", 0, 11},
 		{"expenses", "هزینه‌ها", "/expenses", "💰", 1, 12},
-		{"reports", "گزارشات", "/reports", "📊", 0, 13},
-		{"database", "مدیریت دیتابیس", "/database", "🗄️", 1, 14},
-		{"machinery-services", "خدمات ماشین‌آلات", "/machinery-services", "🔧", 1, 15},
-		{"spare-parts", "موجودی انبار قطعات", "/spare-parts", "⚙️", 1, 16},
-		{"users", "مدیریت کاربران", "/users", "👥", 1, 17},
+		{"advisor", "تحلیل و مشاور هوشمند", "/advisor", "🧠", 0, 13},
+		{"reports", "گزارشات", "/reports", "📊", 0, 14},
+		{"database", "مدیریت دیتابیس", "/database", "🗄️", 1, 15},
+		{"machinery-services", "خدمات ماشین‌آلات", "/machinery-services", "🔧", 1, 16},
+		{"spare-parts", "موجودی انبار قطعات", "/spare-parts", "⚙️", 1, 17},
+		{"users", "مدیریت کاربران", "/users", "👥", 1, 18},
 	}
 	for _, m := range menus {
 		if _, err := a.exec(`INSERT INTO menu_items (menu_key, menu_name, path, icon, is_restricted, sort_order) VALUES (?,?,?,?,?,?)
