@@ -66,6 +66,13 @@ type launchTicket struct {
 	ExpiresAt   time.Time
 }
 
+type moduleSessionClaims struct {
+	AccessToken string `json:"access_token"`
+	Module      string `json:"module"`
+	AuthMode    string `json:"auth_mode"`
+	ExpiresAt   int64  `json:"exp"`
+}
+
 type projectAccess struct {
 	ID                 int64     `json:"id"`
 	ProjectKey         string    `json:"project_key"`
@@ -739,12 +746,25 @@ func (a *portalApp) moduleRecordFromRequest(r *http.Request, module string) (pro
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
 		return projectAccess{}, errors.New("module login is required")
 	}
-	record, err := a.findAccessByToken(strings.TrimSpace(cookie.Value))
+	claims, err := a.verifyModuleSession(strings.TrimSpace(cookie.Value), module)
+	if err != nil {
+		return projectAccess{}, err
+	}
+	record, err := a.findAccessByToken(claims.AccessToken)
 	if err != nil {
 		return projectAccess{}, err
 	}
 	if record.ProjectKey != "textile-erp" || !record.IsActive || time.Now().After(record.ExpiresAt) || !moduleAllowed(record, module) {
 		return projectAccess{}, errors.New("module access is not valid")
+	}
+	switch claims.AuthMode {
+	case "password":
+	case "single-user":
+		if !a.canUseSingleUserModuleSSO(record) {
+			return projectAccess{}, errors.New("password login is required in team mode")
+		}
+	default:
+		return projectAccess{}, errors.New("module session is not valid")
 	}
 	return record, nil
 }
@@ -769,16 +789,83 @@ func (a *portalApp) authenticateTextileUser(username, password string) (projectA
 	return projectAccess{}, errors.New("invalid username or password")
 }
 
-func (a *portalApp) setModuleAccessCookie(w http.ResponseWriter, r *http.Request, module string, record projectAccess) {
+func (a *portalApp) canUseSingleUserModuleSSO(record projectAccess) bool {
+	if effectiveAccessRole(record) != "owner" {
+		return false
+	}
+	items, err := a.tenantAccesses(record)
+	if err != nil {
+		return false
+	}
+	for _, item := range items {
+		if item.ID != record.ID {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *portalApp) signModuleSession(module, authMode string, record projectAccess, expiresAt time.Time) (string, error) {
+	if strings.TrimSpace(a.sessionSecret) == "" {
+		return "", errors.New("portal session secret is not configured")
+	}
+	claims := moduleSessionClaims{
+		AccessToken: record.AccessToken,
+		Module:      module,
+		AuthMode:    authMode,
+		ExpiresAt:   expiresAt.Unix(),
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	body := base64.RawURLEncoding.EncodeToString(payload)
+	mac := hmac.New(sha256.New, []byte(a.sessionSecret))
+	_, _ = mac.Write([]byte(body))
+	return body + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
+}
+
+func (a *portalApp) verifyModuleSession(value, module string) (moduleSessionClaims, error) {
+	var claims moduleSessionClaims
+	parts := strings.Split(value, ".")
+	if len(parts) != 2 || strings.TrimSpace(a.sessionSecret) == "" {
+		return claims, errors.New("module session is not valid")
+	}
+	providedSignature, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return claims, errors.New("module session is not valid")
+	}
+	mac := hmac.New(sha256.New, []byte(a.sessionSecret))
+	_, _ = mac.Write([]byte(parts[0]))
+	if !hmac.Equal(providedSignature, mac.Sum(nil)) {
+		return claims, errors.New("module session is not valid")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil || json.Unmarshal(payload, &claims) != nil {
+		return moduleSessionClaims{}, errors.New("module session is not valid")
+	}
+	if claims.Module != module || claims.ExpiresAt <= time.Now().Unix() || strings.TrimSpace(claims.AccessToken) == "" {
+		return moduleSessionClaims{}, errors.New("module session is not valid")
+	}
+	return claims, nil
+}
+
+func (a *portalApp) setModuleAccessCookie(w http.ResponseWriter, r *http.Request, module, authMode string, record projectAccess) error {
+	expiresAt := minTime(record.ExpiresAt, time.Now().Add(12*time.Hour))
+	value, err := a.signModuleSession(module, authMode, record, expiresAt)
+	if err != nil {
+		return err
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     moduleCookieName(module),
-		Value:    record.AccessToken,
+		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Secure:   isSecureRequest(r),
-		Expires:  minTime(record.ExpiresAt, time.Now().Add(12*time.Hour)),
+		Expires:  expiresAt,
 	})
+	return nil
 }
 
 func (a *portalApp) moduleLogin(w http.ResponseWriter, r *http.Request) {
@@ -805,8 +892,13 @@ func (a *portalApp) moduleLogin(w http.ResponseWriter, r *http.Request) {
 			record.ProjectKey == "textile-erp" &&
 			!record.MustChangePassword &&
 			!accessRequiresSetup(record) &&
-			moduleAllowed(record, module) {
-			a.setModuleAccessCookie(w, r, module, record)
+			moduleAllowed(record, module) &&
+			a.canUseSingleUserModuleSSO(record) {
+			if err := a.setModuleAccessCookie(w, r, module, "single-user", record); err != nil {
+				log.Printf("single-user module session failed for access=%d: %v", record.ID, err)
+				a.renderModuleLogin(w, module, nextPath, "ورود خودکار برقرار نشد؛ با نام کاربری و رمز عبور وارد شوید.")
+				return
+			}
 			_ = a.markAccessUsed(record.ID)
 			http.Redirect(w, r, nextPath, http.StatusSeeOther)
 			return
@@ -834,7 +926,11 @@ func (a *portalApp) moduleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.setPortalAccessCookie(w, r, record.AccessToken, record.ExpiresAt)
-	a.setModuleAccessCookie(w, r, module, record)
+	if err := a.setModuleAccessCookie(w, r, module, "password", record); err != nil {
+		log.Printf("password module session failed for access=%d: %v", record.ID, err)
+		a.renderModuleLogin(w, module, nextPath, "نشست امن ورود ایجاد نشد؛ دوباره تلاش کنید.")
+		return
+	}
 	_ = a.markAccessUsed(record.ID)
 	http.Redirect(w, r, nextPath, http.StatusSeeOther)
 }
@@ -3489,6 +3585,7 @@ func operationalPortalMenus() []map[string]any {
 		{"menu_key": "yarn-out", "menu_name": "خروج نخ", "path": "/yarn-out", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "empty-beam-out", "menu_name": "خروج نورد خالی", "path": "/empty-beam-out", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "out-invoice", "menu_name": "فاکتور خروج", "path": "/out-invoice", "icon": "", "is_restricted": 0, "has_access": 1},
+		{"menu_key": "advisor", "menu_name": "تحلیل و مشاور هوشمند", "path": "/advisor", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "reports", "menu_name": "گزارشات", "path": "/reports", "icon": "", "is_restricted": 0, "has_access": 1},
 	}
 }
