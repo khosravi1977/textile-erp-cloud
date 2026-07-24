@@ -68,7 +68,7 @@ const pages = [
   { id: 'reports', label: 'گزارشات' },
   { id: 'taxReports', label: 'گزارش مالیاتی' },
   { id: 'credit', label: 'اعتبارسنجی' },
-  { id: 'advisor', label: 'مشاور مالی' },
+  { id: 'advisor', label: 'تحلیل و مشاور هوشمند' },
   { id: 'mobileApp', label: 'اتصال اپ بانکی' },
 ];
 
@@ -4518,6 +4518,72 @@ function AdvisorPage({ finance }) {
 
   const liquidityGap = cashBalance + horizonReceivables - horizonPayables - forecastTotal;
 
+  const totalRevenue = finance.invoices.reduce((sum, row) => sum + Number(row.total || 0), 0);
+
+  const totalExpenses = finance.expenses.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+
+  const unpostedOperationalInvoices = Math.max(0, data.invoices.length - finance.invoices.length);
+
+  const healthPenalties = [
+    liquidityGap < 0 ? 30 : 0,
+    totalRevenue > 0 && totalDebt > totalRevenue * 0.5 ? 20 : 0,
+    cashBalance < payables ? 15 : 0,
+    unpostedOperationalInvoices > 0 ? Math.min(15, unpostedOperationalInvoices * 3) : 0,
+    finance.receivableDocs.length && dueChecks === 0 ? 0 : dueChecks > cashBalance ? 10 : 0,
+  ];
+
+  const healthScore = Math.max(0, Math.min(100, Math.round(100 - healthPenalties.reduce((sum, value) => sum + value, 0))));
+
+  const healthLabel = healthScore >= 80 ? 'پایدار' : healthScore >= 60 ? 'نیازمند توجه' : 'نیازمند اقدام فوری';
+
+  const healthTone = healthScore >= 80 ? 'text-emerald-300' : healthScore >= 60 ? 'text-amber-300' : 'text-red-300';
+
+  const dataSignals = [
+    finance.invoices.length > 0,
+    finance.expenses.length > 0,
+    finance.accounts.length > 0,
+    finance.receivableDocs.length > 0,
+    finance.payableDocs.length > 0,
+    data.invoices.length > 0,
+  ];
+
+  const dataCompleteness = Math.round(dataSignals.filter(Boolean).length / dataSignals.length * 100);
+
+  const priorities = [
+    liquidityGap < 0 && {
+      level: 'فوری',
+      title: 'پوشش کسری نقدینگی',
+      detail: 'شکاف پیش‌بینی‌شده ' + money(Math.abs(liquidityGap)) + ' تومان است.',
+      action: 'وصول چک‌های نزدیک، تعویق پرداخت کم‌اهمیت و کاهش هزینه قابل‌کنترل را امروز بررسی کنید.',
+    },
+    unpostedOperationalInvoices > 0 && {
+      level: 'مهم',
+      title: 'تکمیل ثبت مالی تولید و فروش',
+      detail: num(unpostedOperationalInvoices) + ' فاکتور عملیاتی هنوز اثر مالی کامل ندارد.',
+      action: 'فاکتورها را با حسابداری تطبیق دهید تا سود و اعتبار مشتریان واقعی محاسبه شود.',
+    },
+    totalDebt > 0 && {
+      level: totalRevenue > 0 && totalDebt > totalRevenue * 0.5 ? 'فوری' : 'مهم',
+      title: 'کاهش مطالبات و ریسک مشتری',
+      detail: 'مانده مشتریان و واگذاری‌ها ' + money(totalDebt) + ' تومان است.',
+      action: 'سه مشتری با مانده بالاتر را برای تماس و برنامه وصول در اولویت قرار دهید.',
+    },
+    topForecast && {
+      level: 'پیشنهادی',
+      title: 'کنترل بودجه هزینه',
+      detail: 'بیشترین هزینه پیش‌بینی‌شده مربوط به «' + topForecast.title + '» است.',
+      action: 'برای این سرفصل سقف ماهانه و مسئول تأیید تعیین کنید.',
+    },
+  ].filter(Boolean).slice(0, 4);
+
+  const dataGaps = [
+    !finance.invoices.length && 'برای تحلیل فروش و سود، فاکتورهای مالی ثبت شوند.',
+    !finance.expenses.length && 'برای پیش‌بینی نقدینگی، هزینه‌ها با تاریخ و سرفصل ثبت شوند.',
+    !finance.accounts.length && 'برای سنجش نقدینگی، مانده بانک و صندوق تکمیل شود.',
+    !finance.receivableDocs.length && 'برای برنامه وصول، اسناد دریافتنی و سررسید آن‌ها ثبت شود.',
+    !data.invoices.length && 'برای تحلیل تولید، ارتباط داده‌های عملیاتی فعال و به‌روز شود.',
+  ].filter(Boolean);
+
   const advices = [
 
     liquidityGap < 0 && 'با احتساب هزينه هاي پيش بيني شده، کسري نقدينگي احتمالي در افق ' + num(months) + ' ماهه ' + money(Math.abs(liquidityGap)) + ' تومان است. بايد از چک هاي وصولي نزديک، کاهش هزينه هاي قابل کنترل و مذاکره براي سررسيد اسناد پرداختي استفاده شود.',
@@ -4550,9 +4616,9 @@ function AdvisorPage({ finance }) {
 
     const forecastHtml = '<h2>پيش بيني هزينه ها</h2><table><thead><tr><th>عنوان</th><th>ميانگين ماهانه</th><th>افق ماه</th><th>مبلغ پيش بيني</th></tr></thead><tbody>' + forecastBody + '</tbody></table>';
 
-    const html = '<p>افق بررسي: ' + num(months) + ' ماه</p><p>شکاف نقدينگي پس از پيش بيني هزينه: ' + money(liquidityGap) + ' تومان</p><ul>' + advices.map(a => '<li>' + a + '</li>').join('') + '</ul>' + forecastHtml;
+    const html = '<p>امتیاز سلامت کسب‌وکار: ' + num(healthScore) + ' از ۱۰۰ (' + healthLabel + ')</p><p>کامل بودن داده‌ها: ' + num(dataCompleteness) + '٪</p><p>افق بررسي: ' + num(months) + ' ماه</p><p>شکاف نقدينگي پس از پيش بيني هزينه: ' + money(liquidityGap) + ' تومان</p><ul>' + advices.map(a => '<li>' + a + '</li>').join('') + '</ul>' + forecastHtml;
 
-    printSection('گزارش مشاور مالي ارشد', html);
+    printSection('گزارش تحلیل و مشاور هوشمند نساجی', html);
 
   };
 
@@ -4560,15 +4626,17 @@ function AdvisorPage({ finance }) {
 
     <div className="space-y-5">
 
-      <Card><div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">تنظيم گزارش مشاور مالي</h3><div className="flex gap-2"><SelectInput value={months} onChange={e => setMonths(e.target.value)}><option value="1">۱ ماه</option><option value="2">۲ ماه</option><option value="3">۳ ماه</option><option value="6">۶ ماه</option></SelectInput><PrimaryButton onClick={printAdvisor}>چاپ گزارش مشاور</PrimaryButton></div></div></Card>
+      <Card><div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="text-xl font-extrabold text-white">تحلیل و مشاور هوشمند Textile ERP</h2><p className="mt-2 max-w-3xl text-sm leading-7 text-slate-300">فروش، مطالبات، نقدینگی، هزینه‌ها و داده‌های عملیاتی را کنار هم می‌گذارد و مهم‌ترین تصمیم‌های مدیریتی را به ترتیب اولویت نشان می‌دهد.</p><div className="mt-3 flex flex-wrap gap-2 text-xs"><span className="rounded-full border border-emerald-800 bg-emerald-950 px-3 py-1 text-emerald-200">محاسبه امن داخل سامانه</span><span className="rounded-full border border-blue-800 bg-blue-950 px-3 py-1 text-blue-200">بدون نمایش کلید یا اطلاعات فنی</span></div></div><div className="flex gap-2"><SelectInput value={months} onChange={e => setMonths(e.target.value)}><option value="1">۱ ماه</option><option value="2">۲ ماه</option><option value="3">۳ ماه</option><option value="6">۶ ماه</option></SelectInput><PrimaryButton onClick={printAdvisor}>چاپ گزارش مدیریتی</PrimaryButton></div></div></Card>
 
-      <div className="grid grid-cols-4 gap-4"><Field label="وضعیت نقدینگی" value={money(cashBalance) + ' تومان'} tone={cashBalance >= payables ? 'text-emerald-300' : 'text-red-300'} /><Field label="شکاف نقدینگی با پیش‌بینی هزینه" value={money(liquidityGap) + ' تومان'} tone={liquidityGap >= 0 ? 'text-emerald-300' : 'text-red-300'} /><Field label="هزينه پيش بيني شده" value={money(forecastTotal) + ' تومان'} tone="text-amber-300" /><Field label="مانده مشتريان و واگذاري ها" value={money(totalDebt) + ' تومان'} tone="text-amber-300" /></div>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4"><Field label="امتیاز سلامت کسب‌وکار" value={num(healthScore) + ' از ۱۰۰ — ' + healthLabel} tone={healthTone} /><Field label="کامل بودن داده‌ها" value={num(dataCompleteness) + '٪'} tone={dataCompleteness >= 80 ? 'text-emerald-300' : 'text-amber-300'} /><Field label="شکاف نقدینگی با پیش‌بینی هزینه" value={money(liquidityGap) + ' تومان'} tone={liquidityGap >= 0 ? 'text-emerald-300' : 'text-red-300'} /><Field label="مانده مشتریان و واگذاری‌ها" value={money(totalDebt) + ' تومان'} tone="text-amber-300" /></div>
 
-      <Card><h3 className="mb-4 font-bold">پيشنهادهاي مشاور مالي</h3><div className="space-y-3">{advices.length ? advices.map((a, i) => <div key={i} className="rounded-md border border-slate-700 bg-slate-900 p-4 text-sm leading-7 text-slate-100">{a}</div>) : <div className="rounded-md border border-emerald-800 bg-emerald-950 p-4 text-sm text-emerald-100">وضعيت فعلي نگران کننده نيست. ثبت مالي منظم را ادامه بدهيد.</div>}</div></Card>
+      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-2"><h3 className="font-bold">اقدام‌های اولویت‌دار مدیر</h3><span className="text-xs text-slate-400">از مهم‌ترین مورد به کم‌ریسک‌ترین مورد</span></div><div className="grid gap-3 md:grid-cols-2">{priorities.length ? priorities.map((item, index) => <div key={`${item.title}-${index}`} className={`rounded-lg border p-4 ${item.level === 'فوری' ? 'border-red-800 bg-red-950/60' : item.level === 'مهم' ? 'border-amber-800 bg-amber-950/50' : 'border-slate-700 bg-slate-900'}`}><div className="flex items-center justify-between gap-2"><strong className="text-slate-100">{item.title}</strong><span className="rounded-full border border-current px-2 py-1 text-xs text-slate-300">{item.level}</span></div><p className="mt-2 text-sm leading-7 text-slate-300">{item.detail}</p><p className="mt-2 text-sm font-bold leading-7 text-blue-200">{item.action}</p></div>) : <div className="rounded-lg border border-emerald-800 bg-emerald-950/50 p-4 text-sm text-emerald-100">مورد فوری پیدا نشد؛ ثبت منظم داده‌ها و مرور هفتگی گزارش ادامه پیدا کند.</div>}</div></Card>
 
-      <div className="grid grid-cols-2 gap-5"><Card><h3 className="mb-4 font-bold">پيش بيني هزينه هاي ماه هاي آينده</h3><GenericTable rows={forecastRows} /></Card><Card><h3 className="mb-4 font-bold">چک هاي قابل وصول اين ماه</h3><DocsMiniTable rows={dueChecksRows} /></Card></div>
+      <Card><h3 className="mb-4 font-bold">تحلیل تفصیلی و پیشنهادهای مدیریتی</h3><div className="space-y-3">{advices.length ? advices.map((a, i) => <div key={i} className="rounded-md border border-slate-700 bg-slate-900 p-4 text-sm leading-7 text-slate-100">{a}</div>) : <div className="rounded-md border border-emerald-800 bg-emerald-950 p-4 text-sm text-emerald-100">وضعيت فعلي نگران کننده نيست. ثبت مالي منظم را ادامه بدهيد.</div>}</div></Card>
 
-      <Card><h3 className="mb-4 font-bold">تحليل هزينه هاي ثبت شده</h3><GenericTable rows={expensesByTitle.map(x => ({ title: x.title, amount: x.amount }))} /></Card>
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-2"><Card><h3 className="mb-4 font-bold">پیش‌بینی هزینه ماه‌های آینده</h3><GenericTable rows={forecastRows} /></Card><Card><h3 className="mb-4 font-bold">چک‌های قابل وصول این ماه</h3><DocsMiniTable rows={dueChecksRows} /></Card></div>
+
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-2"><Card><h3 className="mb-4 font-bold">تحلیل هزینه‌های ثبت‌شده</h3><GenericTable rows={expensesByTitle.map(x => ({ title: x.title, amount: x.amount }))} /></Card><Card><h3 className="mb-3 font-bold">کیفیت داده و محدودیت تحلیل</h3>{dataGaps.length ? <ul className="space-y-2 text-sm leading-7 text-amber-100">{dataGaps.map((item, index) => <li key={index} className="rounded-md border border-amber-900 bg-amber-950/40 p-3">{item}</li>)}</ul> : <p className="rounded-md border border-emerald-800 bg-emerald-950/50 p-4 text-sm leading-7 text-emerald-100">داده‌های پایه موردنیاز این گزارش ثبت شده‌اند.</p>}<p className="mt-4 text-xs leading-6 text-slate-400">این امتیازها ابزار تصمیم‌یار هستند و جای تأیید مدیر یا حسابدار را نمی‌گیرند. اتصال AI مولد فقط باید از سمت سرور و با ثبت میزان مصرف فعال شود.</p></Card></div>
 
     </div>
 
