@@ -83,6 +83,7 @@ type runReport struct {
 	SourceFKViolations int           `json:"source_foreign_key_violations"`
 	TargetDriver       string        `json:"target_driver"`
 	TargetLabel        string        `json:"target_label"`
+	TargetSchema       string        `json:"target_schema"`
 	TargetCompanyID    int64         `json:"target_company_id"`
 	DryRun             bool          `json:"dry_run"`
 	Committed          bool          `json:"committed"`
@@ -117,9 +118,11 @@ func main() {
 func run() (runErr error) {
 	var sourcePath string
 	var reportDir string
+	var targetSchema string
 	var dryRun bool
 	flag.StringVar(&sourcePath, "source", "", "path to the legacy sqlite database")
 	flag.StringVar(&reportDir, "report-dir", "", "directory for sync reports and archived legacy-only data")
+	flag.StringVar(&targetSchema, "target-schema", env("OPERATIONAL_SCHEMA", "public"), "PostgreSQL tenant schema to import into")
 	flag.BoolVar(&dryRun, "dry-run", false, "inspect and validate without writing to the target database")
 	flag.Parse()
 
@@ -218,6 +221,7 @@ func run() (runErr error) {
 	}
 	report.TargetDriver = targetDialect
 	report.TargetLabel = targetLabel
+	report.TargetSchema = targetSchema
 	report.TargetCompanyID = companyID
 	log.Printf("target connected: %s (%s)", targetLabel, targetDialect)
 
@@ -238,8 +242,24 @@ func run() (runErr error) {
 		}
 	}()
 	if targetDialect == "postgres" {
+		targetSchema = strings.TrimSpace(targetSchema)
+		if !validPostgresIdentifier(targetSchema) {
+			return fmt.Errorf("invalid PostgreSQL target schema: %q", targetSchema)
+		}
+		report.TargetSchema = targetSchema
+		searchPath := quoteIdent(targetSchema) + ", public"
+		if _, err := tx.Exec(`SELECT set_config('search_path', $1, true)`, searchPath); err != nil {
+			return fmt.Errorf("select tenant schema %s: %w", targetSchema, err)
+		}
 		if _, err := tx.Exec(`SELECT set_config('app.company_id', $1, true)`, strconv.FormatInt(companyID, 10)); err != nil {
 			return fmt.Errorf("select online company %d: %w", companyID, err)
+		}
+		var activeSchema string
+		if err := tx.QueryRow(`SELECT current_schema()`).Scan(&activeSchema); err != nil {
+			return fmt.Errorf("verify tenant schema %s: %w", targetSchema, err)
+		}
+		if activeSchema != targetSchema {
+			return fmt.Errorf("tenant schema isolation failed: selected=%s active=%s", targetSchema, activeSchema)
 		}
 	}
 
@@ -403,7 +423,13 @@ func syncConfigs() []tableConfig {
 		newConfig("spare_part", "id_spare_part"),
 		newConfig("spare_parts_inventory", "id_spare_inventory"),
 		newConfig("machinery_service", "id_machinery_service"),
-		newConfig("users", "id_user"),
+		newConfig("v_kh_moto", "id"),
+		{
+			TargetTable:    "users",
+			SourceTable:    "users",
+			KeyColumns:     []string{"id_user"},
+			PreserveTarget: true,
+		},
 		{
 			TargetTable: "menu_items",
 			SourceTable: "menu_items",
@@ -439,6 +465,7 @@ func syncConfigs() []tableConfig {
 			SkipTargetCols: map[string]bool{
 				"id_access": true,
 			},
+			PreserveTarget: true,
 		},
 	}
 }
@@ -670,7 +697,7 @@ func archiveLegacyOnlyTables(sourceDB *sql.DB, sourceTables, targetTables map[st
 func loadTableMeta(db sqlRunner, dialect string) (map[string]tableMeta, error) {
 	var query string
 	if dialect == "postgres" {
-		query = `SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename`
+		query = `SELECT tablename FROM pg_tables WHERE schemaname=current_schema() ORDER BY tablename`
 	} else {
 		query = `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
 	}
@@ -709,7 +736,7 @@ func describeTable(db sqlRunner, dialect, table string) (tableMeta, error) {
 		rows, err := db.Query(`
 			SELECT column_name
 			FROM information_schema.columns
-			WHERE table_schema='public' AND table_name=$1
+			WHERE table_schema=current_schema() AND table_name=$1
 			ORDER BY ordinal_position`, table)
 		if err != nil {
 			return meta, err
@@ -728,7 +755,7 @@ func describeTable(db sqlRunner, dialect, table string) (tableMeta, error) {
 			SELECT a.attname
 			FROM pg_index i
 			JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-			WHERE i.indrelid = $1::regclass AND i.indisprimary
+			WHERE i.indrelid = to_regclass(current_schema() || '.' || quote_ident($1)) AND i.indisprimary
 			ORDER BY array_position(i.indkey, a.attnum)`, table)
 		if err != nil {
 			return meta, err
@@ -1062,36 +1089,45 @@ func adminFingerprint(db sqlRunner, dialect string, meta tableMeta, companyID in
 		return "", 0, errors.New("target users table is missing required admin columns")
 	}
 	columns := append([]string{}, meta.Columns...)
-	query := `SELECT ` + quoteColumns(columns) + ` FROM ` + quoteIdent(meta.Name) + ` WHERE username=?`
-	args := []any{"admin"}
+	query := `SELECT ` + quoteColumns(columns) + ` FROM ` + quoteIdent(meta.Name)
+	args := []any{}
 	if meta.ColumnSet["company_id"] {
-		query += ` AND company_id=?`
+		query += ` WHERE company_id=?`
 		args = append(args, companyID)
 	}
-	query += ` ORDER BY id_user LIMIT 1`
+	query += ` ORDER BY id_user`
 	rows, err := db.Query(rebind(dialect, query), args...)
 	if err != nil {
 		return "", 0, err
 	}
 	defer rows.Close()
-	if !rows.Next() {
-		return "", 0, errors.New("target admin account was not found")
-	}
-	values, err := scanAnyRow(rows, len(columns))
-	if err != nil {
-		return "", 0, err
-	}
+	payload := [][]any{}
 	var adminID int64
-	for i, col := range columns {
-		if col == "id_user" {
-			adminID, err = anyInt64(values[i])
-			if err != nil {
-				return "", 0, err
+	for rows.Next() {
+		values, err := scanAnyRow(rows, len(columns))
+		if err != nil {
+			return "", 0, err
+		}
+		payload = append(payload, values)
+		if adminID == 0 {
+			for i, col := range columns {
+				if col == "id_user" {
+					adminID, err = anyInt64(values[i])
+					if err != nil {
+						return "", 0, err
+					}
+					break
+				}
 			}
-			break
 		}
 	}
-	return jsonFingerprint(values), adminID, nil
+	if err := rows.Err(); err != nil {
+		return "", 0, err
+	}
+	if len(payload) == 0 {
+		return "", 0, errors.New("target user accounts were not found")
+	}
+	return jsonFingerprint(payload), adminID, nil
 }
 
 func menuFingerprint(db sqlRunner, dialect string, meta tableMeta) (string, error) {
@@ -1364,6 +1400,19 @@ func ddl(dialect, stmt string) string {
 
 func quoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+func validPostgresIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	for index, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || char == '_' || (index > 0 && char >= '0' && char <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func quoteQualifiedIdent(name string) string {
