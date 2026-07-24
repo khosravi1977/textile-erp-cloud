@@ -442,6 +442,74 @@ func TestModuleLoginRequiresPasswordAfterFirstTeamMemberIsCreated(t *testing.T) 
 	}
 }
 
+func TestModuleSwitchUserClearsCentralAndModuleSessions(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/module-logout?module=financial&login=1", nil)
+	rec := httptest.NewRecorder()
+	(&portalApp{}).moduleLogout(rec, req)
+
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/module-login?module=financial" {
+		t.Fatalf("unexpected switch-user response: %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	cookies := map[string]*http.Cookie{}
+	for _, cookie := range rec.Result().Cookies() {
+		cookies[cookie.Name] = cookie
+	}
+	for _, name := range []string{accessCookieName, financialAccessCookieName, "operational_session"} {
+		cookie := cookies[name]
+		if cookie == nil || cookie.MaxAge != -1 || cookie.Value != "" {
+			t.Fatalf("expected %s to be cleared, got %#v", name, cookie)
+		}
+	}
+}
+
+func TestOwnerAlwaysReceivesEveryFinancialPermission(t *testing.T) {
+	t.Parallel()
+
+	got := effectivePermissions(projectAccess{
+		ProjectKey:  "textile-erp",
+		AccessRole:  "owner",
+		Permissions: []string{"dashboard"},
+	})
+	allowed := make(map[string]bool, len(got))
+	for _, permission := range got {
+		allowed[permission] = true
+	}
+	for _, permission := range financialPermissionCatalog {
+		if !allowed[permission] {
+			t.Fatalf("owner is missing financial permission %q: %#v", permission, got)
+		}
+	}
+	if len(got) != len(financialPermissionCatalog) {
+		t.Fatalf("owner permissions must match the catalog: got=%d want=%d", len(got), len(financialPermissionCatalog))
+	}
+}
+
+func TestOperationalPortalMenusRespectCentralRoleAndExcludeUserManagement(t *testing.T) {
+	t.Parallel()
+
+	manager := projectAccess{ProjectKey: "textile-erp", AccessRole: "manager"}
+	menus := operationalPortalMenusForKeys(operationalMenuKeys(manager))
+	keys := map[string]bool{}
+	for _, menu := range menus {
+		key, _ := menu["menu_key"].(string)
+		keys[key] = true
+	}
+	if !keys["expenses"] || !keys["machinery-services"] || !keys["spare-parts"] {
+		t.Fatalf("manager operational menus are incomplete: %#v", keys)
+	}
+	if keys["database"] || keys["users"] {
+		t.Fatalf("manager received a central-only or owner-only menu: %#v", keys)
+	}
+
+	for _, menu := range operationalPortalMenus() {
+		if menu["menu_key"] == "users" {
+			t.Fatal("portal users must be managed only from /team")
+		}
+	}
+}
+
 func TestOneTimeLaunchTicketCreatesPortalSessionAndCannotBeReused(t *testing.T) {
 	t.Parallel()
 

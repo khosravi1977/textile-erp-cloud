@@ -196,6 +196,9 @@ func effectivePermissions(record projectAccess) []string {
 	if record.ProjectKey != "textile-erp" {
 		return nil
 	}
+	if effectiveAccessRole(record) == "owner" {
+		return append([]string(nil), financialPermissionCatalog...)
+	}
 	return normalizePermissions(record.Permissions, effectiveAccessRole(record))
 }
 
@@ -940,7 +943,11 @@ func (a *portalApp) moduleLogout(w http.ResponseWriter, r *http.Request) {
 	if module != "financial" && module != "operational" {
 		module = "financial"
 	}
-	for _, name := range []string{moduleCookieName(module), "operational_session"} {
+	cookieNames := []string{moduleCookieName(module), "operational_session"}
+	if r.URL.Query().Get("login") == "1" {
+		cookieNames = append(cookieNames, accessCookieName)
+	}
+	for _, name := range cookieNames {
 		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: isSecureRequest(r), MaxAge: -1})
 	}
 	if r.URL.Query().Get("login") == "1" {
@@ -2097,7 +2104,7 @@ func (a *portalApp) portalOperationalSession(w http.ResponseWriter, r *http.Requ
 	}
 	menus := loginData["menus"]
 	if menuItems, ok := menus.([]any); !ok || len(menuItems) == 0 {
-		menus = operationalPortalMenus()
+		menus = operationalPortalMenusForKeys(operationalMenuKeys(record))
 	}
 	respondJSON(w, http.StatusOK, map[string]any{
 		"user": map[string]any{
@@ -2122,8 +2129,8 @@ func (a *portalApp) createOperationalSessionForRecord(w http.ResponseWriter, r *
 	if record.FinancialCompanyID <= 0 || record.ID <= 0 || strings.TrimSpace(record.Username) == "" {
 		return nil, errors.New("operational access is not configured")
 	}
-	role := "viewer"
-	if normalizeAccessRole(effectiveAccessRole(record)) == "owner" {
+	role := normalizeAccessRole(effectiveAccessRole(record))
+	if role == "owner" {
 		role = "admin"
 	}
 	payload, err := json.Marshal(map[string]any{
@@ -2131,6 +2138,7 @@ func (a *portalApp) createOperationalSessionForRecord(w http.ResponseWriter, r *
 		"access_id":  record.ID,
 		"username":   record.Username,
 		"role":       role,
+		"menu_keys":  operationalMenuKeys(record),
 	})
 	if err != nil {
 		return nil, err
@@ -3572,7 +3580,11 @@ func (a *portalApp) signFinancialJWT(record projectAccess) (string, error) {
 	return unsigned + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 }
 func operationalPortalMenus() []map[string]any {
-	return []map[string]any{
+	return operationalPortalMenusForKeys([]string{"*"})
+}
+
+func operationalPortalMenusForKeys(keys []string) []map[string]any {
+	catalog := []map[string]any{
 		{"menu_key": "dashboard", "menu_name": "داشبورد", "path": "/", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "initial", "menu_name": "اطلاعات اولیه", "path": "/initial", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "nakh-vor", "menu_name": "ورود نخ", "path": "/nakh-vor", "icon": "", "is_restricted": 0, "has_access": 1},
@@ -3586,8 +3598,27 @@ func operationalPortalMenus() []map[string]any {
 		{"menu_key": "empty-beam-out", "menu_name": "خروج نورد خالی", "path": "/empty-beam-out", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "out-invoice", "menu_name": "فاکتور خروج", "path": "/out-invoice", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "advisor", "menu_name": "تحلیل و مشاور هوشمند", "path": "/advisor", "icon": "", "is_restricted": 0, "has_access": 1},
+		{"menu_key": "expenses", "menu_name": "هزینه‌ها", "path": "/expenses", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "reports", "menu_name": "گزارشات", "path": "/reports", "icon": "", "is_restricted": 0, "has_access": 1},
+		{"menu_key": "database", "menu_name": "مدیریت دیتابیس", "path": "/database", "icon": "", "is_restricted": 1, "has_access": 1},
+		{"menu_key": "machinery-services", "menu_name": "خدمات ماشین‌آلات", "path": "/machinery-services", "icon": "", "is_restricted": 1, "has_access": 1},
+		{"menu_key": "spare-parts", "menu_name": "موجودی انبار قطعات", "path": "/spare-parts", "icon": "", "is_restricted": 1, "has_access": 1},
 	}
+	allowed := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key != "" {
+			allowed[key] = true
+		}
+	}
+	out := make([]map[string]any, 0, len(catalog))
+	for _, item := range catalog {
+		key, _ := item["menu_key"].(string)
+		if allowed["*"] || allowed[key] {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func validatePortalProductionConfig(adminPassword, sessionSecret, financialJWTKey, operationalSessionSecret string) {
