@@ -46,6 +46,8 @@ type sessionInfo struct {
 	Schema    string
 	Username  string
 	Role      string
+	Portal    bool
+	MenuKeys  map[string]bool
 }
 
 type loadingSession struct {
@@ -490,6 +492,14 @@ func (a *app) requireMenu(menuKey string, next http.HandlerFunc) http.HandlerFun
 		session, ok := a.currentSession(r)
 		if !ok {
 			fail(w, http.StatusUnauthorized, "نشست شما معتبر نیست. دوباره وارد شوید.")
+			return
+		}
+		if session.Portal {
+			if menuKey == "users" || (!session.MenuKeys["*"] && !session.MenuKeys[menuKey]) {
+				fail(w, http.StatusForbidden, "این دسترسی فقط از بخش مدیریت کاربران مرکزی تعیین می‌شود.")
+				return
+			}
+			next(w, r)
 			return
 		}
 		allowed, err := a.userHasMenuAccess(session.UserID, session.Role, menuKey)
@@ -991,10 +1001,11 @@ func (a *app) portalSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		CompanyID int64  `json:"company_id"`
-		AccessID  int64  `json:"access_id"`
-		Username  string `json:"username"`
-		Role      string `json:"role"`
+		CompanyID int64    `json:"company_id"`
+		AccessID  int64    `json:"access_id"`
+		Username  string   `json:"username"`
+		Role      string   `json:"role"`
+		MenuKeys  []string `json:"menu_keys"`
 	}
 	if !decode(w, r, &payload) {
 		return
@@ -1020,16 +1031,22 @@ func (a *app) portalSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, "operational session could not be created")
 		return
 	}
-	role := "viewer"
-	if strings.EqualFold(strings.TrimSpace(payload.Role), "admin") {
-		role = "admin"
+	role := strings.ToLower(strings.TrimSpace(payload.Role))
+	switch role {
+	case "admin", "manager", "accountant", "viewer":
+	default:
+		role = "viewer"
 	}
+	menuKeys := portalMenuKeySet(payload.MenuKeys)
+	menus := a.portalMenus(menuKeys)
 	if err := a.createSession(w, r, sessionInfo{
 		UserID:    localUserID,
 		CompanyID: companyID,
 		Schema:    schemaName,
 		Username:  payload.Username,
 		Role:      role,
+		Portal:    true,
+		MenuKeys:  menuKeys,
 	}); err != nil {
 		fail(w, http.StatusInternalServerError, "operational session could not be created")
 		return
@@ -1041,6 +1058,7 @@ func (a *app) portalSession(w http.ResponseWriter, r *http.Request) {
 			"username": payload.Username,
 			"role":     role,
 		},
+		"menus": menus,
 	})
 }
 
@@ -1421,6 +1439,9 @@ func (a *app) sessionStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	menus := a.userMenus(session.UserID, session.Role)
+	if session.Portal {
+		menus = a.portalMenus(session.MenuKeys)
+	}
 	writeJSON(w, record{
 		"success": true,
 		"user":    record{"id": session.UserID, "username": session.Username, "role": session.Role},
@@ -3719,6 +3740,36 @@ func (a *app) userMenus(userID int64, role string) []record {
 		_ = rows.Scan(&key, &name, &path, &icon, &restricted, &has)
 		if has == 1 {
 			out = append(out, record{"menu_key": key, "menu_name": name, "path": path, "icon": icon, "is_restricted": restricted, "has_access": has})
+		}
+	}
+	return out
+}
+
+func portalMenuKeySet(keys []string) map[string]bool {
+	out := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key != "" && key != "users" {
+			out[key] = true
+		}
+	}
+	return out
+}
+
+func (a *app) portalMenus(allowed map[string]bool) []record {
+	rows, err := a.query(`SELECT menu_key, menu_name, path, COALESCE(icon,''), COALESCE(is_restricted,0)
+		FROM menu_items WHERE COALESCE(path,'')<>'' AND menu_key<>'users' ORDER BY sort_order, id_menu`)
+	if err != nil {
+		return []record{}
+	}
+	defer rows.Close()
+	out := []record{}
+	for rows.Next() {
+		var key, name, path, icon string
+		var restricted int64
+		_ = rows.Scan(&key, &name, &path, &icon, &restricted)
+		if allowed["*"] || allowed[key] {
+			out = append(out, record{"menu_key": key, "menu_name": name, "path": path, "icon": icon, "is_restricted": restricted, "has_access": 1})
 		}
 	}
 	return out

@@ -221,3 +221,58 @@ func TestPortalManagerRespectsAssignedMenus(t *testing.T) {
 		t.Fatalf("unassigned restricted menu allowed: allowed=%v err=%v", allowed, err)
 	}
 }
+
+func TestPortalSessionMenusComeOnlyFromCentralAccess(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:portal-central-menu-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	application := &app{db: db, dialect: "sqlite", dbLabel: "test", sessions: map[string]sessionInfo{}}
+	if err := application.migrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	allowed := portalMenuKeySet([]string{"dashboard", "reports", "users"})
+	menus := application.portalMenus(allowed)
+	if len(menus) != 2 {
+		t.Fatalf("expected only centrally assigned menus, got %#v", menus)
+	}
+	for _, menu := range menus {
+		if menu["menu_key"] == "users" {
+			t.Fatal("portal session exposed duplicate user management")
+		}
+	}
+
+	sessionRequest := httptest.NewRequest(http.MethodPost, "/api/portal/session", nil)
+	sessionResponse := httptest.NewRecorder()
+	if err := application.createSession(sessionResponse, sessionRequest, sessionInfo{
+		UserID: 1, CompanyID: 1, Username: "portal-manager", Role: "manager", Portal: true, MenuKeys: allowed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cookies := sessionResponse.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("portal session cookie was not created")
+	}
+
+	okRequest := httptest.NewRequest(http.MethodGet, "/api/dashboard", nil)
+	okRequest.AddCookie(cookies[0])
+	okResponse := httptest.NewRecorder()
+	application.requireMenu("dashboard", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})(okResponse, okRequest)
+	if okResponse.Code != http.StatusNoContent {
+		t.Fatalf("centrally assigned menu was denied: %d %s", okResponse.Code, okResponse.Body.String())
+	}
+
+	deniedRequest := httptest.NewRequest(http.MethodGet, "/api/users", nil)
+	deniedRequest.AddCookie(cookies[0])
+	deniedResponse := httptest.NewRecorder()
+	application.requireMenu("users", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})(deniedResponse, deniedRequest)
+	if deniedResponse.Code != http.StatusForbidden {
+		t.Fatalf("portal user management must be denied, got %d: %s", deniedResponse.Code, deniedResponse.Body.String())
+	}
+}

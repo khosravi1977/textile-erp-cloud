@@ -123,9 +123,7 @@ const sidebarTabs = [
 
   ['machinery-services', 'خدمات ماشین‌آلات'],
 
-  ['spare-parts', 'موجودی انبار قطعات'],
-
-  ['users', 'مدیریت کاربران']
+  ['spare-parts', 'موجودی انبار قطعات']
 
 ];
 
@@ -419,7 +417,7 @@ function App() {
 
   const allowedTabs = new Set((session.menus || []).map(m => m.menu_key));
 
-  const visibleTabs = sidebarTabs.filter(([id]) => allowedTabs.size === 0 || allowedTabs.has(id));
+  const visibleTabs = sidebarTabs.filter(([id]) => allowedTabs.has(id));
 
   if (visibleTabs.length && !visibleTabs.some(([id]) => id === tab)) {
 
@@ -514,8 +512,6 @@ function ActiveTab({ tab, lookups, notify, refreshLookups }) {
     case 'machinery-services': return <MachineryServices lookups={lookups} notify={notify} refreshLookups={refreshLookups} />;
 
     case 'spare-parts': return <SparePartsInventory lookups={lookups} notify={notify} refreshLookups={refreshLookups} />;
-
-    case 'users': return <UsersManager notify={notify} />;
 
     default: return <DashboardMother />;
 
