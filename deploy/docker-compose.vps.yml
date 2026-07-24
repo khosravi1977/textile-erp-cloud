@@ -81,6 +81,11 @@ services:
       APP_ENV: production
       JWT_SECRET: ${JWT_SECRET}
       FINANCIAL_ADMIN_PASSWORD: ${FINANCIAL_ADMIN_PASSWORD}
+      VIORA_AI_ENABLED: ${VIORA_AI_ENABLED:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      VIORA_AI_MODEL: ${VIORA_AI_MODEL:-gpt-5.6-luna}
+      VIORA_AI_BASE_URL: ${VIORA_AI_BASE_URL:-https://api.openai.com/v1}
+      VIORA_AI_MONTHLY_REQUEST_LIMIT: ${VIORA_AI_MONTHLY_REQUEST_LIMIT:-100}
     depends_on:
       postgres:
         condition: service_healthy
