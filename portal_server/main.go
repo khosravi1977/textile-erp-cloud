@@ -40,6 +40,8 @@ const (
 type portalApp struct {
 	accessFile                     string
 	mu                             sync.Mutex
+	launchTicketMu                 sync.Mutex
+	launchTickets                  map[string]launchTicket
 	publicBase                     string
 	financialURL                   string
 	operationalURL                 string
@@ -57,6 +59,11 @@ type portalApp struct {
 	localMode                      bool
 	localCompanyID                 int64
 	localCompanyName               string
+}
+
+type launchTicket struct {
+	AccessToken string
+	ExpiresAt   time.Time
 }
 
 type projectAccess struct {
@@ -353,6 +360,7 @@ func main() {
 
 	app := &portalApp{
 		accessFile:                     dbPath,
+		launchTickets:                  make(map[string]launchTicket),
 		publicBase:                     strings.TrimRight(publicBase, "/"),
 		financialURL:                   *financial,
 		operationalURL:                 *operational,
@@ -388,9 +396,11 @@ func main() {
 	mux.HandleFunc("/admin/logout", app.adminLogout)
 	mux.HandleFunc("/admin/api/accesses", app.adminAccesses)
 	mux.HandleFunc("/admin/api/accesses/", app.adminAccessByID)
+	mux.HandleFunc("/admin/api/launch-ticket", app.adminLaunchTicket)
 	mux.HandleFunc("/admin/api/deprovision", app.adminDeprovision)
 	mux.HandleFunc("/admin", app.adminPanel)
 	mux.HandleFunc("/access/", app.accessEntry)
+	mux.HandleFunc("/launch/", app.launchEntry)
 	mux.HandleFunc("/api/portal/financial-session", app.portalFinancialSession)
 	mux.HandleFunc("/api/portal/operational-session", app.portalOperationalSession)
 	mux.HandleFunc("/api/portal/team", app.portalTeam)
@@ -1569,6 +1579,111 @@ func (a *portalApp) deprovisionTextileTenant(username string) error {
 		return errors.New(result.Error)
 	}
 	return nil
+}
+
+func (a *portalApp) issueLaunchTicket(accessToken string) (string, time.Time, error) {
+	accessToken = strings.TrimSpace(accessToken)
+	record, err := a.findAccessByToken(accessToken)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if record.ProjectKey != "textile-erp" || !record.IsActive || time.Now().After(record.ExpiresAt) {
+		return "", time.Time{}, errors.New("access is not active")
+	}
+	if record.MustChangePassword || accessRequiresSetup(record) {
+		return "", time.Time{}, errors.New("access setup is incomplete")
+	}
+
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", time.Time{}, err
+	}
+	ticket := base64.RawURLEncoding.EncodeToString(raw)
+	expiresAt := time.Now().Add(2 * time.Minute)
+
+	a.launchTicketMu.Lock()
+	defer a.launchTicketMu.Unlock()
+	for key, item := range a.launchTickets {
+		if time.Now().After(item.ExpiresAt) {
+			delete(a.launchTickets, key)
+		}
+	}
+	a.launchTickets[ticket] = launchTicket{AccessToken: accessToken, ExpiresAt: expiresAt}
+	return ticket, expiresAt, nil
+}
+
+func (a *portalApp) consumeLaunchTicket(ticket string) (projectAccess, error) {
+	ticket = strings.TrimSpace(ticket)
+	if ticket == "" {
+		return projectAccess{}, errors.New("launch ticket is missing")
+	}
+
+	a.launchTicketMu.Lock()
+	item, ok := a.launchTickets[ticket]
+	if ok {
+		delete(a.launchTickets, ticket)
+	}
+	a.launchTicketMu.Unlock()
+	if !ok || time.Now().After(item.ExpiresAt) {
+		return projectAccess{}, errors.New("launch ticket is invalid or expired")
+	}
+
+	record, err := a.findAccessByToken(item.AccessToken)
+	if err != nil {
+		return projectAccess{}, err
+	}
+	if record.ProjectKey != "textile-erp" || !record.IsActive || time.Now().After(record.ExpiresAt) {
+		return projectAccess{}, errors.New("access is not active")
+	}
+	if record.MustChangePassword || accessRequiresSetup(record) {
+		return projectAccess{}, errors.New("access setup is incomplete")
+	}
+	return record, nil
+}
+
+func (a *portalApp) adminLaunchTicket(w http.ResponseWriter, r *http.Request) {
+	if !a.isAdminAuthenticated(r) {
+		respondJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var payload struct {
+		AccessToken string `json:"accessToken"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&payload); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	ticket, expiresAt, err := a.issueLaunchTicket(payload.AccessToken)
+	if err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]any{
+		"ticket":    ticket,
+		"expiresAt": expiresAt.UTC().Format(time.RFC3339),
+	})
+}
+
+func (a *portalApp) launchEntry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store, no-cache, max-age=0")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	ticket := strings.Trim(strings.TrimPrefix(r.URL.Path, "/launch/"), "/")
+	record, err := a.consumeLaunchTicket(ticket)
+	if err != nil {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	a.setPortalAccessCookie(w, r, record.AccessToken, record.ExpiresAt)
+	_ = a.markAccessUsed(record.ID)
+	http.Redirect(w, r, a.accessTarget(record), http.StatusSeeOther)
 }
 
 func (a *portalApp) adminAccesses(w http.ResponseWriter, r *http.Request) {

@@ -374,6 +374,75 @@ func TestModuleLoginPromotesValidPortalSessionWithoutSecondPassword(t *testing.T
 	}
 }
 
+func TestOneTimeLaunchTicketCreatesPortalSessionAndCannotBeReused(t *testing.T) {
+	t.Parallel()
+
+	accessFile := filepath.Join(t.TempDir(), "portal-access.db")
+	payload, _ := json.Marshal([]projectAccess{{
+		ID:             1,
+		ProjectKey:     "textile-erp",
+		Username:       "launch-user",
+		AccessToken:    "launch-access-token",
+		PasswordHash:   "stored-password-hash",
+		AllowFinancial: true,
+		IsActive:       true,
+		ExpiresAt:      time.Now().Add(time.Hour),
+	}})
+	if err := os.WriteFile(accessFile, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &portalApp{
+		accessFile:    accessFile,
+		sessionSecret: "launch-session-secret",
+		launchTickets: make(map[string]launchTicket),
+	}
+
+	body := strings.NewReader(`{"accessToken":"launch-access-token"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/api/launch-ticket", body)
+	createReq.Header.Set("Content-Type", "application/json")
+	createReq.AddCookie(&http.Cookie{
+		Name:  adminCookieName,
+		Value: app.signAdminSession(time.Now().Add(time.Hour)),
+	})
+	createRec := httptest.NewRecorder()
+	app.adminLaunchTicket(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected ticket creation, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(created.Ticket) == "" {
+		t.Fatal("launch ticket was not returned")
+	}
+
+	launchReq := httptest.NewRequest(http.MethodGet, "/launch/"+created.Ticket, nil)
+	launchRec := httptest.NewRecorder()
+	app.launchEntry(launchRec, launchReq)
+	if launchRec.Code != http.StatusSeeOther || launchRec.Header().Get("Location") != "/financial/" {
+		t.Fatalf("expected portal redirect, got %d %s", launchRec.Code, launchRec.Header().Get("Location"))
+	}
+	var accessCookie *http.Cookie
+	for _, cookie := range launchRec.Result().Cookies() {
+		if cookie.Name == accessCookieName {
+			accessCookie = cookie
+		}
+	}
+	if accessCookie == nil || accessCookie.Value != "launch-access-token" {
+		t.Fatalf("expected portal access cookie, got %#v", launchRec.Result().Cookies())
+	}
+
+	reuseReq := httptest.NewRequest(http.MethodGet, "/launch/"+created.Ticket, nil)
+	reuseRec := httptest.NewRecorder()
+	app.launchEntry(reuseRec, reuseReq)
+	if reuseRec.Code != http.StatusSeeOther || reuseRec.Header().Get("Location") != "/login" {
+		t.Fatalf("reused launch ticket was accepted: %d %s", reuseRec.Code, reuseRec.Header().Get("Location"))
+	}
+}
+
 func TestLocalAdminLoginCreatesOwnerWorkspace(t *testing.T) {
 	tempDir := t.TempDir()
 	accessFile := filepath.Join(tempDir, "portal-access.db")
