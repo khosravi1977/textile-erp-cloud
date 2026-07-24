@@ -870,7 +870,7 @@ func (a *portalApp) renderCustomerLogin(w http.ResponseWriter, errMsg, nextPath 
     <input name="password" type="password" placeholder="رمز عبور" autocomplete="current-password" required>
     <button type="submit">ورود به برنامه</button>
   </form>
-  <div class="muted">حساب مدیر محلی: admin / admin123</div>
+  <div class="muted">نام کاربری و رمز عبور اختصاصی خود را از مدیر مجموعه دریافت کنید.</div>
 </main></body></html>`))
 }
 

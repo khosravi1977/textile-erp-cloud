@@ -17,6 +17,20 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+func TestCustomerLoginDoesNotExposeDefaultCredentials(t *testing.T) {
+	t.Parallel()
+
+	recorder := httptest.NewRecorder()
+	(&portalApp{}).renderCustomerLogin(recorder, "", "")
+	body := recorder.Body.String()
+	if strings.Contains(body, "admin123") || strings.Contains(body, "admin /") {
+		t.Fatal("customer login page must not expose default credentials")
+	}
+	if !strings.Contains(body, "نام کاربری و رمز عبور اختصاصی") {
+		t.Fatal("customer login page should direct users to their assigned credentials")
+	}
+}
+
 func TestCreateAccessPersistsPasswordHash(t *testing.T) {
 	t.Parallel()
 
