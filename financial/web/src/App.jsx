@@ -69,7 +69,7 @@ const pages = [
   { id: 'taxReports', label: 'گزارش مالیاتی' },
   { id: 'credit', label: 'اعتبارسنجی' },
   { id: 'advisor', label: 'تحلیل و مشاور هوشمند' },
-  { id: 'mobileApp', label: 'اتصال اپ بانکی' },
+  { id: 'mobileApp', label: 'اتصال به اپ حسابیار' },
 ];
 
 const fullPageAccess = pages.map(page => page.id);

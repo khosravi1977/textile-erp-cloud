@@ -603,6 +603,46 @@ func TestPortalFinancialSessionRequiresAccessCookie(t *testing.T) {
 	}
 }
 
+func TestMobileAppBridgeIsCoreForFinancialRoles(t *testing.T) {
+	t.Parallel()
+
+	for _, role := range []string{"owner", "manager", "accountant"} {
+		permissions := normalizePermissions([]string{"dashboard"}, role)
+		found := false
+		for _, permission := range permissions {
+			if permission == "mobileApp" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("mobile app bridge is missing for %s: %#v", role, permissions)
+		}
+	}
+	for _, permission := range normalizePermissions([]string{"dashboard"}, "viewer") {
+		if permission == "mobileApp" {
+			t.Fatal("viewer must not receive the mobile app bridge implicitly")
+		}
+	}
+}
+
+func TestOperationalAdvisorIsAvailableToPortalRoles(t *testing.T) {
+	t.Parallel()
+
+	for _, role := range []string{"manager", "accountant", "viewer"} {
+		found := false
+		for _, menuKey := range operationalMenuKeys(projectAccess{ProjectKey: "textile-erp", AccessRole: role}) {
+			if menuKey == "advisor" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("operational advisor is missing for %s", role)
+		}
+	}
+}
+
 func TestPortalOperationalSessionReturnsPortalUser(t *testing.T) {
 	t.Parallel()
 	operationalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -31,6 +31,8 @@ const tabs = [
 
   ['dashboard', 'داشبورد'],
 
+  ['advisor', 'تحلیل و مشاور هوشمند'],
+
   ['initial', 'اطلاعات اولیه'],
 
   ['nakh-vor', 'ورود نخ'],
@@ -482,6 +484,8 @@ function App() {
 function ActiveTab({ tab, lookups, notify, refreshLookups }) {
 
   switch (tab) {
+
+    case 'advisor': return <OperationalAdvisor />;
 
     case 'initial': return <InitialData lookups={lookups} refresh={refreshLookups} notify={notify} />;
 
@@ -2712,6 +2716,289 @@ function ReportsPro2() {
     <section className="panel report-card"><h2>گزارش هزینه‌ها</h2><Table rows={expenses} columns={[['tarikh','تاریخ'],['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','بافنده'],['mablagh','مبلغ'],['shomare_sanad','شماره سند'],['tozih','توضیحات']]} hideActions /></section>
 
   </Page>;
+
+}
+
+
+function OperationalAdvisor() {
+
+  const [data, setData] = useState({});
+
+  const [loading, setLoading] = useState(true);
+
+  const [error, setError] = useState('');
+
+  const load = async () => {
+
+    setLoading(true);
+
+    setError('');
+
+    try {
+
+      setData(await api('/advisor'));
+
+    } catch (err) {
+
+      setError(err.message || 'تحلیل عملیات دریافت نشد.');
+
+    } finally {
+
+      setLoading(false);
+
+    }
+
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const analysis = useMemo(() => buildOperationalAdvice(data), [data]);
+
+  const today = data.today || {};
+
+  const month = data.month || {};
+
+  const stock = data.stock || {};
+
+  return <Page title="تحلیل و مشاور هوشمند">
+
+    <section className="panel advisor-hero">
+
+      <div>
+
+        <span className="advisor-kicker">دستیار تصمیم‌یار عملیات</span>
+
+        <h2>{analysis.headline}</h2>
+
+        <p>تحلیل با داده‌های همین شرکت و قواعد کنترلی تولید انجام می‌شود؛ هیچ داده‌ای برای سرویس خارجی ارسال نمی‌شود.</p>
+
+      </div>
+
+      <div className={`advisor-score ${analysis.score < 55 ? 'danger' : analysis.score < 80 ? 'warn' : 'ok'}`}>
+
+        <span>امتیاز سلامت عملیات</span>
+
+        <strong>{fmt(analysis.score)}</strong>
+
+        <small>از ۱۰۰</small>
+
+      </div>
+
+      <button onClick={load} disabled={loading}>{loading ? 'در حال تحلیل...' : 'به‌روزرسانی تحلیل'}</button>
+
+    </section>
+
+    {error && <div className="error-box">{error}</div>}
+
+    <div className="metrics advisor-metrics">
+
+      {[
+
+        ['تولید امروز', today.metr, 'متر'],
+
+        ['تولید ماه', month.metr, 'متر'],
+
+        ['طاقه آماده خروج', stock.total_taghe, 'طاقه'],
+
+        ['ریسک فوری', analysis.criticalCount, 'مورد'],
+
+        ['نیازمند توجه', analysis.warningCount, 'مورد'],
+
+        ['خطای کیفیت داده', analysis.dataIssueCount, 'رکورد'],
+
+      ].map(([title, value, unit]) => <div className="metric" key={title}><span>{title}</span><b>{fmt(value)}</b><small>{unit}</small></div>)}
+
+    </div>
+
+    <div className="advisor-grid">
+
+      <section className="panel advisor-actions">
+
+        <div className="panel-title-row"><h2>اقدام‌های پیشنهادی به ترتیب اولویت</h2><span>{analysis.actions.length} پیشنهاد</span></div>
+
+        {analysis.actions.length ? analysis.actions.map((item, index) => <article className={`advisor-action ${item.level}`} key={`${item.code}-${index}`}>
+
+          <div className="advisor-action-rank">{fmt(index + 1)}</div>
+
+          <div><h3>{item.title}</h3><p>{item.message}</p><small>{item.source}</small></div>
+
+          <b>{item.level === 'critical' ? 'فوری' : item.level === 'warning' ? 'مهم' : 'پیشنهاد'}</b>
+
+        </article>) : <div className="empty">در حال حاضر اقدام اصلاحی فوری شناسایی نشد.</div>}
+
+      </section>
+
+      <section className="panel advisor-summary">
+
+        <h2>جمع‌بندی مدیریتی</h2>
+
+        <div><span>وضعیت امروز</span><b>{Number(today.metr || 0) > 0 ? 'تولید ثبت شده است' : 'تولید امروز ثبت نشده'}</b></div>
+
+        <div><span>وضعیت انبار محصول</span><b>{Number(stock.total_taghe || 0) > 30 ? 'نیازمند برنامه خروج' : 'در محدوده کنترل'}</b></div>
+
+        <div><span>کیفیت داده‌ها</span><b>{analysis.dataIssueCount ? 'نیازمند اصلاح' : 'قابل اتکا'}</b></div>
+
+        <div><span>زمان تحلیل</span><b>{data.date || todayJalali()}</b></div>
+
+        <p className="advisor-disclaimer">این بخش ابزار پشتیبان تصمیم است. اقدام نهایی، توقف ماشین یا سفارش مواد باید با تأیید مدیر انجام شود.</p>
+
+      </section>
+
+    </div>
+
+    <section className="panel report-card">
+
+      <h2>وضعیت ماشین‌ها و پیشنهاد کنترل</h2>
+
+      <Table rows={analysis.machineRows} columns={[["machine","ماشین"],["shom_chelle","چله"],["remaining_percent","مانده مواد %"],["material_shortage","کسری مواد kg"],["waste_percent_input","ضایعات %"],["advice","اقدام پیشنهادی"]]} hideActions />
+
+    </section>
+
+    <section className="panel report-card">
+
+      <h2>کنترل کیفیت داده‌های مبنای تحلیل</h2>
+
+      <Table rows={data.data_quality || []} columns={[["title","کنترل"],["count","تعداد مورد"],["status","وضعیت"]]} hideActions />
+
+    </section>
+
+  </Page>;
+
+}
+
+
+
+function buildOperationalAdvice(data = {}) {
+
+  const notifications = Array.isArray(data.notifications) ? data.notifications : [];
+
+  const quality = Array.isArray(data.data_quality) ? data.data_quality : [];
+
+  const machines = Array.isArray(data.machines) ? data.machines : [];
+
+  const actions = notifications.map((item, index) => ({
+
+    code: item.code || `notification-${index}`,
+
+    title: item.title || 'کنترل عملیات',
+
+    message: item.message || 'این مورد نیازمند بررسی مدیر عملیات است.',
+
+    source: 'هشدار کنترلی سیستم',
+
+    level: ['critical', 'warning'].includes(item.type) ? item.type : 'info',
+
+  }));
+
+  const qualityIssues = quality.filter(item => Number(item.count || 0) > 0);
+
+  qualityIssues.forEach(item => actions.push({
+
+    code: `quality-${item.code || item.title}`,
+
+    title: `اصلاح داده: ${item.title}`,
+
+    message: `${fmt(item.count)} رکورد باعث کاهش دقت گزارش و تصمیم‌گیری شده است.`,
+
+    source: 'کنترل کیفیت داده',
+
+    level: 'warning',
+
+  }));
+
+  const todayMetr = Number(data.today?.metr || 0);
+
+  const monthMetr = Number(data.month?.metr || 0);
+
+  const stockCount = Number(data.stock?.total_taghe || 0);
+
+  if (todayMetr <= 0 && monthMetr > 0) actions.push({
+
+    code: 'today-production',
+
+    title: 'بررسی توقف یا ثبت‌نشدن تولید امروز',
+
+    message: 'برای امروز متراژ تولید ثبت نشده است؛ وضعیت ماشین‌ها و ثبت اپراتورها کنترل شود.',
+
+    source: 'مقایسه تولید روز و ماه',
+
+    level: 'warning',
+
+  });
+
+  if (stockCount > 0 && !actions.some(item => item.code === 'stock-unshipped')) actions.push({
+
+    code: 'stock-plan',
+
+    title: 'برنامه‌ریزی خروج محصول آماده',
+
+    message: `${fmt(stockCount)} طاقه آماده خروج است؛ سفارش مشتری و ظرفیت بارگیری با انبار تطبیق داده شود.`,
+
+    source: 'موجودی پارچه آماده خروج',
+
+    level: stockCount > 30 ? 'warning' : 'info',
+
+  });
+
+  if (!machines.length) actions.push({
+
+    code: 'machine-data',
+
+    title: 'تکمیل وضعیت ماشین‌ها',
+
+    message: 'ماشین فعال یا چله جاری برای تحلیل مصرف مواد ثبت نشده است.',
+
+    source: 'داده‌های سالن تولید',
+
+    level: 'info',
+
+  });
+
+  const priority = { critical: 0, warning: 1, info: 2 };
+
+  actions.sort((a, b) => priority[a.level] - priority[b.level]);
+
+  const criticalCount = actions.filter(item => item.level === 'critical').length;
+
+  const warningCount = actions.filter(item => item.level === 'warning').length;
+
+  const dataIssueCount = qualityIssues.reduce((sum, item) => sum + Number(item.count || 0), 0);
+
+  const score = Math.max(0, Math.min(100, 100 - criticalCount * 18 - warningCount * 7 - Math.min(dataIssueCount, 10) * 3));
+
+  const machineRows = machines.map(machine => {
+
+    const shortage = Number(machine.material_shortage || 0);
+
+    const remaining = Number(machine.remaining_percent || 0);
+
+    const waste = Number(machine.waste_percent_input || 0);
+
+    let advice = 'ادامه تولید و پایش عادی';
+
+    if (shortage > 0) advice = 'کنترل فوری کسری ثبت مواد';
+
+    else if (remaining <= 10) advice = 'آماده‌سازی فوری مواد یا چله بعدی';
+
+    else if (remaining <= 25) advice = 'برنامه‌ریزی تأمین مواد';
+
+    else if (waste > 5) advice = 'بررسی علت ضایعات و اقدام اصلاحی';
+
+    return { ...machine, advice };
+
+  });
+
+  const headline = criticalCount
+
+    ? `${fmt(criticalCount)} ریسک فوری در عملیات نیازمند تصمیم است`
+
+    : warningCount
+
+      ? `${fmt(warningCount)} مورد مهم برای بهبود عملیات شناسایی شد`
+
+      : 'عملیات در وضعیت پایدار و قابل کنترل است';
+
+  return { actions, criticalCount, warningCount, dataIssueCount, score, machineRows, headline };
 
 }
 
