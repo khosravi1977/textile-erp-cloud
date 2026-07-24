@@ -785,6 +785,16 @@ func (a *portalApp) moduleLogin(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, nextPath, http.StatusSeeOther)
 			return
 		}
+		if record, err := a.accessRecordFromRequest(r); err == nil &&
+			record.ProjectKey == "textile-erp" &&
+			!record.MustChangePassword &&
+			!accessRequiresSetup(record) &&
+			moduleAllowed(record, module) {
+			a.setModuleAccessCookie(w, r, module, record)
+			_ = a.markAccessUsed(record.ID)
+			http.Redirect(w, r, nextPath, http.StatusSeeOther)
+			return
+		}
 		a.renderModuleLogin(w, module, nextPath, "")
 		return
 	}

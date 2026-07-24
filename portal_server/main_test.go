@@ -334,6 +334,46 @@ func TestModuleRouteCannotUseGeneralPortalCookie(t *testing.T) {
 	}
 }
 
+func TestModuleLoginPromotesValidPortalSessionWithoutSecondPassword(t *testing.T) {
+	t.Parallel()
+
+	accessFile := filepath.Join(t.TempDir(), "portal-access.db")
+	payload, _ := json.Marshal([]projectAccess{{
+		ID:               1,
+		ProjectKey:       "textile-erp",
+		Username:         "portal-user",
+		AccessToken:      "portal-sso-token",
+		PasswordHash:     "stored-password-hash",
+		AllowFinancial:   true,
+		AllowOperational: false,
+		IsActive:         true,
+		ExpiresAt:        time.Now().Add(time.Hour),
+	}})
+	if err := os.WriteFile(accessFile, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &portalApp{accessFile: accessFile}
+
+	req := httptest.NewRequest(http.MethodGet, "/module-login?module=financial", nil)
+	req.AddCookie(&http.Cookie{Name: accessCookieName, Value: "portal-sso-token"})
+	rec := httptest.NewRecorder()
+	app.moduleLogin(rec, req)
+
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/financial/" {
+		t.Fatalf("expected automatic module entry, got %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	cookies := map[string]*http.Cookie{}
+	for _, cookie := range rec.Result().Cookies() {
+		cookies[cookie.Name] = cookie
+	}
+	if cookies[financialAccessCookieName] == nil || cookies[financialAccessCookieName].Value != "portal-sso-token" {
+		t.Fatalf("expected financial module cookie, got %#v", cookies)
+	}
+	if cookies[operationalAccessCookieName] != nil {
+		t.Fatal("financial SSO must not grant the operational module")
+	}
+}
+
 func TestLocalAdminLoginCreatesOwnerWorkspace(t *testing.T) {
 	tempDir := t.TempDir()
 	accessFile := filepath.Join(tempDir, "portal-access.db")
