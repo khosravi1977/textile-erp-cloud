@@ -1036,6 +1036,10 @@ func (a *app) portalSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, "operational session could not be created")
 		return
 	}
+	if err := a.setSearchPath(schemaName); err != nil {
+		fail(w, http.StatusInternalServerError, "tenant database is unavailable")
+		return
+	}
 	writeJSON(w, record{
 		"success": true,
 		"user": record{
@@ -1043,6 +1047,7 @@ func (a *app) portalSession(w http.ResponseWriter, r *http.Request) {
 			"username": payload.Username,
 			"role":     role,
 		},
+		"menus": a.userMenus(localUserID, role),
 	})
 }
 

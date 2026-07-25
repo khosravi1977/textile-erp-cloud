@@ -17,6 +17,15 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+func signedModuleCookie(t *testing.T, app *portalApp, module, authMode string, record projectAccess) *http.Cookie {
+	t.Helper()
+	value, err := app.signModuleSession(module, authMode, record, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("sign module session: %v", err)
+	}
+	return &http.Cookie{Name: moduleCookieName(module), Value: value}
+}
+
 func TestCustomerLoginDoesNotExposeDefaultCredentials(t *testing.T) {
 	t.Parallel()
 
@@ -261,8 +270,12 @@ func TestModuleLoginCreatesOnlyRequestedModuleSession(t *testing.T) {
 	if cookies[accessCookieName] == nil || cookies[accessCookieName].Value != access.AccessToken {
 		t.Fatal("expected portal identity cookie")
 	}
-	if cookies[financialAccessCookieName] == nil || cookies[financialAccessCookieName].Value != access.AccessToken {
+	if cookies[financialAccessCookieName] == nil {
 		t.Fatal("expected financial module cookie")
+	}
+	claims, err := app.verifyModuleSession(cookies[financialAccessCookieName].Value, "financial")
+	if err != nil || claims.AccessToken != access.AccessToken || claims.AuthMode != "password" {
+		t.Fatalf("unexpected financial module session: %#v err=%v", claims, err)
 	}
 	if cookies[operationalAccessCookieName] != nil {
 		t.Fatal("financial login must not create an operational module cookie")
@@ -313,7 +326,7 @@ func TestModuleRouteCannotUseGeneralPortalCookie(t *testing.T) {
 	if err := os.WriteFile(accessFile, payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	app := &portalApp{accessFile: accessFile}
+	app := &portalApp{accessFile: accessFile, sessionSecret: "module-route-secret"}
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	handler := app.requireModuleAccess("financial", next)
 
@@ -326,7 +339,10 @@ func TestModuleRouteCannotUseGeneralPortalCookie(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/financial/", nil)
-	req.AddCookie(&http.Cookie{Name: financialAccessCookieName, Value: "portal-only"})
+	req.AddCookie(signedModuleCookie(t, app, "financial", "password", projectAccess{
+		AccessToken: "portal-only",
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}))
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
@@ -352,7 +368,7 @@ func TestModuleLoginPromotesValidPortalSessionWithoutSecondPassword(t *testing.T
 	if err := os.WriteFile(accessFile, payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	app := &portalApp{accessFile: accessFile}
+	app := &portalApp{accessFile: accessFile, sessionSecret: "single-user-sso-secret"}
 
 	req := httptest.NewRequest(http.MethodGet, "/module-login?module=financial", nil)
 	req.AddCookie(&http.Cookie{Name: accessCookieName, Value: "portal-sso-token"})
@@ -366,11 +382,63 @@ func TestModuleLoginPromotesValidPortalSessionWithoutSecondPassword(t *testing.T
 	for _, cookie := range rec.Result().Cookies() {
 		cookies[cookie.Name] = cookie
 	}
-	if cookies[financialAccessCookieName] == nil || cookies[financialAccessCookieName].Value != "portal-sso-token" {
+	if cookies[financialAccessCookieName] == nil {
 		t.Fatalf("expected financial module cookie, got %#v", cookies)
+	}
+	claims, err := app.verifyModuleSession(cookies[financialAccessCookieName].Value, "financial")
+	if err != nil || claims.AccessToken != "portal-sso-token" || claims.AuthMode != "single-user" {
+		t.Fatalf("unexpected single-user module session: %#v err=%v", claims, err)
 	}
 	if cookies[operationalAccessCookieName] != nil {
 		t.Fatal("financial SSO must not grant the operational module")
+	}
+}
+
+func TestModuleLoginRequiresPasswordAfterFirstTeamMemberIsCreated(t *testing.T) {
+	t.Parallel()
+
+	accessFile := filepath.Join(t.TempDir(), "portal-access.db")
+	expiresAt := time.Now().Add(time.Hour)
+	owner := projectAccess{
+		ID: 1, ProjectKey: "textile-erp", CompanyName: "Team Company", Username: "owner",
+		FinancialCompanyID: 7, AccessRole: "owner", AccessToken: "owner-token",
+		PasswordHash: "stored-password-hash", AllowFinancial: true, AllowOperational: true,
+		IsActive: true, ExpiresAt: expiresAt,
+	}
+	employee := projectAccess{
+		ID: 2, ProjectKey: "textile-erp", CompanyName: "Team Company", Username: "employee",
+		FinancialCompanyID: 7, AccessRole: "viewer", AccessToken: "employee-token",
+		PasswordHash: "stored-password-hash", AllowOperational: true,
+		IsActive: true, ExpiresAt: expiresAt,
+	}
+	payload, _ := json.Marshal([]projectAccess{owner, employee})
+	if err := os.WriteFile(accessFile, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &portalApp{accessFile: accessFile, sessionSecret: "team-mode-secret"}
+
+	req := httptest.NewRequest(http.MethodGet, "/module-login?module=operational", nil)
+	req.AddCookie(&http.Cookie{Name: accessCookieName, Value: owner.AccessToken})
+	rec := httptest.NewRecorder()
+	app.moduleLogin(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `name="password"`) {
+		t.Fatalf("team mode must render password login, got %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == operationalAccessCookieName && cookie.Value != "" {
+			t.Fatal("team mode must not promote the portal cookie to an operational session")
+		}
+	}
+
+	legacySingleUserCookie := signedModuleCookie(t, app, "operational", "single-user", owner)
+	req = httptest.NewRequest(http.MethodGet, "/operational/", nil)
+	req.AddCookie(legacySingleUserCookie)
+	rec = httptest.NewRecorder()
+	app.requireModuleAccess("operational", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/module-login?module=operational") {
+		t.Fatalf("a pre-team single-user session remained valid: %d %s", rec.Code, rec.Header().Get("Location"))
 	}
 }
 
@@ -550,9 +618,13 @@ func TestPortalFinancialSessionReturnsJWT(t *testing.T) {
 		sessionSecret:   "portal-secret",
 		financialJWTKey: "shared-jwt-secret",
 	}
+	record, err := app.findAccessByToken("session-token")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/portal/financial-session", nil)
-	req.AddCookie(&http.Cookie{Name: financialAccessCookieName, Value: "session-token"})
+	req.AddCookie(signedModuleCookie(t, app, "financial", "password", record))
 	rec := httptest.NewRecorder()
 
 	app.portalFinancialSession(rec, req)
@@ -641,6 +713,16 @@ func TestOperationalAdvisorIsAvailableToPortalRoles(t *testing.T) {
 			t.Fatalf("operational advisor is missing for %s", role)
 		}
 	}
+	fallbackHasAdvisor := false
+	for _, menu := range operationalPortalMenus() {
+		if menu["menu_key"] == "advisor" {
+			fallbackHasAdvisor = true
+			break
+		}
+	}
+	if !fallbackHasAdvisor {
+		t.Fatal("operational portal fallback menus are missing the advisor")
+	}
 }
 
 func TestPortalOperationalSessionReturnsPortalUser(t *testing.T) {
@@ -692,9 +774,14 @@ func TestPortalOperationalSessionReturnsPortalUser(t *testing.T) {
 		allowOperationalCustomerAccess: true,
 		operationalAPI:                 operationalServer.URL,
 		operationalSessionSecret:       "operational-secret",
+		sessionSecret:                  "portal-secret",
+	}
+	record, err := app.findAccessByToken("session-token")
+	if err != nil {
+		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/api/portal/operational-session", nil)
-	req.AddCookie(&http.Cookie{Name: operationalAccessCookieName, Value: "session-token"})
+	req.AddCookie(signedModuleCookie(t, app, "operational", "password", record))
 	rec := httptest.NewRecorder()
 
 	app.portalOperationalSession(rec, req)

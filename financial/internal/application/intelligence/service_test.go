@@ -35,17 +35,51 @@ func TestGenerateParsesResponsesAPIAndDoesNotExposeKey(t *testing.T) {
 	if result.Narrative.ExecutiveSummary != "خلاصه" || result.TotalTokens != 20 {
 		t.Fatalf("unexpected result: %#v", result)
 	}
-}
-
-func TestGenerateRequiresServerConfiguration(t *testing.T) {
-	if _, err := New(nil, Config{}, nil).Generate(context.Background(), 1, 1, Summary{}); !errorsIs(err, ErrDisabled) {
-		t.Fatalf("expected disabled error, got %v", err)
-	}
-	if _, err := New(nil, Config{Enabled: true}, nil).Generate(context.Background(), 1, 1, Summary{}); !errorsIs(err, ErrNotConfigured) {
-		t.Fatalf("expected not configured error, got %v", err)
+	if result.Mode != "provider" {
+		t.Fatalf("expected provider mode, got %q", result.Mode)
 	}
 }
 
-func errorsIs(err, target error) bool {
-	return err != nil && strings.Contains(err.Error(), target.Error())
+func TestGenerateUsesLocalAdvisorWithoutProviderConfiguration(t *testing.T) {
+	result, err := New(nil, Config{}, nil).Generate(context.Background(), 1, 1, Summary{
+		PeriodMonths:     3,
+		HealthScore:      62,
+		DataCompleteness: 80,
+		Revenue:          200,
+		Expenses:         260,
+		CustomerDebt:     90,
+	})
+	if err != nil {
+		t.Fatalf("local advisor failed: %v", err)
+	}
+	if result.Mode != "local" || result.Model != "viora-local-advisor-v1" {
+		t.Fatalf("unexpected local advisor identity: %#v", result)
+	}
+	if strings.TrimSpace(result.Narrative.ExecutiveSummary) == "" ||
+		len(result.Narrative.Highlights) == 0 ||
+		len(result.Narrative.Risks) == 0 ||
+		strings.TrimSpace(result.Narrative.RecommendedFocus) == "" {
+		t.Fatalf("local advisor returned incomplete guidance: %#v", result.Narrative)
+	}
+	if result.TotalTokens != 0 {
+		t.Fatalf("local advisor must not report provider token usage: %#v", result)
+	}
+}
+
+func TestGenerateFallsBackLocallyWhenProviderIsUnavailable(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, io.ErrUnexpectedEOF
+	})}
+	result, err := New(nil, Config{
+		Enabled: true,
+		APIKey:  "secret-test",
+		BaseURL: "https://example.test/v1",
+		Model:   "test-model",
+	}, client).Generate(context.Background(), 1, 1, Summary{PeriodMonths: 1, HealthScore: 70})
+	if err != nil {
+		t.Fatalf("provider fallback failed: %v", err)
+	}
+	if result.Mode != "local-fallback" || result.Model != "viora-local-advisor-v1" {
+		t.Fatalf("expected local fallback, got %#v", result)
+	}
 }

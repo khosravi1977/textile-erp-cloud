@@ -64,6 +64,7 @@ type Result struct {
 	RunID        string    `json:"run_id"`
 	Narrative    Narrative `json:"narrative"`
 	Model        string    `json:"model"`
+	Mode         string    `json:"mode"`
 	InputTokens  int64     `json:"input_tokens"`
 	OutputTokens int64     `json:"output_tokens"`
 	TotalTokens  int64     `json:"total_tokens"`
@@ -112,14 +113,12 @@ func New(db *sql.DB, config Config, client *http.Client) *Service {
 }
 
 func (s *Service) Generate(ctx context.Context, companyID, userID int64, summary Summary) (Result, error) {
-	if !s.config.Enabled {
-		return Result{}, ErrDisabled
-	}
-	if strings.TrimSpace(s.config.APIKey) == "" {
-		return Result{}, ErrNotConfigured
-	}
 	if companyID <= 0 || userID <= 0 {
 		return Result{}, errors.New("invalid tenant identity")
+	}
+	summary = sanitizeSummary(summary)
+	if !s.config.Enabled || strings.TrimSpace(s.config.APIKey) == "" {
+		return s.generateLocal(summary, "local"), nil
 	}
 	if s.config.MonthlyLimit > 0 && s.db != nil {
 		var used int
@@ -127,19 +126,12 @@ func (s *Service) Generate(ctx context.Context, companyID, userID int64, summary
 			WHERE company_id=$1 AND status='completed'
 			AND created_at >= date_trunc('month', CURRENT_TIMESTAMP)`, companyID).Scan(&used)
 		if err != nil {
-			return Result{}, fmt.Errorf("read AI usage: %w", err)
+			return s.generateLocal(summary, "local-fallback"), nil
 		}
 		if used >= s.config.MonthlyLimit {
-			return Result{}, ErrLimitReached
+			return s.generateLocal(summary, "local-fallback"), nil
 		}
 	}
-
-	summary.PeriodMonths = clamp(summary.PeriodMonths, 1, 12)
-	summary.HealthScore = clamp(summary.HealthScore, 0, 100)
-	summary.DataCompleteness = clamp(summary.DataCompleteness, 0, 100)
-	summary.TopExpenses = limitNamed(summary.TopExpenses, 5)
-	summary.Priorities = limitDecisions(summary.Priorities, 5)
-	summary.DataGaps = limitStrings(summary.DataGaps, 8, 300)
 
 	summaryJSON, err := json.Marshal(summary)
 	if err != nil {
@@ -172,35 +164,132 @@ func (s *Service) Generate(ctx context.Context, companyID, userID int64, summary
 	response, err := s.client.Do(request)
 	if err != nil {
 		s.record(ctx, runID, companyID, userID, 0, 0, 0, "failed", "provider_unavailable")
-		return Result{}, fmt.Errorf("AI provider request failed: %w", err)
+		return s.generateLocal(summary, "local-fallback"), nil
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
 	if err != nil {
 		s.record(ctx, runID, companyID, userID, 0, 0, 0, "failed", "invalid_response")
-		return Result{}, err
+		return s.generateLocal(summary, "local-fallback"), nil
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		s.record(ctx, runID, companyID, userID, 0, 0, 0, "failed", "provider_rejected")
-		return Result{}, fmt.Errorf("AI provider returned status %d", response.StatusCode)
+		return s.generateLocal(summary, "local-fallback"), nil
 	}
 
 	text, inputTokens, outputTokens, totalTokens, err := extractResponse(data)
 	if err != nil {
 		s.record(ctx, runID, companyID, userID, inputTokens, outputTokens, totalTokens, "failed", "invalid_response")
-		return Result{}, err
+		return s.generateLocal(summary, "local-fallback"), nil
 	}
 	var narrative Narrative
 	if err := json.Unmarshal([]byte(text), &narrative); err != nil || strings.TrimSpace(narrative.ExecutiveSummary) == "" {
 		s.record(ctx, runID, companyID, userID, inputTokens, outputTokens, totalTokens, "failed", "invalid_narrative")
-		return Result{}, errors.New("AI provider returned an invalid narrative")
+		return s.generateLocal(summary, "local-fallback"), nil
 	}
 	s.record(ctx, runID, companyID, userID, inputTokens, outputTokens, totalTokens, "completed", "")
 	return Result{
 		RunID: runID, Narrative: narrative, Model: s.config.Model,
+		Mode:        "provider",
 		InputTokens: inputTokens, OutputTokens: outputTokens, TotalTokens: totalTokens,
 		GeneratedAt: s.now().UTC(),
 	}, nil
+}
+
+func sanitizeSummary(summary Summary) Summary {
+	summary.PeriodMonths = clamp(summary.PeriodMonths, 1, 12)
+	summary.HealthScore = clamp(summary.HealthScore, 0, 100)
+	summary.DataCompleteness = clamp(summary.DataCompleteness, 0, 100)
+	summary.TopExpenses = limitNamed(summary.TopExpenses, 5)
+	summary.Priorities = limitDecisions(summary.Priorities, 5)
+	summary.DataGaps = limitStrings(summary.DataGaps, 8, 300)
+	return summary
+}
+
+func (s *Service) generateLocal(summary Summary, mode string) Result {
+	highlights := make([]string, 0, 4)
+	risks := make([]string, 0, 4)
+
+	if summary.HealthScore >= 75 {
+		highlights = append(highlights, fmt.Sprintf("امتیاز سلامت مالی %d از ۱۰۰ و در محدوده قابل‌قبول است.", summary.HealthScore))
+	} else {
+		risks = append(risks, fmt.Sprintf("امتیاز سلامت مالی %d از ۱۰۰ است و به اقدام اصلاحی نیاز دارد.", summary.HealthScore))
+	}
+	if summary.Revenue > summary.Expenses {
+		highlights = append(highlights, fmt.Sprintf("درآمد ثبت‌شده حدود %.0f بیشتر از هزینه ثبت‌شده است.", summary.Revenue-summary.Expenses))
+	} else if summary.Expenses > summary.Revenue {
+		risks = append(risks, fmt.Sprintf("هزینه ثبت‌شده حدود %.0f بیشتر از درآمد ثبت‌شده است.", summary.Expenses-summary.Revenue))
+	}
+	if summary.CashBalance >= 0 {
+		highlights = append(highlights, fmt.Sprintf("مانده نقد و بانک ثبت‌شده حدود %.0f است.", summary.CashBalance))
+	} else {
+		risks = append(risks, fmt.Sprintf("مانده نقد و بانک حدود %.0f منفی است.", -summary.CashBalance))
+	}
+	if summary.ForecastLiquidityGap > 0 {
+		risks = append(risks, fmt.Sprintf("شکاف نقدینگی پیش‌بینی‌شده حدود %.0f است.", summary.ForecastLiquidityGap))
+	}
+	if summary.UnpostedOperationalInvoices > 0 {
+		risks = append(risks, fmt.Sprintf("%d فاکتور عملیاتی هنوز تعیین تکلیف مالی نشده است.", summary.UnpostedOperationalInvoices))
+	}
+	for _, priority := range summary.Priorities {
+		if len(risks) >= 4 {
+			break
+		}
+		if strings.EqualFold(priority.Level, "critical") || strings.EqualFold(priority.Level, "warning") {
+			text := strings.TrimSpace(priority.Title)
+			if detail := strings.TrimSpace(priority.Detail); detail != "" {
+				text += ": " + detail
+			}
+			if text != "" {
+				risks = append(risks, text)
+			}
+		}
+	}
+	if len(summary.DataGaps) > 0 && len(risks) < 4 {
+		risks = append(risks, "کیفیت تصمیم به تکمیل داده‌های پایه وابسته است: "+summary.DataGaps[0])
+	}
+	if len(highlights) == 0 {
+		highlights = append(highlights, "گزارش عددی آماده است و می‌تواند مبنای کنترل روزانه مدیر قرار گیرد.")
+	}
+	if len(risks) == 0 {
+		risks = append(risks, "ریسک بحرانی از شاخص‌های فعلی استخراج نشد؛ کنترل اسناد سررسیدشده ادامه یابد.")
+	}
+	if len(highlights) > 4 {
+		highlights = highlights[:4]
+	}
+	if len(risks) > 4 {
+		risks = risks[:4]
+	}
+
+	focus := "ابتدا اسناد و مانده‌های بانکی را کنترل کنید و سپس وصول مطالبات و پرداخت‌های نزدیک را برنامه‌ریزی کنید."
+	if len(summary.Priorities) > 0 {
+		focus = strings.TrimSpace(summary.Priorities[0].Title)
+		if detail := strings.TrimSpace(summary.Priorities[0].Detail); detail != "" {
+			focus += ": " + detail
+		}
+	} else if summary.ForecastLiquidityGap > 0 {
+		focus = "کاهش شکاف نقدینگی با تسریع وصول مطالبات و زمان‌بندی دوباره پرداخت‌های نزدیک."
+	} else if summary.CustomerDebt > 0 {
+		focus = "تمرکز بر وصول مطالبات مشتریان و ثبت نتیجه پیگیری در برنامه جریان نقد."
+	}
+
+	executiveSummary := fmt.Sprintf(
+		"در بازه %d ماهه، امتیاز سلامت مالی %d و کامل‌بودن داده‌ها %d درصد است. درآمد ثبت‌شده %.0f، هزینه %.0f و مانده نقد و بانک %.0f است.",
+		summary.PeriodMonths, summary.HealthScore, summary.DataCompleteness,
+		summary.Revenue, summary.Expenses, summary.CashBalance,
+	)
+	return Result{
+		RunID: randomID(),
+		Narrative: Narrative{
+			ExecutiveSummary: executiveSummary,
+			Highlights:       highlights,
+			Risks:            risks,
+			RecommendedFocus: focus,
+		},
+		Model:       "viora-local-advisor-v1",
+		Mode:        mode,
+		GeneratedAt: s.now().UTC(),
+	}
 }
 
 func (s *Service) record(ctx context.Context, runID string, companyID, userID, inputTokens, outputTokens, totalTokens int64, status, errorCode string) {
