@@ -11,14 +11,26 @@ environment secrets:
 
 ```dotenv
 VIORA_AI_ENABLED=true
-OPENAI_API_KEY=replace_on_the_server
+VIORA_AI_API_KEY=replace_on_the_server
 VIORA_AI_MODEL=gpt-5.6-luna
 VIORA_AI_BASE_URL=https://api.openai.com/v1
+VIORA_AI_API_STYLE=responses
 VIORA_AI_MONTHLY_REQUEST_LIMIT=100
 ```
 
-`VIORA_AI_ENABLED=false` is the safe default. `OPENAI_API_KEY` must never be
-committed. The monthly limit is enforced per company.
+`VIORA_AI_ENABLED=false` is the safe default. `VIORA_AI_API_KEY` (or the
+backward-compatible `OPENAI_API_KEY`) must never be committed. The monthly
+limit is enforced per company.
+
+For a funded DeepSeek API account use the server-only configuration below:
+
+```dotenv
+VIORA_AI_ENABLED=true
+VIORA_AI_API_KEY=replace_on_the_server
+VIORA_AI_MODEL=deepseek-chat
+VIORA_AI_BASE_URL=https://api.deepseek.com
+VIORA_AI_API_STYLE=chat_completions
+```
 
 ## Data boundary and billing
 

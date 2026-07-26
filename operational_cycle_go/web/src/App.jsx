@@ -95,6 +95,8 @@ const sidebarTabs = [
 
   ['dashboard', 'داشبورد'],
 
+  ['advisor', 'تحلیل و مشاور هوشمند'],
+
   ['initial', 'اطلاعات اولیه'],
 
   ['nakh-vor', 'ورود نخ'],

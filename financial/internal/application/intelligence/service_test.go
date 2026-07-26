@@ -40,6 +40,37 @@ func TestGenerateParsesResponsesAPIAndDoesNotExposeKey(t *testing.T) {
 	}
 }
 
+func TestGenerateSupportsOpenAICompatibleChatCompletions(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != "https://api.deepseek.test/v1/chat/completions" {
+			t.Fatalf("unexpected URL: %s", request.URL)
+		}
+		if request.Header.Get("Authorization") != "Bearer deepseek-secret" {
+			t.Fatal("missing server-side authorization")
+		}
+		body, _ := io.ReadAll(request.Body)
+		if strings.Contains(string(body), "deepseek-secret") {
+			t.Fatal("API key leaked into request body")
+		}
+		payload := `{"choices":[{"message":{"content":"{\"executive_summary\":\"خلاصه مالی\",\"highlights\":[\"فروش\"],\"risks\":[\"نقدینگی\"],\"recommended_focus\":\"وصول مطالبات\"}"}}],"usage":{"prompt_tokens":21,"completion_tokens":13,"total_tokens":34}}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}, nil
+	})}
+	service := New(nil, Config{
+		Enabled: true, APIKey: "deepseek-secret", BaseURL: "https://api.deepseek.test/v1",
+		Model: "deepseek-chat", APIStyle: "chat_completions",
+	}, client)
+	result, err := service.Generate(context.Background(), 10, 20, Summary{PeriodMonths: 3, HealthScore: 70})
+	if err != nil {
+		t.Fatalf("generate chat completion: %v", err)
+	}
+	if result.Narrative.ExecutiveSummary != "خلاصه مالی" || result.TotalTokens != 34 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if result.Mode != "provider" {
+		t.Fatalf("expected provider mode, got %q", result.Mode)
+	}
+}
+
 func TestGenerateUsesLocalAdvisorWithoutProviderConfiguration(t *testing.T) {
 	result, err := New(nil, Config{}, nil).Generate(context.Background(), 1, 1, Summary{
 		PeriodMonths:     3,
