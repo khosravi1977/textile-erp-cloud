@@ -174,8 +174,8 @@ func (s *Service) Generate(ctx context.Context, companyID, userID int64, summary
 		s.record(ctx, runID, companyID, userID, inputTokens, outputTokens, totalTokens, "failed", "invalid_response")
 		return s.generateLocal(summary, "local-fallback"), nil
 	}
-	var narrative Narrative
-	if err := json.Unmarshal([]byte(normalizeNarrativeJSON(text)), &narrative); err != nil || strings.TrimSpace(narrative.ExecutiveSummary) == "" {
+	narrative, err := decodeNarrative(text)
+	if err != nil {
 		s.record(ctx, runID, companyID, userID, inputTokens, outputTokens, totalTokens, "failed", "invalid_narrative")
 		return s.generateLocal(summary, "local-fallback"), nil
 	}
@@ -404,6 +404,43 @@ func normalizeNarrativeJSON(content string) string {
 		return content[start : end+1]
 	}
 	return content
+}
+
+func decodeNarrative(content string) (Narrative, error) {
+	var payload struct {
+		ExecutiveSummary string          `json:"executive_summary"`
+		Highlights       []string        `json:"highlights"`
+		Risks            []string        `json:"risks"`
+		RecommendedFocus json.RawMessage `json:"recommended_focus"`
+	}
+	if err := json.Unmarshal([]byte(normalizeNarrativeJSON(content)), &payload); err != nil {
+		return Narrative{}, err
+	}
+	var focus string
+	if err := json.Unmarshal(payload.RecommendedFocus, &focus); err != nil {
+		var items []string
+		if listErr := json.Unmarshal(payload.RecommendedFocus, &items); listErr != nil {
+			return Narrative{}, err
+		}
+		focus = strings.Join(limitStrings(items, 4, 300), "؛ ")
+	}
+	summary := strings.TrimSpace(payload.ExecutiveSummary)
+	focus = strings.TrimSpace(focus)
+	if summary == "" || focus == "" {
+		return Narrative{}, errors.New("AI provider returned an incomplete narrative")
+	}
+	if len([]rune(summary)) > 900 {
+		summary = string([]rune(summary)[:900])
+	}
+	if len([]rune(focus)) > 500 {
+		focus = string([]rune(focus)[:500])
+	}
+	return Narrative{
+		ExecutiveSummary: summary,
+		Highlights:       limitStrings(payload.Highlights, 4, 300),
+		Risks:            limitStrings(payload.Risks, 4, 300),
+		RecommendedFocus: focus,
+	}, nil
 }
 
 func narrativeSchema() map[string]any {

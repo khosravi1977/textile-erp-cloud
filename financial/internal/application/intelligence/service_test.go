@@ -73,7 +73,7 @@ func TestGenerateSupportsOpenAICompatibleChatCompletions(t *testing.T) {
 
 func TestGenerateAcceptsFencedJSONFromChatCompletions(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		payload := `{"choices":[{"message":{"content":"` + "```json\\n" + `{\"executive_summary\":\"خلاصه مالی\",\"highlights\":[\"فروش\"],\"risks\":[\"نقدینگی\"],\"recommended_focus\":\"وصول مطالبات\"}` + "\\n```" + `"}}],"usage":{"prompt_tokens":21,"completion_tokens":13,"total_tokens":34}}`
+		payload := `{"choices":[{"message":{"content":"` + "```json\\n" + `{\"executive_summary\":\"خلاصه مالی\",\"highlights\":[\"فروش\"],\"risks\":[\"نقدینگی\"],\"recommended_focus\":[\"وصول مطالبات\",\"کنترل هزینه\"]}` + "\\n```" + `"}}],"usage":{"prompt_tokens":21,"completion_tokens":13,"total_tokens":34}}`
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}, nil
 	})}
 	service := New(nil, Config{
@@ -84,7 +84,8 @@ func TestGenerateAcceptsFencedJSONFromChatCompletions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate fenced chat completion: %v", err)
 	}
-	if result.Mode != "provider" || result.Narrative.ExecutiveSummary != "خلاصه مالی" {
+	if result.Mode != "provider" || result.Narrative.ExecutiveSummary != "خلاصه مالی" ||
+		result.Narrative.RecommendedFocus != "وصول مطالبات؛ کنترل هزینه" {
 		t.Fatalf("unexpected fenced completion result: %#v", result)
 	}
 }
