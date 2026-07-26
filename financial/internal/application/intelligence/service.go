@@ -175,7 +175,7 @@ func (s *Service) Generate(ctx context.Context, companyID, userID int64, summary
 		return s.generateLocal(summary, "local-fallback"), nil
 	}
 	var narrative Narrative
-	if err := json.Unmarshal([]byte(text), &narrative); err != nil || strings.TrimSpace(narrative.ExecutiveSummary) == "" {
+	if err := json.Unmarshal([]byte(normalizeNarrativeJSON(text)), &narrative); err != nil || strings.TrimSpace(narrative.ExecutiveSummary) == "" {
 		s.record(ctx, runID, companyID, userID, inputTokens, outputTokens, totalTokens, "failed", "invalid_narrative")
 		return s.generateLocal(summary, "local-fallback"), nil
 	}
@@ -386,6 +386,24 @@ func extractChatCompletion(data []byte) (string, int64, int64, int64, error) {
 	}
 	return strings.TrimSpace(response.Choices[0].Message.Content),
 		response.Usage.PromptTokens, response.Usage.CompletionTokens, response.Usage.TotalTokens, nil
+}
+
+func normalizeNarrativeJSON(content string) string {
+	content = strings.TrimSpace(content)
+	if strings.HasPrefix(content, "```") {
+		if newline := strings.IndexByte(content, '\n'); newline >= 0 {
+			content = content[newline+1:]
+		}
+		content = strings.TrimSpace(content)
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	}
+	start := strings.IndexByte(content, '{')
+	end := strings.LastIndexByte(content, '}')
+	if start >= 0 && end > start {
+		return content[start : end+1]
+	}
+	return content
 }
 
 func narrativeSchema() map[string]any {

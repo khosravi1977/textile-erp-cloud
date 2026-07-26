@@ -71,6 +71,24 @@ func TestGenerateSupportsOpenAICompatibleChatCompletions(t *testing.T) {
 	}
 }
 
+func TestGenerateAcceptsFencedJSONFromChatCompletions(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		payload := `{"choices":[{"message":{"content":"` + "```json\\n" + `{\"executive_summary\":\"خلاصه مالی\",\"highlights\":[\"فروش\"],\"risks\":[\"نقدینگی\"],\"recommended_focus\":\"وصول مطالبات\"}` + "\\n```" + `"}}],"usage":{"prompt_tokens":21,"completion_tokens":13,"total_tokens":34}}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}, nil
+	})}
+	service := New(nil, Config{
+		Enabled: true, APIKey: "deepseek-secret", BaseURL: "https://api.deepseek.test",
+		Model: "deepseek-chat", APIStyle: "chat_completions",
+	}, client)
+	result, err := service.Generate(context.Background(), 10, 20, Summary{PeriodMonths: 3, HealthScore: 70})
+	if err != nil {
+		t.Fatalf("generate fenced chat completion: %v", err)
+	}
+	if result.Mode != "provider" || result.Narrative.ExecutiveSummary != "خلاصه مالی" {
+		t.Fatalf("unexpected fenced completion result: %#v", result)
+	}
+}
+
 func TestGenerateUsesLocalAdvisorWithoutProviderConfiguration(t *testing.T) {
 	result, err := New(nil, Config{}, nil).Generate(context.Background(), 1, 1, Summary{
 		PeriodMonths:     3,
