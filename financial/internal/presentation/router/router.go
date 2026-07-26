@@ -1,13 +1,18 @@
 package router
 
 import (
+	"github.com/erpsystem/textile-erp/internal/application/telegramreport"
 	"github.com/erpsystem/textile-erp/internal/presentation/handler"
 	"github.com/erpsystem/textile-erp/internal/presentation/middleware"
 	"net/http"
 )
 
-func SetupRouter() http.Handler {
-	h := handler.NewAPIHandler()
+func SetupRouter(services ...*telegramreport.Service) http.Handler {
+	var telegram *telegramreport.Service
+	if len(services) > 0 {
+		telegram = services[0]
+	}
+	h := handler.NewAPIHandler(telegram)
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", h.HealthCheck)
@@ -41,6 +46,10 @@ func SetupRouter() http.Handler {
 	mux.HandleFunc("/api/workspace/alerts", h.GetWorkspaceAlerts)
 	mux.HandleFunc("/api/accounting/reports", h.GetAccountingReports)
 	mux.HandleFunc("/api/accounting/periods", h.AccountingPeriods)
+	mux.HandleFunc("/api/telegram-reports/config", h.TelegramReportConfig)
+	mux.HandleFunc("/api/telegram-reports/pairing", h.TelegramReportPairing)
+	mux.HandleFunc("/api/telegram-reports/test", h.TelegramReportTest)
+	mux.HandleFunc("/api/telegram-reports/history", h.TelegramReportHistory)
 
 	// Invoice API
 	mux.HandleFunc("/api/invoices", h.InvoicesRoot)            // GET, POST

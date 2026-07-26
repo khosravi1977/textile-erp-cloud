@@ -69,6 +69,7 @@ const pages = [
   { id: 'taxReports', label: 'گزارش مالیاتی' },
   { id: 'credit', label: 'اعتبارسنجی' },
   { id: 'advisor', label: 'تحلیل و مشاور هوشمند' },
+  { id: 'telegramReports', label: 'گزارش روزانه تلگرام' },
   { id: 'mobileApp', label: 'اتصال به اپ حسابیار' },
 ];
 
@@ -90,6 +91,9 @@ function normalizeAccessList(list) {
   const allowed = Array.isArray(list) && list.length ? list.filter(item => fullPageAccess.includes(item)) : fullPageAccess;
   if (allowed.includes('incomingInvoices') && !allowed.includes('chelleIncomingInvoices')) {
     allowed.push('chelleIncomingInvoices');
+  }
+  if (allowed.includes('reports') && !allowed.includes('telegramReports')) {
+    allowed.push('telegramReports');
   }
   return [...new Set(allowed)];
 }
@@ -1324,6 +1328,7 @@ export default function App() {
         {currentPage === 'taxReports' && <TaxReportPage finance={safeFinance} />}
         {currentPage === 'credit' && <CreditPage finance={safeFinance} />}
         {currentPage === 'advisor' && <AdvisorPage finance={safeFinance} />}
+        {currentPage === 'telegramReports' && <TelegramReportsPage />}
         {currentPage === 'mobileApp' && <MobileAppPage />}
       </main>
     </div>
@@ -1385,6 +1390,144 @@ function MobileAppPage() {
       </Card>
       <Card>
         {qrImage ? <div className="mx-auto max-w-sm rounded-2xl bg-white p-5"><img src={qrImage} alt="QR اتصال حسابیار" className="h-auto w-full" /></div> : <div className="flex min-h-72 items-center justify-center text-center text-slate-500">پس از ساخت کد، QR اتصال اینجا نمایش داده می‌شود.</div>}
+      </Card>
+    </div>
+  );
+}
+
+function TelegramReportsPage() {
+  const [settings, setSettings] = useState(null);
+  const [pairing, setPairing] = useState(null);
+  const [qrImage, setQrImage] = useState('');
+  const [history, setHistory] = useState([]);
+  const [busy, setBusy] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  const load = async () => {
+    try {
+      const [config, deliveries] = await Promise.all([
+        apiJSON('/telegram-reports/config'),
+        apiJSON('/telegram-reports/history?limit=20'),
+      ]);
+      setSettings(config);
+      setHistory(deliveries.rows || []);
+      setError('');
+    } catch (err) {
+      setError(err.message || 'دریافت تنظیمات گزارش تلگرام انجام نشد');
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const createPairing = async () => {
+    setBusy('pair'); setError(''); setMessage(''); setQrImage('');
+    try {
+      const result = await apiJSON('/telegram-reports/pairing', { method: 'POST' });
+      setPairing(result);
+      setQrImage(await QRCode.toDataURL(result.deep_link, { width: 360, margin: 2, errorCorrectionLevel: 'M' }));
+      setMessage('QR ساخته شد؛ آن را با دوربین گوشی اسکن کنید و در تلگرام دکمه Start را بزنید.');
+    } catch (err) {
+      setError(err.message || 'ساخت QR اتصال انجام نشد');
+    } finally { setBusy(''); }
+  };
+
+  const save = async () => {
+    setBusy('save'); setError(''); setMessage('');
+    try {
+      const updated = await apiJSON('/telegram-reports/config', {
+        method: 'PUT',
+        body: {
+          enabled: Boolean(settings.enabled),
+          alerts_enabled: Boolean(settings.alerts_enabled),
+          daily_time: settings.daily_time || '20:00',
+          timezone: settings.timezone || 'Asia/Tehran',
+        },
+      });
+      setSettings(updated);
+      setMessage('تنظیمات ذخیره شد.');
+    } catch (err) {
+      setError(err.message || 'ذخیره تنظیمات انجام نشد');
+    } finally { setBusy(''); }
+  };
+
+  const sendTest = async () => {
+    setBusy('test'); setError(''); setMessage('');
+    try {
+      await apiJSON('/telegram-reports/test', { method: 'POST' });
+      setMessage('گزارش آزمایشی با موفقیت به تلگرام ارسال شد.');
+      await load();
+    } catch (err) {
+      setError(err.message || 'ارسال آزمایشی انجام نشد');
+    } finally { setBusy(''); }
+  };
+
+  if (!settings) {
+    return <Card><div className="text-center text-slate-400">در حال دریافت تنظیمات تلگرام...</div>{error && <div className="mt-4"><ErrorBox message={error} /></div>}</Card>;
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-5 lg:grid-cols-2">
+        <Card>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-xl font-black">گزارش مدیریتی روزانه</h3>
+              <p className="mt-2 text-sm leading-7 text-slate-300">خلاصه تولید و خروج به تفکیک وزن و متر، ورود کالا و نخ، خروج نخ، ضایعات و موجودی برای همین شرکت ارسال می‌شود.</p>
+            </div>
+            <span className={`rounded-full px-3 py-1 text-xs font-bold ${settings.connected ? 'bg-emerald-950 text-emerald-200' : 'bg-amber-950 text-amber-200'}`}>
+              {settings.connected ? `متصل به ${settings.chat_title || 'تلگرام'}` : 'متصل نشده'}
+            </span>
+          </div>
+          {!settings.available && <div className="mt-4 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm leading-7 text-amber-100">توکن و نام بات باید فقط در Secrets سرور تنظیم شود؛ هیچ توکنی در این صفحه یا کد پروژه ذخیره نمی‌شود.</div>}
+          <div className="mt-5 grid gap-4 md:grid-cols-2">
+            <label className="text-sm text-slate-300">زمان ارسال روزانه
+              <TextInput type="time" className="mt-2 w-full" value={settings.daily_time || '20:00'} onChange={e => setSettings(current => ({ ...current, daily_time: e.target.value }))} />
+            </label>
+            <label className="text-sm text-slate-300">منطقه زمانی
+              <SelectInput className="mt-2 w-full" value={settings.timezone || 'Asia/Tehran'} onChange={e => setSettings(current => ({ ...current, timezone: e.target.value }))}>
+                <option value="Asia/Tehran">تهران</option>
+                <option value="UTC">UTC</option>
+              </SelectInput>
+            </label>
+          </div>
+          <label className="mt-5 flex items-center gap-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-sm">
+            <input type="checkbox" checked={Boolean(settings.enabled)} onChange={e => setSettings(current => ({ ...current, enabled: e.target.checked }))} />
+            ارسال خودکار گزارش روزانه فعال باشد
+          </label>
+          <label className="mt-3 flex items-center gap-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-sm">
+            <input type="checkbox" checked={Boolean(settings.alerts_enabled)} onChange={e => setSettings(current => ({ ...current, alerts_enabled: e.target.checked }))} />
+            هشدارهای مهم داخل گزارش نمایش داده شود
+          </label>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <PrimaryButton onClick={save}>{busy === 'save' ? 'در حال ذخیره...' : 'ذخیره تنظیمات'}</PrimaryButton>
+            <GhostButton onClick={sendTest}>{busy === 'test' ? 'در حال ارسال...' : 'ارسال گزارش آزمایشی'}</GhostButton>
+            <GhostButton onClick={createPairing}>{busy === 'pair' ? 'در حال ساخت...' : settings.connected ? 'اتصال تلگرام دیگر' : 'ساخت QR اتصال'}</GhostButton>
+          </div>
+          {message && <div className="mt-4 rounded-md border border-emerald-800 bg-emerald-950 p-3 text-sm text-emerald-100">{message}</div>}
+          {error && <div className="mt-4"><ErrorBox message={error} /></div>}
+        </Card>
+        <Card>
+          {qrImage ? (
+            <div className="text-center">
+              <div className="mx-auto max-w-sm rounded-2xl bg-white p-5"><img src={qrImage} alt="QR اتصال امن بات تلگرام" className="h-auto w-full" /></div>
+              <a href={pairing.deep_link} target="_blank" rel="noreferrer" className="mt-4 inline-block rounded-md bg-blue-600 px-5 py-3 text-sm font-bold text-white">باز کردن مستقیم در تلگرام</a>
+              <p className="mt-3 text-xs text-slate-400">این لینک یک‌بارمصرف است و تا {new Date(pairing.expires_at).toLocaleTimeString('fa-IR')} اعتبار دارد.</p>
+            </div>
+          ) : (
+            <div className="flex min-h-72 items-center justify-center text-center text-slate-500">برای اتصال امن، «ساخت QR اتصال» را بزنید. سپس QR را اسکن و Start را انتخاب کنید.</div>
+          )}
+        </Card>
+      </div>
+      <Card>
+        <h3 className="mb-4 text-lg font-black">سوابق گزارش‌های خودکار</h3>
+        {history.length ? <GenericTable rows={history.map(row => ({
+          date: toJalali(row.report_date),
+          type: row.report_type === 'daily' ? 'روزانه' : row.report_type,
+          status: row.status === 'sent' ? 'ارسال شد' : row.status === 'failed' ? 'ناموفق' : 'در حال ارسال',
+          summary: row.summary || '-',
+          error: row.error_message || '-',
+        }))} /> : <EmptyState />}
       </Card>
     </div>
   );
