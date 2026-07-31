@@ -91,7 +91,7 @@ func TestLoadingSessionScanConfirmAndFinalize(t *testing.T) {
 	if token == "" {
 		t.Fatal("expected loading token")
 	}
-	if got := created["url"]; got != "http://192.168.10.20:8091/login?next="+url.QueryEscape("/operational/loading/"+token) {
+	if got := created["url"]; got != "http://192.168.10.20:8091/module-login?module=operational&next="+url.QueryEscape("/operational/loading/"+token) {
 		t.Fatalf("unexpected local loading URL: %v", got)
 	}
 
@@ -151,6 +151,31 @@ func TestLoadingSessionScanConfirmAndFinalize(t *testing.T) {
 	closedRec := loadingRequest(t, mux, http.MethodGet, "/api/loading/"+token, employeeSession, nil)
 	if closedRec.Code != http.StatusGone {
 		t.Fatalf("completed session must be closed: %d %s", closedRec.Code, closedRec.Body.String())
+	}
+}
+
+func TestLoadingPublicURLUsesPortalRootForLegacyConfiguredAPIBase(t *testing.T) {
+	t.Setenv("LOADING_PUBLIC_BASE", "https://textile.62.60.204.237.nip.io/api/operational")
+	req := httptest.NewRequest(http.MethodGet, "http://internal:8091/api/loading/test-token", nil)
+	got := loadingPublicURL(req, "test-token")
+	want := "https://textile.62.60.204.237.nip.io/module-login?module=operational&next=" +
+		url.QueryEscape("/operational/loading/test-token")
+	if got != want {
+		t.Fatalf("unexpected public URL: got %q want %q", got, want)
+	}
+}
+
+func TestLoadingPublicURLIgnoresInternalForwardedPrefix(t *testing.T) {
+	t.Setenv("LOADING_PUBLIC_BASE", "")
+	req := httptest.NewRequest(http.MethodGet, "http://internal:8091/api/loading/test-token", nil)
+	req.Host = "textile.vioraapps.com"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Prefix", "/api/operational")
+	got := loadingPublicURL(req, "test-token")
+	want := "https://textile.vioraapps.com/module-login?module=operational&next=" +
+		url.QueryEscape("/operational/loading/test-token")
+	if got != want {
+		t.Fatalf("unexpected public URL: got %q want %q", got, want)
 	}
 }
 

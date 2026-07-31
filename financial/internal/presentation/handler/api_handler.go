@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/erpsystem/textile-erp/internal/application/telegramreport"
 	"github.com/erpsystem/textile-erp/internal/application/usecase"
 	"github.com/erpsystem/textile-erp/internal/domain/entity"
 	"github.com/erpsystem/textile-erp/internal/domain/service"
@@ -29,10 +30,11 @@ type APIHandler struct {
 	inventorySvc *service.InventoryService
 	invoiceSvc   *service.InvoiceService
 	operational  *operationalbridge.Bridge
+	telegram     *telegramreport.Service
 	cache        *cache.Client
 }
 
-func NewAPIHandler() *APIHandler {
+func NewAPIHandler(telegram *telegramreport.Service) *APIHandler {
 	opBridge, err := operationalbridge.NewFromEnv()
 	if err != nil {
 		log.Printf("operational bridge disabled: %v", err)
@@ -45,6 +47,7 @@ func NewAPIHandler() *APIHandler {
 		inventorySvc: service.NewInventoryService(),
 		invoiceSvc:   service.NewInvoiceService(),
 		operational:  opBridge,
+		telegram:     telegram,
 		cache:        cache.NewFromEnv(),
 	}
 }

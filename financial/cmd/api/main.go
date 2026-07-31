@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"github.com/erpsystem/textile-erp/internal/application/telegramreport"
 	"github.com/erpsystem/textile-erp/internal/infrastructure/persistence/postgres"
 	"github.com/erpsystem/textile-erp/internal/presentation/router"
 	"log"
@@ -38,8 +40,11 @@ func main() {
 		}
 	}
 
+	telegramReports := telegramreport.New(db, telegramreport.ConfigFromEnv())
+	telegramReports.Start(context.Background())
+
 	// Setup router
-	r := router.SetupRouter()
+	r := router.SetupRouter(telegramReports)
 
 	port := getEnv("APP_PORT", "8081")
 

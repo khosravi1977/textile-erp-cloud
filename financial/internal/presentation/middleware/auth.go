@@ -183,6 +183,8 @@ func requiredPermissions(path string) []string {
 		return []string{"dashboard", "financialHealth", "reports", "taxReports", "credit", "advisor"}
 	case strings.HasPrefix(path, "/api/accounting/"):
 		return []string{"accounting", "reports"}
+	case strings.HasPrefix(path, "/api/telegram-reports/"):
+		return []string{"telegramReports", "reports"}
 	case path == "/api/mobile/pairing":
 		return []string{"mobileApp"}
 	case strings.Contains(path, "/operational/out-invoices") || strings.HasSuffix(path, "/operational/f_khor"):

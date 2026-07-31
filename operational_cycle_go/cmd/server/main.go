@@ -247,7 +247,7 @@ func main() {
 var operationalTenantTables = []string{
 	"mosh_name", "nakh_name", "kala_name", "chellepich", "kod_navard", "gerezan",
 	"nakh_vor", "nakh_khor", "empty_beam_out", "chelle", "gere", "nakh_salon", "salon",
-	"machine_consumption", "machine_formul", "f_khor", "hazine", "operator_name", "driver_name",
+	"machine_consumption", "machine_formul", "chelle_formul", "f_khor", "hazine", "operator_name", "driver_name",
 	"weaver_name", "h_rozmare", "service_type", "spare_part", "spare_parts_inventory",
 	"machinery_service", "users", "menu_items", "user_menu_access", "loading_sessions",
 	"loading_session_items", "loading_reservations", "v_kh_moto", "production_waste",
@@ -611,6 +611,8 @@ func (a *app) migrate() error {
 		`CREATE TABLE IF NOT EXISTS salon (id_salon INTEGER PRIMARY KEY, metr_salon REAL, w_salon REAL, machin_salon TEXT, user_salon TEXT, tarikh_salon TEXT, kala_salon TEXT, ham_pod_salon TEXT, ham_chelle_salon TEXT, shom_chelle_salon TEXT)`,
 		`CREATE TABLE IF NOT EXISTS machine_consumption (id_consumption INTEGER PRIMARY KEY AUTOINCREMENT, machine TEXT, shom_chelle TEXT, tar_used REAL, pod_used REAL, total_weight REAL, remaining_weight REAL, tarikh_consumption TEXT)`,
 		`CREATE TABLE IF NOT EXISTS machine_formul (id_formul INTEGER PRIMARY KEY AUTOINCREMENT, machine TEXT UNIQUE, tar_percent REAL DEFAULT 50, pod_percent REAL DEFAULT 50, tozih_formul TEXT)`,
+		`CREATE TABLE IF NOT EXISTS chelle_formul (id_formul INTEGER PRIMARY KEY AUTOINCREMENT, chelle_id INTEGER NOT NULL, machine TEXT NOT NULL, shom_chelle TEXT NOT NULL, kala_name TEXT NOT NULL DEFAULT '', ham_chelle TEXT NOT NULL DEFAULT '', ham_pod TEXT NOT NULL DEFAULT '', tar_percent REAL NOT NULL DEFAULT 50, pod_percent REAL NOT NULL DEFAULT 50, tozih_formul TEXT, created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT DEFAULT (datetime('now','localtime')), UNIQUE(chelle_id,kala_name,ham_chelle,ham_pod))`,
+		`CREATE INDEX IF NOT EXISTS idx_chelle_formul_machine_chelle ON chelle_formul(machine,shom_chelle)`,
 		`CREATE TABLE IF NOT EXISTS production_waste (id_waste INTEGER PRIMARY KEY AUTOINCREMENT, waste_date TEXT, machine TEXT NOT NULL, shom_chelle TEXT NOT NULL, waste_type TEXT NOT NULL, weight REAL NOT NULL, reason TEXT, operator_name TEXT, description TEXT, created_at TEXT DEFAULT (datetime('now','localtime')))`,
 		`CREATE TABLE IF NOT EXISTS f_khor (id_f_khor INTEGER PRIMARY KEY AUTOINCREMENT, tarikh_f_khor TEXT, shom_f_khor TEXT, taghe_cod_f_khor TEXT, mosh_f_khor TEXT, shomare_sanad TEXT, kala_name_f_khor TEXT)`,
 		`CREATE TABLE IF NOT EXISTS hazine (id_hazine INTEGER PRIMARY KEY AUTOINCREMENT, onvan_hazine TEXT UNIQUE)`,
@@ -651,6 +653,9 @@ func (a *app) migrate() error {
 		{"nakh_name", "tozih_nakh_name", "TEXT"},
 		{"operator_name", "tozih_operator", "TEXT"},
 		{"salon", "barcode_code", "TEXT"},
+		{"salon", "chelle_id_salon", "INTEGER"},
+		{"salon", "tar_percent_salon", "REAL"},
+		{"salon", "pod_percent_salon", "REAL"},
 		{"weaver_name", "tozih_weaver", "TEXT"},
 		{"h_rozmare", "weaver_name", "TEXT"},
 		{"h_rozmare", "shomare_sanad", "TEXT"},
@@ -695,6 +700,17 @@ func (a *app) migrate() error {
 	_, _ = a.exec(`UPDATE nakh_salon SET chelle_id_nakh_salon=(SELECT MAX(c.id_chelle) FROM chelle c WHERE c.shom_chelle=nakh_salon.shom_chelle_nakh_salon AND c.machin_chelle=nakh_salon.shom_machin_nakh_salon) WHERE chelle_id_nakh_salon IS NULL`)
 	_, _ = a.exec(`UPDATE machine_formul SET tar_percent=50,pod_percent=50 WHERE COALESCE(tar_percent,0)+COALESCE(pod_percent,0)<=0`)
 	_, _ = a.exec(`UPDATE machine_formul SET tar_percent=tar_percent*100.0/(tar_percent+pod_percent), pod_percent=pod_percent*100.0/(tar_percent+pod_percent) WHERE ABS((tar_percent+pod_percent)-100)>0.001 AND tar_percent+pod_percent>0`)
+	// Freeze the formula used by every legacy production row. Once populated,
+	// changes to a machine default or a later beam can no longer rewrite history.
+	_, _ = a.exec(`UPDATE salon SET chelle_id_salon=(SELECT MAX(c.id_chelle) FROM chelle c WHERE c.shom_chelle=salon.shom_chelle_salon AND c.machin_chelle=salon.machin_salon) WHERE COALESCE(chelle_id_salon,0)=0`)
+	_, _ = a.exec(`UPDATE salon SET tar_percent_salon=COALESCE((SELECT mf.tar_percent FROM machine_formul mf WHERE mf.machine=salon.machin_salon),50), pod_percent_salon=COALESCE((SELECT mf.pod_percent FROM machine_formul mf WHERE mf.machine=salon.machin_salon),50) WHERE tar_percent_salon IS NULL OR pod_percent_salon IS NULL OR COALESCE(tar_percent_salon,0)+COALESCE(pod_percent_salon,0)<=0`)
+	_, _ = a.exec(`UPDATE salon SET tar_percent_salon=tar_percent_salon*100.0/(tar_percent_salon+pod_percent_salon), pod_percent_salon=pod_percent_salon*100.0/(tar_percent_salon+pod_percent_salon) WHERE ABS((tar_percent_salon+pod_percent_salon)-100)>0.001 AND tar_percent_salon+pod_percent_salon>0`)
+	_, _ = a.exec(`INSERT INTO chelle_formul (chelle_id,machine,shom_chelle,kala_name,ham_chelle,ham_pod,tar_percent,pod_percent,tozih_formul)
+		SELECT s.chelle_id_salon,TRIM(s.machin_salon),TRIM(s.shom_chelle_salon),TRIM(COALESCE(s.kala_salon,'')),TRIM(COALESCE(s.ham_chelle_salon,'')),TRIM(COALESCE(s.ham_pod_salon,'')),s.tar_percent_salon,s.pod_percent_salon,'ثبت خودکار از سابقه تولید'
+		FROM salon s
+		WHERE COALESCE(s.chelle_id_salon,0)>0
+		  AND s.id_salon=(SELECT MAX(s2.id_salon) FROM salon s2 WHERE s2.chelle_id_salon=s.chelle_id_salon AND TRIM(COALESCE(s2.kala_salon,''))=TRIM(COALESCE(s.kala_salon,'')) AND TRIM(COALESCE(s2.ham_chelle_salon,''))=TRIM(COALESCE(s.ham_chelle_salon,'')) AND TRIM(COALESCE(s2.ham_pod_salon,''))=TRIM(COALESCE(s.ham_pod_salon,'')))
+		ON CONFLICT(chelle_id,kala_name,ham_chelle,ham_pod) DO NOTHING`)
 	if err := a.reconcileActiveChelles(); err != nil {
 		return err
 	}
@@ -957,7 +973,7 @@ func (a *app) seedMenus() error {
 		{"chelle", "ورود چله", "/chelle", "📦", 0, 4},
 		{"gere", "گره", "/gere", "🪢", 0, 5},
 		{"nakh-salon", "ورود نخ سالن", "/nakh-salon", "🧶", 0, 6},
-		{"formulas", "فرمول تولید ماشین‌ها", "/formulas", "📐", 0, 7},
+		{"formulas", "فرمول پیش‌فرض ماشین‌ها", "/formulas", "📐", 0, 7},
 		{"salon", "سالن تولید", "/salon", "🏭", 0, 8},
 		{"consumption", "مصرف تار و پود", "/consumption", "📊", 0, 9},
 		{"yarn-out", "خروج نخ", "/yarn-out", "🚪", 0, 10},
@@ -1690,7 +1706,21 @@ func (a *app) chelleByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := strconv.Atoi(pathLast(r.URL.Path))
-	writeSave(w, execErr(a.exec(`DELETE FROM chelle WHERE id_chelle=?`, id)))
+	tx, err := a.db.Begin()
+	if err == nil {
+		_, err = txExec(a.dialect, tx, `DELETE FROM chelle_formul WHERE chelle_id=?`, id)
+	}
+	if err == nil {
+		_, err = txExec(a.dialect, tx, `DELETE FROM chelle WHERE id_chelle=?`, id)
+	}
+	if err != nil {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+		writeSave(w, err)
+		return
+	}
+	writeSave(w, tx.Commit())
 }
 
 func (a *app) gere(w http.ResponseWriter, r *http.Request) {
@@ -1750,6 +1780,9 @@ func (a *app) gere(w http.ResponseWriter, r *http.Request) {
 		}
 		if err == nil {
 			_, err = txExec(a.dialect, tx, `UPDATE chelle SET machin_chelle=? WHERE id_chelle=?`, p.Machine, p.ChelleID)
+		}
+		if err == nil {
+			_, err = txExec(a.dialect, tx, `UPDATE chelle_formul SET machine=?,shom_chelle=?,updated_at=? WHERE chelle_id=?`, p.Machine, shom, time.Now().UTC().Format(time.RFC3339Nano), p.ChelleID)
 		}
 		if err != nil {
 			_ = tx.Rollback()
@@ -2060,22 +2093,164 @@ func (a *app) activeChelleInfo(machine, shom string) (int64, string, error) {
 	return id, hambaft, err
 }
 
+type chelleFormula struct {
+	ChelleID   int64
+	Machine    string
+	ShomChelle string
+	Kala       string
+	HamChelle  string
+	HamPod     string
+	TarPercent float64
+	PodPercent float64
+	Tozih      string
+	Configured bool
+	Source     string
+}
+
+func normalizedFormula(tar, pod float64) (float64, float64, bool) {
+	if tar < 0 || pod < 0 {
+		return 0, 0, false
+	}
+	total := tar + pod
+	if total <= 0 {
+		return 0, 0, false
+	}
+	return tar * 100 / total, pod * 100 / total, true
+}
+
+func formulaIsValid(tar, pod float64) bool {
+	return tar >= 0 && pod >= 0 && absFloat(tar+pod-100) <= 0.001
+}
+
+func (a *app) resolveChelleFormula(machine, shom, kala, hamChelle, hamPod string) (chelleFormula, error) {
+	machine = strings.TrimSpace(machine)
+	shom = strings.TrimSpace(shom)
+	kala = strings.TrimSpace(kala)
+	hamChelle = strings.TrimSpace(hamChelle)
+	hamPod = strings.TrimSpace(hamPod)
+	chelleID, activeHambaft, err := a.activeChelleInfo(machine, shom)
+	if err != nil {
+		return chelleFormula{}, err
+	}
+	if hamChelle == "" {
+		hamChelle = strings.TrimSpace(activeHambaft)
+	}
+	result := chelleFormula{
+		ChelleID: chelleID, Machine: machine, ShomChelle: shom, Kala: kala,
+		HamChelle: hamChelle, HamPod: hamPod,
+		TarPercent: 50, PodPercent: 50,
+	}
+	err = a.queryRow(`SELECT COALESCE(tar_percent,50),COALESCE(pod_percent,50),COALESCE(tozih_formul,'')
+		FROM chelle_formul
+		WHERE chelle_id=? AND kala_name=? AND ham_chelle=? AND ham_pod=?
+		ORDER BY id_formul DESC LIMIT 1`, chelleID, kala, hamChelle, hamPod).
+		Scan(&result.TarPercent, &result.PodPercent, &result.Tozih)
+	if err == nil {
+		result.TarPercent, result.PodPercent, _ = normalizedFormula(result.TarPercent, result.PodPercent)
+		result.Configured = true
+		result.Source = "beam"
+		return result, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return chelleFormula{}, err
+	}
+	if kala != "" && hamChelle != "" && hamPod != "" {
+		err = a.queryRow(`SELECT COALESCE(tar_percent,50),COALESCE(pod_percent,50),COALESCE(tozih_formul,'')
+			FROM chelle_formul
+			WHERE kala_name=? AND ham_chelle=? AND ham_pod=?
+			ORDER BY updated_at DESC,id_formul DESC LIMIT 1`, kala, hamChelle, hamPod).
+			Scan(&result.TarPercent, &result.PodPercent, &result.Tozih)
+		if err == nil {
+			result.TarPercent, result.PodPercent, _ = normalizedFormula(result.TarPercent, result.PodPercent)
+			result.Configured = true
+			result.Source = "same_hambaft"
+			return result, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return chelleFormula{}, err
+		}
+	}
+	_ = a.queryRow(`SELECT COALESCE(tar_percent,50),COALESCE(pod_percent,50)
+		FROM machine_formul WHERE machine=?`, machine).Scan(&result.TarPercent, &result.PodPercent)
+	result.TarPercent, result.PodPercent, _ = normalizedFormula(result.TarPercent, result.PodPercent)
+	result.Source = "machine_default"
+	return result, nil
+}
+
+func (a *app) saveChelleFormulaTx(tx *sql.Tx, formula chelleFormula) error {
+	formula.Machine = strings.TrimSpace(formula.Machine)
+	formula.ShomChelle = strings.TrimSpace(formula.ShomChelle)
+	formula.Kala = strings.TrimSpace(formula.Kala)
+	formula.HamChelle = strings.TrimSpace(formula.HamChelle)
+	formula.HamPod = strings.TrimSpace(formula.HamPod)
+	if formula.ChelleID <= 0 || formula.Machine == "" || formula.ShomChelle == "" || formula.Kala == "" ||
+		formula.HamChelle == "" || formula.HamPod == "" ||
+		!formulaIsValid(formula.TarPercent, formula.PodPercent) {
+		return errors.New("beam production formula is incomplete or invalid")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := txExec(a.dialect, tx, `INSERT INTO chelle_formul
+		(chelle_id,machine,shom_chelle,kala_name,ham_chelle,ham_pod,tar_percent,pod_percent,tozih_formul,created_at,updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(chelle_id,kala_name,ham_chelle,ham_pod) DO UPDATE SET
+		machine=excluded.machine,shom_chelle=excluded.shom_chelle,
+		tar_percent=excluded.tar_percent,pod_percent=excluded.pod_percent,
+		tozih_formul=excluded.tozih_formul,updated_at=excluded.updated_at`,
+		formula.ChelleID, formula.Machine, formula.ShomChelle, formula.Kala, formula.HamChelle, formula.HamPod,
+		formula.TarPercent, formula.PodPercent, formula.Tozih, now, now)
+	return err
+}
+
+func (a *app) salonFormula(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		machine := strings.TrimSpace(r.URL.Query().Get("machine"))
+		shom := strings.TrimSpace(r.URL.Query().Get("shom_chelle"))
+		hamChelle := strings.TrimSpace(r.URL.Query().Get("ham_chelle"))
+		hamPod := strings.TrimSpace(r.URL.Query().Get("ham_pod"))
+		kalaID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("kala_id")), 10, 64)
+		kala, err := a.nameByID("kala_name", "id_kala_name", "name_kala_name", kalaID)
+		if err != nil || machine == "" || shom == "" {
+			fail(w, http.StatusBadRequest, "ماشین، چله و نام پارچه را مشخص کنید")
+			return
+		}
+		formula, err := a.resolveChelleFormula(machine, shom, kala, hamChelle, hamPod)
+		if err != nil {
+			fail(w, http.StatusBadRequest, "چله انتخاب‌شده روی این ماشین فعال نیست")
+			return
+		}
+		writeJSON(w, record{
+			"success": true, "configured": formula.Configured,
+			"chelle_id": formula.ChelleID, "machine": formula.Machine,
+			"shom_chelle": formula.ShomChelle, "kala": formula.Kala,
+			"ham_chelle": formula.HamChelle, "ham_pod": formula.HamPod,
+			"tar_percent": formula.TarPercent, "pod_percent": formula.PodPercent,
+			"tozih": formula.Tozih, "source": formula.Source,
+		})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
 func (a *app) salon(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.query(`SELECT s.id_salon, s.tarikh_salon, s.metr_salon, s.w_salon, s.machin_salon, s.user_salon, s.kala_salon, s.ham_pod_salon, s.ham_chelle_salon, s.shom_chelle_salon, COALESCE(k.id_kala_name,0) FROM salon s LEFT JOIN kala_name k ON k.name_kala_name=s.kala_salon ORDER BY s.id_salon DESC LIMIT 200`)
-		writeRows(w, rows, err, []string{"id", "tarikh", "metr", "weight", "machine", "user", "kala", "ham_pod", "ham_chelle", "shom_chelle", "kala_id"})
+		rows, err := a.query(`SELECT s.id_salon, s.tarikh_salon, s.metr_salon, s.w_salon, s.machin_salon, s.user_salon, s.kala_salon, s.ham_pod_salon, s.ham_chelle_salon, s.shom_chelle_salon, COALESCE(k.id_kala_name,0), COALESCE(s.chelle_id_salon,0), COALESCE(s.tar_percent_salon,50), COALESCE(s.pod_percent_salon,50) FROM salon s LEFT JOIN kala_name k ON k.name_kala_name=s.kala_salon ORDER BY s.id_salon DESC LIMIT 200`)
+		writeRows(w, rows, err, []string{"id", "tarikh", "metr", "weight", "machine", "user", "kala", "ham_pod", "ham_chelle", "shom_chelle", "kala_id", "chelle_id", "tar_percent", "pod_percent"})
 	case http.MethodPost:
 		var p struct {
-			ID         int64   `json:"id"`
-			Metr       float64 `json:"metr"`
-			Weight     float64 `json:"weight"`
-			Machine    string  `json:"machine"`
-			KalaID     int64   `json:"kala_id"`
-			HamPod     string  `json:"ham_pod"`
-			HamChelle  string  `json:"ham_chelle"`
-			ShomChelle string  `json:"shom_chelle"`
-			User       string  `json:"user"`
+			ID               int64   `json:"id"`
+			Metr             float64 `json:"metr"`
+			Weight           float64 `json:"weight"`
+			Machine          string  `json:"machine"`
+			KalaID           int64   `json:"kala_id"`
+			HamPod           string  `json:"ham_pod"`
+			HamChelle        string  `json:"ham_chelle"`
+			ShomChelle       string  `json:"shom_chelle"`
+			User             string  `json:"user"`
+			TarPercent       float64 `json:"tar_percent"`
+			PodPercent       float64 `json:"pod_percent"`
+			FormulaConfirmed bool    `json:"formula_confirmed"`
 		}
 		if !decode(w, r, &p) {
 			return
@@ -2087,7 +2262,7 @@ func (a *app) salon(w http.ResponseWriter, r *http.Request) {
 		}
 		p.Machine = strings.TrimSpace(p.Machine)
 		p.ShomChelle = strings.TrimSpace(p.ShomChelle)
-		_, activeHambaft, activeErr := a.activeChelleInfo(p.Machine, p.ShomChelle)
+		chelleID, activeHambaft, activeErr := a.activeChelleInfo(p.Machine, p.ShomChelle)
 		if activeErr != nil {
 			fail(w, 400, "چله انتخاب‌شده روی این ماشین فعال نیست؛ ابتدا ثبت گره را کنترل کنید")
 			return
@@ -2103,6 +2278,27 @@ func (a *app) salon(w http.ResponseWriter, r *http.Request) {
 				p.User = "admin"
 			}
 		}
+		knownFormula, formulaErr := a.resolveChelleFormula(p.Machine, p.ShomChelle, kala, p.HamChelle, p.HamPod)
+		if formulaErr != nil {
+			fail(w, http.StatusBadRequest, "فرمول تار و پود این چله قابل بررسی نیست")
+			return
+		}
+		formulaProvided := p.TarPercent != 0 || p.PodPercent != 0
+		if p.ID > 0 && !formulaProvided {
+			_ = a.queryRow(`SELECT COALESCE(tar_percent_salon,0),COALESCE(pod_percent_salon,0) FROM salon WHERE id_salon=?`, p.ID).
+				Scan(&p.TarPercent, &p.PodPercent)
+		}
+		if !formulaIsValid(p.TarPercent, p.PodPercent) {
+			p.TarPercent, p.PodPercent = knownFormula.TarPercent, knownFormula.PodPercent
+		}
+		if !knownFormula.Configured && !p.FormulaConfirmed {
+			fail(w, http.StatusBadRequest, "هم‌بافت یا پارچه جدید است؛ درصد مصرف تار و پود را تأیید کنید")
+			return
+		}
+		if !formulaIsValid(p.TarPercent, p.PodPercent) {
+			fail(w, http.StatusBadRequest, "جمع درصد تار و پود باید دقیقاً ۱۰۰ باشد")
+			return
+		}
 		tx, txErr := a.db.Begin()
 		if txErr != nil {
 			fail(w, 500, txErr.Error())
@@ -2112,7 +2308,14 @@ func (a *app) salon(w http.ResponseWriter, r *http.Request) {
 		if p.ID > 0 {
 			var oldMachine, oldChelle string
 			_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(machin_salon,''),COALESCE(shom_chelle_salon,'') FROM salon WHERE id_salon=?`, p.ID).Scan(&oldMachine, &oldChelle)
-			_, err = txExec(a.dialect, tx, `UPDATE salon SET metr_salon=?, w_salon=?, machin_salon=?, user_salon=?, kala_salon=?, ham_pod_salon=?, ham_chelle_salon=?, shom_chelle_salon=? WHERE id_salon=?`, p.Metr, p.Weight, p.Machine, p.User, kala, p.HamPod, p.HamChelle, p.ShomChelle, p.ID)
+			_, err = txExec(a.dialect, tx, `UPDATE salon SET metr_salon=?, w_salon=?, machin_salon=?, user_salon=?, kala_salon=?, ham_pod_salon=?, ham_chelle_salon=?, shom_chelle_salon=?, chelle_id_salon=?, tar_percent_salon=?, pod_percent_salon=? WHERE id_salon=?`, p.Metr, p.Weight, p.Machine, p.User, kala, p.HamPod, p.HamChelle, p.ShomChelle, chelleID, p.TarPercent, p.PodPercent, p.ID)
+			if err == nil && formulaProvided {
+				err = a.saveChelleFormulaTx(tx, chelleFormula{
+					ChelleID: chelleID, Machine: p.Machine, ShomChelle: p.ShomChelle, Kala: kala,
+					HamChelle: p.HamChelle, HamPod: p.HamPod,
+					TarPercent: p.TarPercent, PodPercent: p.PodPercent,
+				})
+			}
 			if err == nil {
 				err = a.rebuildConsumptionTx(tx, oldMachine, oldChelle)
 			}
@@ -2128,7 +2331,14 @@ func (a *app) salon(w http.ResponseWriter, r *http.Request) {
 		}
 		next := int64(1)
 		_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(MAX(id_salon),0)+1 FROM salon`).Scan(&next)
-		_, err = txExec(a.dialect, tx, `INSERT INTO salon (id_salon, metr_salon, w_salon, machin_salon, user_salon, tarikh_salon, kala_salon, ham_pod_salon, ham_chelle_salon, shom_chelle_salon) VALUES (?,?,?,?,?,?,?,?,?,?)`, next, p.Metr, p.Weight, p.Machine, p.User, jalaliToday(), kala, p.HamPod, p.HamChelle, p.ShomChelle)
+		err = a.saveChelleFormulaTx(tx, chelleFormula{
+			ChelleID: chelleID, Machine: p.Machine, ShomChelle: p.ShomChelle, Kala: kala,
+			HamChelle: p.HamChelle, HamPod: p.HamPod,
+			TarPercent: p.TarPercent, PodPercent: p.PodPercent,
+		})
+		if err == nil {
+			_, err = txExec(a.dialect, tx, `INSERT INTO salon (id_salon, metr_salon, w_salon, machin_salon, user_salon, tarikh_salon, kala_salon, ham_pod_salon, ham_chelle_salon, shom_chelle_salon, chelle_id_salon, tar_percent_salon, pod_percent_salon) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, next, p.Metr, p.Weight, p.Machine, p.User, jalaliToday(), kala, p.HamPod, p.HamChelle, p.ShomChelle, chelleID, p.TarPercent, p.PodPercent)
+		}
 		if err == nil {
 			err = a.rebuildConsumptionTx(tx, p.Machine, p.ShomChelle)
 		}
@@ -2329,6 +2539,12 @@ func loadingSessionTTL() time.Duration {
 
 func loadingPublicBase(r *http.Request) string {
 	if configured := strings.TrimSpace(os.Getenv("LOADING_PUBLIC_BASE")); configured != "" {
+		// This setting used to contain the internal operational API prefix.
+		// A mobile user must instead enter through the public portal so their
+		// customer credentials can be verified and scoped to the right tenant.
+		if parsed, err := url.Parse(configured); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+			return parsed.Scheme + "://" + parsed.Host
+		}
 		return strings.TrimRight(configured, "/")
 	}
 	scheme := "http"
@@ -2339,12 +2555,12 @@ func loadingPublicBase(r *http.Request) string {
 	if host == "" {
 		host = strings.TrimSpace(r.Host)
 	}
-	prefix := strings.TrimRight(strings.TrimSpace(r.Header.Get("X-Forwarded-Prefix")), "/")
-	return scheme + "://" + host + prefix
+	return scheme + "://" + host
 }
 
 func loadingPublicURL(r *http.Request, token string) string {
-	return loadingPublicBase(r) + "/login?next=" + url.QueryEscape("/operational/loading/"+url.PathEscape(token))
+	next := "/operational/loading/" + url.PathEscape(token)
+	return loadingPublicBase(r) + "/module-login?module=operational&next=" + url.QueryEscape(next)
 }
 
 func (a *app) cleanupExpiredLoadingSessions() {
@@ -3760,6 +3976,10 @@ func (a *app) saveUserMenuAccess(w http.ResponseWriter, r *http.Request, userID 
 
 func (a *app) salonByPath(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/salon/")
+	if path == "formula" {
+		a.salonFormula(w, r)
+		return
+	}
 	if strings.HasPrefix(path, "recent-chelles/") {
 		a.recentChelles(w, strings.TrimPrefix(path, "recent-chelles/"))
 		return
@@ -3865,23 +4085,20 @@ func (a *app) podCarryover(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) podLeftover(machine, shom string) (float64, string, string) {
-	assigned, used, podWaste, generalWaste := 0.0, 0.0, 0.0, 0.0
+	assigned, output, podUsed, podWaste, generalWaste := 0.0, 0.0, 0.0, 0.0, 0.0
 	ham, mosh := "", ""
 	whereMachine, args := machineWhere("shom_machin_nakh_salon", machine)
 	args = append(args, shom)
 	_ = a.queryRow(`SELECT COALESCE(SUM(w_nakh_salon),0), COALESCE(MAX(ham_nakh_salon),''), COALESCE(MAX(mosh_name_nakh_salon),'') FROM nakh_salon WHERE `+whereMachine+` AND shom_chelle_nakh_salon=?`, args...).Scan(&assigned, &ham, &mosh)
-	tar, pod := 50.0, 50.0
-	_ = a.queryRow(`SELECT COALESCE(tar_percent,50), COALESCE(pod_percent,50) FROM machine_formul WHERE machine=?`, machine).Scan(&tar, &pod)
-	if tar+pod <= 0 {
-		pod = 50
-	} else {
-		pod = pod * 100 / (tar + pod)
-	}
 	whereSalon, salonArgs := machineWhere("machin_salon", machine)
 	salonArgs = append(salonArgs, shom)
-	_ = a.queryRow(`SELECT COALESCE(SUM(w_salon),0) FROM salon WHERE `+whereSalon+` AND shom_chelle_salon=?`, salonArgs...).Scan(&used)
+	_ = a.queryRow(`SELECT COALESCE(SUM(w_salon),0),COALESCE(SUM(w_salon*COALESCE(pod_percent_salon,50)/100.0),0) FROM salon WHERE `+whereSalon+` AND shom_chelle_salon=?`, salonArgs...).Scan(&output, &podUsed)
 	_ = a.queryRow(`SELECT COALESCE(SUM(CASE WHEN waste_type='pod' THEN weight ELSE 0 END),0), COALESCE(SUM(CASE WHEN waste_type NOT IN ('tar','pod') THEN weight ELSE 0 END),0) FROM production_waste WHERE machine=? AND shom_chelle=?`, machine, shom).Scan(&podWaste, &generalWaste)
-	leftover := assigned - (used * pod / 100) - podWaste - generalWaste*pod/100
+	podRatio := 0.5
+	if output > 0 {
+		podRatio = podUsed / output
+	}
+	leftover := assigned - podUsed - podWaste - generalWaste*podRatio
 	if leftover < 0 {
 		leftover = 0
 	}
@@ -3958,7 +4175,7 @@ func (a *app) resetCycle(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "برای پاک کردن اطلاعات سیکل باید عبارت «پاک شود» ارسال شود")
 		return
 	}
-	for _, tbl := range []string{"salon", "nakh_salon", "gere", "chelle", "nakh_vor", "machine_consumption"} {
+	for _, tbl := range []string{"salon", "nakh_salon", "gere", "chelle_formul", "chelle", "nakh_vor", "machine_consumption"} {
 		if _, err := a.exec("DELETE FROM " + tbl); err != nil {
 			fail(w, 500, err.Error())
 			return
@@ -3976,21 +4193,15 @@ func (a *app) rebuildConsumptionTx(tx *sql.Tx, machine, shom string) error {
 	if _, err := txExec(a.dialect, tx, `DELETE FROM machine_consumption WHERE machine=? AND shom_chelle=?`, machine, shom); err != nil {
 		return err
 	}
-	tar, pod := 50.0, 50.0
-	_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(tar_percent,50),COALESCE(pod_percent,50) FROM machine_formul WHERE machine=?`, machine).Scan(&tar, &pod)
-	totalFormula := tar + pod
-	if totalFormula <= 0 {
-		tar, pod = 50, 50
-	} else {
-		tar, pod = tar*100/totalFormula, pod*100/totalFormula
-	}
-	var output, chelleWeight, podAssigned, waste float64
-	_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(SUM(w_salon),0) FROM salon WHERE machin_salon=? AND shom_chelle_salon=?`, machine, shom).Scan(&output)
-	_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(w_chelle,0) FROM chelle WHERE shom_chelle=? ORDER BY id_chelle DESC LIMIT 1`, shom).Scan(&chelleWeight)
+	var output, tarUsed, podUsed, chelleWeight, podAssigned, waste float64
+	_ = txQueryRow(a.dialect, tx, `SELECT
+		COALESCE(SUM(w_salon),0),
+		COALESCE(SUM(w_salon*COALESCE(tar_percent_salon,50)/100.0),0),
+		COALESCE(SUM(w_salon*COALESCE(pod_percent_salon,50)/100.0),0)
+		FROM salon WHERE machin_salon=? AND shom_chelle_salon=?`, machine, shom).Scan(&output, &tarUsed, &podUsed)
+	_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(w_chelle,0) FROM chelle WHERE shom_chelle=? AND machin_chelle=? ORDER BY id_chelle DESC LIMIT 1`, shom, machine).Scan(&chelleWeight)
 	_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(SUM(w_nakh_salon),0) FROM nakh_salon WHERE shom_machin_nakh_salon=? AND shom_chelle_nakh_salon=?`, machine, shom).Scan(&podAssigned)
 	_ = txQueryRow(a.dialect, tx, `SELECT COALESCE(SUM(weight),0) FROM production_waste WHERE machine=? AND shom_chelle=?`, machine, shom).Scan(&waste)
-	tarUsed := output * tar / 100
-	podUsed := output * pod / 100
 	remaining := chelleWeight + podAssigned - output - waste
 	_, err := txExec(a.dialect, tx, `INSERT INTO machine_consumption (machine,shom_chelle,tar_used,pod_used,total_weight,remaining_weight,tarikh_consumption) VALUES (?,?,?,?,?,?,?)`, machine, shom, tarUsed, podUsed, output, remaining, jalaliToday())
 	return err
@@ -4170,27 +4381,25 @@ func (a *app) activeMachineStatus() ([]record, error) {
 	items := []record{}
 	for _, row := range active {
 		machine, shom, tarikh := row.machine, row.shom, row.tarikh
-		var chelleWeight, totalWeight, totalMeter, podAssigned, tarPercent, podPercent float64
+		var chelleWeight, totalWeight, totalMeter, podAssigned, tarPercent, podPercent, tarUsed, podUsed float64
 		var tarWaste, podWaste, generalWaste float64
 		tarPercent, podPercent = 50, 50
 		_ = a.queryRow(`SELECT COALESCE(w_chelle,0) FROM chelle WHERE shom_chelle=? AND machin_chelle=? ORDER BY id_chelle DESC LIMIT 1`, shom, machine).Scan(&chelleWeight)
-		_ = a.queryRow(`SELECT COALESCE(SUM(w_salon),0), COALESCE(SUM(metr_salon),0) FROM salon WHERE machin_salon=? AND shom_chelle_salon=?`, machine, shom).Scan(&totalWeight, &totalMeter)
+		_ = a.queryRow(`SELECT
+			COALESCE(SUM(w_salon),0), COALESCE(SUM(metr_salon),0),
+			COALESCE(SUM(w_salon*COALESCE(tar_percent_salon,50)/100.0),0),
+			COALESCE(SUM(w_salon*COALESCE(pod_percent_salon,50)/100.0),0)
+			FROM salon WHERE machin_salon=? AND shom_chelle_salon=?`, machine, shom).Scan(&totalWeight, &totalMeter, &tarUsed, &podUsed)
 		_ = a.queryRow(`SELECT COALESCE(SUM(w_nakh_salon),0) FROM nakh_salon WHERE shom_machin_nakh_salon=? AND shom_chelle_nakh_salon=?`, machine, shom).Scan(&podAssigned)
-		_ = a.queryRow(`SELECT COALESCE(tar_percent,50), COALESCE(pod_percent,50) FROM machine_formul WHERE machine=?`, machine).Scan(&tarPercent, &podPercent)
-		formulaTotal := tarPercent + podPercent
-		if formulaTotal <= 0 {
-			tarPercent, podPercent = 50, 50
-		} else {
-			tarPercent = tarPercent * 100 / formulaTotal
-			podPercent = podPercent * 100 / formulaTotal
+		if totalWeight > 0 {
+			tarPercent = tarUsed * 100 / totalWeight
+			podPercent = podUsed * 100 / totalWeight
 		}
 		_ = a.queryRow(`SELECT
 			COALESCE(SUM(CASE WHEN waste_type='tar' THEN weight ELSE 0 END),0),
 			COALESCE(SUM(CASE WHEN waste_type='pod' THEN weight ELSE 0 END),0),
 			COALESCE(SUM(CASE WHEN waste_type NOT IN ('tar','pod') THEN weight ELSE 0 END),0)
 			FROM production_waste WHERE machine=? AND shom_chelle=?`, machine, shom).Scan(&tarWaste, &podWaste, &generalWaste)
-		tarUsed := totalWeight * tarPercent / 100
-		podUsed := totalWeight * podPercent / 100
 		actualWaste := tarWaste + podWaste + generalWaste
 		used := tarUsed + podUsed
 		totalAvailable := chelleWeight + podAssigned
@@ -4428,7 +4637,10 @@ func (a *app) operationalDataQuality() []record {
 		{"salon-yarn-missing", "گردش نخ سالن بدون نوع نخ", `SELECT COUNT(*) FROM nakh_salon WHERE COALESCE(nakh_name_nakh_salon,'')=''`},
 		{"out-owner-ambiguous", "خروج نخ قدیمی با مالک/مقصد مبهم", `SELECT COUNT(*) FROM nakh_khor WHERE COALESCE(owner_mosh_nakh_khor,'')='' OR owner_mosh_nakh_khor=moshname_nakh_khor`},
 		{"duplicate-chelle", "شماره چله تکراری", `SELECT COUNT(*) FROM (SELECT shom_chelle FROM chelle WHERE COALESCE(shom_chelle,'')<>'' GROUP BY shom_chelle HAVING COUNT(*)>1) q`},
-		{"invalid-formula", "فرمول تار و پود نامعتبر", `SELECT COUNT(*) FROM machine_formul WHERE ABS(COALESCE(tar_percent,0)+COALESCE(pod_percent,0)-100)>0.001`},
+		{"invalid-formula", "فرمول تار و پود نامعتبر", `SELECT
+			(SELECT COUNT(*) FROM machine_formul WHERE ABS(COALESCE(tar_percent,0)+COALESCE(pod_percent,0)-100)>0.001)+
+			(SELECT COUNT(*) FROM chelle_formul WHERE ABS(COALESCE(tar_percent,0)+COALESCE(pod_percent,0)-100)>0.001)+
+			(SELECT COUNT(*) FROM salon WHERE ABS(COALESCE(tar_percent_salon,0)+COALESCE(pod_percent_salon,0)-100)>0.001)`},
 		{"multi-active", "بیش از یک چله فعال روی ماشین", `SELECT COUNT(*) FROM (SELECT machin_chelle FROM chelle WHERE COALESCE(machin_chelle,'')<>'' GROUP BY machin_chelle HAVING COUNT(*)>1) q`},
 	}
 	out := []record{}

@@ -510,6 +510,25 @@ th { color: #b7c7df; font-weight: 700; }
   align-items: start;
 }
 .salon-form { grid-template-columns: repeat(2, minmax(180px, 1fr)); margin-bottom: 0; }
+.beam-formula-note {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 10px;
+  line-height: 1.8;
+}
+.beam-formula-note.configured {
+  border: 1px solid #2f855a;
+  background: #123b32;
+  color: #d1fae5;
+}
+.beam-formula-note.needs-confirmation {
+  border: 1px solid #d97706;
+  background: #45270b;
+  color: #ffedd5;
+}
+.beam-formula-note span { font-size: 12px; }
 .label-preview {
   background: #fff;
   color: #000;
