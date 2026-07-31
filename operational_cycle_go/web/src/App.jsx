@@ -27,7 +27,7 @@ const PORTAL_OPERATIONAL_SESSION = window.ERP_PORTAL_OPERATIONAL_SESSION || (
 
 const tabs = [
 
-  ['formulas', 'فرمول تولید ماشین‌ها'],
+  ['formulas', 'فرمول پیش‌فرض ماشین‌ها'],
 
   ['dashboard', 'داشبورد'],
 
@@ -107,7 +107,7 @@ const sidebarTabs = [
 
   ['nakh-salon', 'ورود نخ سالن'],
 
-  ['formulas', 'فرمول تولید ماشین‌ها'],
+  ['formulas', 'فرمول پیش‌فرض ماشین‌ها'],
 
   ['salon', 'سالن تولید'],
 
@@ -1132,6 +1132,12 @@ function Salon({ lookups, notify }) {
 
   const [loading, setLoading] = useState(true);
 
+  const [formulaLoading, setFormulaLoading] = useState(false);
+
+  const [formulaConfigured, setFormulaConfigured] = useState(false);
+
+  const [formulaSource, setFormulaSource] = useState('');
+
 
 
   const load = async () => {
@@ -1159,6 +1165,60 @@ function Salon({ lookups, notify }) {
   useEffect(() => { load(); }, []);
 
   const set = (k, v) => setForm(s => ({ ...s, [k]: v }));
+
+  const fetchBeamFormula = async (machine, shomChelle, kalaId, hamChelle, hamPod) => {
+
+    if (!machine || !shomChelle || !kalaId) return null;
+
+    setFormulaLoading(true);
+
+    try {
+
+      const query = new URLSearchParams({
+        machine,
+        shom_chelle: shomChelle,
+        kala_id: String(kalaId),
+        ham_chelle: hamChelle || '',
+        ham_pod: hamPod || ''
+      });
+
+      return await api(`/salon/formula?${query.toString()}`);
+
+    } finally {
+
+      setFormulaLoading(false);
+
+    }
+
+  };
+
+  const applyBeamFormula = async (machine, shomChelle, kalaId, hamChelle, hamPod) => {
+
+    const formula = await fetchBeamFormula(machine, shomChelle, kalaId, hamChelle, hamPod);
+
+    if (!formula) {
+
+      setFormulaConfigured(false);
+      setFormulaSource('');
+
+      return;
+
+    }
+
+    setFormulaConfigured(Boolean(formula.configured));
+    setFormulaSource(formula.source || '');
+
+    setForm(s => ({
+
+      ...s,
+
+      tar_percent: Number(formula.tar_percent ?? 50),
+
+      pod_percent: Number(formula.pod_percent ?? 50)
+
+    }));
+
+  };
 
 
 
@@ -1234,6 +1294,9 @@ function Salon({ lookups, notify }) {
 
     }
 
+    const selectedKalaId = defaults.found && defaults.kala_id ? defaults.kala_id : form.kala_id;
+    const selectedHamPod = defaults.found ? (defaults.ham_pod || form.ham_pod) : form.ham_pod;
+
     setForm(s => {
 
       return {
@@ -1242,9 +1305,9 @@ function Salon({ lookups, notify }) {
 
         machine,
 
-        kala_id: defaults.found && defaults.kala_id ? defaults.kala_id : s.kala_id,
+        kala_id: selectedKalaId || s.kala_id,
 
-        ham_pod: defaults.found ? (defaults.ham_pod || s.ham_pod) : s.ham_pod,
+        ham_pod: selectedHamPod || s.ham_pod,
 
         ham_chelle: selectedHambaft || s.ham_chelle,
 
@@ -1254,15 +1317,55 @@ function Salon({ lookups, notify }) {
 
     });
 
+    if (selectedChelle && selectedKalaId) {
+
+      try {
+
+        await applyBeamFormula(machine, selectedChelle, selectedKalaId, selectedHambaft, selectedHamPod);
+
+      } catch {
+
+        setFormulaConfigured(false);
+        setFormulaSource('');
+
+        notify('فرمول این چله خوانده نشد؛ درصد تار و پود را کنترل کنید');
+
+      }
+
+    } else {
+
+      setFormulaConfigured(false);
+      setFormulaSource('');
+
+    }
+
   };
 
 
 
   const save = async () => {
 
+    const formulaTotal = Number(form.tar_percent || 0) + Number(form.pod_percent || 0);
+
+    if (Number(form.tar_percent) < 0 || Number(form.tar_percent) > 100 || Number(form.pod_percent) < 0 || Number(form.pod_percent) > 100 || Math.abs(formulaTotal - 100) > 0.001) {
+
+      notify('هر درصد باید بین صفر تا صد باشد و جمع تار و پود دقیقاً ۱۰۰ شود');
+
+      return;
+
+    }
+
+    if (!formulaConfigured) {
+
+      notify('هم‌بافت یا پارچه جدید است؛ ابتدا درصد مصرف تار و پود را تأیید کنید');
+
+      return;
+
+    }
+
     const savedLabel = labelData();
 
-    await api('/salon', { method: 'POST', body: form });
+    await api('/salon', { method: 'POST', body: { ...form, formula_confirmed: true } });
 
     notify(editing ? 'طاقه ویرایش شد' : 'طاقه ثبت شد');
 
@@ -1274,6 +1377,9 @@ function Salon({ lookups, notify }) {
 
     setRecent([]);
 
+    setFormulaConfigured(false);
+    setFormulaSource('');
+
     await load();
 
   };
@@ -1284,7 +1390,10 @@ function Salon({ lookups, notify }) {
 
     setEditing(true);
 
-    setForm({ id: row.id, metr: Number(row.metr || 0), weight: Number(row.weight || 0), machine: row.machine || '', kala_id: row.kala_id || '', ham_pod: row.ham_pod || '', ham_chelle: row.ham_chelle || '', shom_chelle: row.shom_chelle || '', user: row.user || 'admin', skip_print: true });
+    setForm({ id: row.id, metr: Number(row.metr || 0), weight: Number(row.weight || 0), machine: row.machine || '', kala_id: row.kala_id || '', ham_pod: row.ham_pod || '', ham_chelle: row.ham_chelle || '', shom_chelle: row.shom_chelle || '', user: row.user || 'admin', tar_percent: Number(row.tar_percent ?? 50), pod_percent: Number(row.pod_percent ?? 50), skip_print: true });
+
+    setFormulaConfigured(true);
+    setFormulaSource('beam');
 
     if (row.machine) {
 
@@ -1338,25 +1447,79 @@ function Salon({ lookups, notify }) {
 
           <Input label="شماره ماشین" value={form.machine} onChange={loadMachineDefaults} />
 
-          <Select label="نام کالا" value={form.kala_id} onChange={v => set('kala_id', Number(v))} items={lookups.fabrics} />
+          <Select label="نام کالا" value={form.kala_id} onChange={async v => {
+
+            const kalaId = Number(v);
+
+            set('kala_id', kalaId);
+
+            if (form.machine && form.shom_chelle) {
+
+              try { await applyBeamFormula(form.machine, form.shom_chelle, kalaId, form.ham_chelle, form.ham_pod); }
+
+              catch { setFormulaConfigured(false); setFormulaSource(''); }
+
+            }
+
+          }} items={lookups.fabrics} />
 
           <Input label="متراژ" type="number" value={form.metr} onChange={v => set('metr', Number(v))} />
 
           <Input label="وزن" type="number" value={form.weight} onChange={v => set('weight', Number(v))} />
 
+          <Input label="درصد مصرف تار همین چله" type="number" value={form.tar_percent} onChange={v => {
+
+            const tar = Number(v);
+
+            setForm(s => ({ ...s, tar_percent: tar, pod_percent: Math.max(0, 100 - tar) }));
+
+            setFormulaConfigured(true);
+            setFormulaSource('manual');
+
+          }} hint="این درصد فقط برای همین چله و همین پارچه ذخیره می‌شود." />
+
+          <Input label="درصد مصرف پود همین چله" type="number" value={form.pod_percent} onChange={v => {
+
+            const pod = Number(v);
+
+            setForm(s => ({ ...s, pod_percent: pod, tar_percent: Math.max(0, 100 - pod) }));
+
+            setFormulaConfigured(true);
+            setFormulaSource('manual');
+
+          }} hint="جمع درصد تار و پود باید ۱۰۰ باشد." />
+
           <Input label="همبافت پود" value={form.ham_pod} onChange={() => {}} disabled hint="از آخرین ورود نخ سالن برای همین ماشین پر می‌شود و قابل ویرایش دستی نیست." />
 
-          <Select label="شماره چله" value={form.shom_chelle} onChange={v => {
+          <Select label="شماره چله" value={form.shom_chelle} onChange={async v => {
 
             set('shom_chelle', v);
 
             const row = recent.find(x => x.shom_chelle === v);
+            const selectedHambaft = row?.hambaft || '';
 
-            if (row) set('ham_chelle', row.hambaft || '');
+            if (row) set('ham_chelle', selectedHambaft);
+
+            if (form.machine && form.kala_id) {
+
+              try { await applyBeamFormula(form.machine, v, form.kala_id, selectedHambaft, form.ham_pod); }
+
+              catch { setFormulaConfigured(false); setFormulaSource(''); }
+
+            }
 
           }} items={recent.map(x => ({ id: x.shom_chelle, name: `${x.shom_chelle} - ${x.hambaft || 'بدون همبافت'} - ${fmt(x.weight)} کیلو` }))} />
 
-          <Input label="همبافت تار / چله" value={form.ham_chelle} onChange={v => set('ham_chelle', v)} />
+          <Input label="همبافت تار / چله" value={form.ham_chelle} onChange={v => {
+            set('ham_chelle', v);
+            setFormulaConfigured(false);
+            setFormulaSource('');
+          }} onBlur={async v => {
+            if (form.machine && form.shom_chelle && form.kala_id && v) {
+              try { await applyBeamFormula(form.machine, form.shom_chelle, form.kala_id, v, form.ham_pod); }
+              catch { setFormulaConfigured(false); setFormulaSource(''); }
+            }
+          }} />
 
           <Input label="کاربر" value={form.user} onChange={v => set('user', v)} />
 
@@ -1366,6 +1529,34 @@ function Salon({ lookups, notify }) {
 
         <LabelPreview data={labelData()} />
 
+        <div className={`beam-formula-note ${formulaConfigured ? 'configured' : 'needs-confirmation'}`}>
+
+          <strong>{formulaLoading
+            ? 'در حال بررسی فرمول هم‌بافت...'
+            : formulaSource === 'same_hambaft'
+              ? 'فرمول قبلی همین هم‌بافت و پارچه بازیابی شد'
+              : formulaSource === 'beam'
+                ? 'فرمول ثبت‌شده این چله آماده است'
+                : formulaSource === 'manual'
+                  ? 'درصدها توسط شما تعیین شد'
+                  : 'هم‌بافت یا پارچه جدید؛ درصدها را تأیید کنید'}</strong>
+
+          <span>برای ترکیب یکسان هم‌بافت تار، هم‌بافت پود و پارچه دوباره سؤال نمی‌شود. درصد نهایی همراه هر طاقه نگهداری می‌شود و آمار گذشته تغییر نمی‌کند.</span>
+
+          {!formulaLoading && !formulaConfigured && <button type="button" onClick={() => {
+            const tar = Number(form.tar_percent);
+            const pod = Number(form.pod_percent);
+            if (tar < 0 || tar > 100 || pod < 0 || pod > 100 || Math.abs(tar + pod - 100) > 0.001) {
+              notify('هر درصد باید بین صفر تا صد باشد و جمع تار و پود دقیقاً ۱۰۰ شود');
+              return;
+            }
+            setFormulaConfigured(true);
+            setFormulaSource('manual');
+            notify('درصد مصرف این هم‌بافت و پارچه تأیید شد');
+          }}>تأیید درصد تار و پود</button>}
+
+        </div>
+
       </div>
 
       <div className="actions-row">
@@ -1374,7 +1565,7 @@ function Salon({ lookups, notify }) {
 
         <button onClick={() => printLabel(labelData())}>چاپ لیبل و بارکد</button>
 
-        {editing && <button className="ghost" onClick={() => { setEditing(false); setForm(salonEmpty()); }}>لغو ویرایش</button>}
+        {editing && <button className="ghost" onClick={() => { setEditing(false); setForm(salonEmpty()); setFormulaConfigured(false); setFormulaSource(''); }}>لغو ویرایش</button>}
 
       </div>
 
@@ -1386,9 +1577,9 @@ function Salon({ lookups, notify }) {
 
       <h2>لیست سالن تولید</h2>
 
-      <Filters filters={filterDefs} rows={items} values={filters} setValues={setFilters} onPrint={() => printReport('لیست سالن تولید', visible, [['tarikh','تاریخ'],['id','کد طاقه'],['machine','ماشین'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['shom_chelle','چله'],['ham_chelle','همبافت تار/چله'],['ham_pod','همبافت پود']])} />
+      <Filters filters={filterDefs} rows={items} values={filters} setValues={setFilters} onPrint={() => printReport('لیست سالن تولید', visible, [['tarikh','تاریخ'],['id','کد طاقه'],['machine','ماشین'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['shom_chelle','چله'],['tar_percent','درصد تار'],['pod_percent','درصد پود'],['ham_chelle','همبافت تار/چله'],['ham_pod','همبافت پود']])} />
 
-      {loading ? <div className="empty">در حال بارگذاری...</div> : <Table rows={visible} columns={[['tarikh','تاریخ'],['id','کد طاقه'],['machine','ماشین'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['shom_chelle','چله'],['ham_chelle','همبافت تار/چله'],['ham_pod','همبافت پود']]} onEdit={edit} onDelete={del} />}
+      {loading ? <div className="empty">در حال بارگذاری...</div> : <Table rows={visible} columns={[['tarikh','تاریخ'],['id','کد طاقه'],['machine','ماشین'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['shom_chelle','چله'],['tar_percent','درصد تار'],['pod_percent','درصد پود'],['ham_chelle','همبافت تار/چله'],['ham_pod','همبافت پود']]} onEdit={edit} onDelete={del} />}
 
     </section>
 
@@ -1969,7 +2160,7 @@ function MachineFormulas({ notify }) {
 
   return <CrudPage
 
-    title="فرمول تولید ماشین‌ها"
+    title="فرمول پیش‌فرض ماشین‌ها"
 
     endpoint="/formulas"
 
@@ -1985,9 +2176,9 @@ function MachineFormulas({ notify }) {
 
       <Input label="شماره ماشین" value={form.machine} onChange={v => set('machine', v)} />
 
-      <Input label="درصد مصرف تار" type="number" value={form.tar_percent} onChange={v => set('tar_percent', Number(v))} />
+      <Input label="درصد پیش‌فرض تار" type="number" value={form.tar_percent} onChange={v => set('tar_percent', Number(v))} hint="فقط پیشنهاد اولیه برای چله جدید است و آمار تولیدهای قبلی را تغییر نمی‌دهد." />
 
-      <Input label="درصد مصرف پود" type="number" value={form.pod_percent} onChange={v => set('pod_percent', Number(v))} />
+      <Input label="درصد پیش‌فرض پود" type="number" value={form.pod_percent} onChange={v => set('pod_percent', Number(v))} hint="نسبت نهایی در سالن تولید برای هر چله و پارچه تأیید می‌شود." />
 
       <Input label="توضیحات" value={form.tozih} onChange={v => set('tozih', v)} />
 
@@ -3008,7 +3199,7 @@ function buildOperationalAdvice(data = {}) {
 
 function salonEmpty() {
 
-  return { metr: '', weight: '', machine: '', kala_id: '', ham_pod: '', ham_chelle: '', shom_chelle: '', user: 'admin', skip_print: false };
+  return { metr: '', weight: '', machine: '', kala_id: '', ham_pod: '', ham_chelle: '', shom_chelle: '', user: 'admin', tar_percent: 50, pod_percent: 50, skip_print: false };
 
 }
 
@@ -3603,11 +3794,11 @@ function Table({ rows, columns, onEdit, onDelete, hideActions = false }) {
 
 
 
-function Input({ label, value, onChange, type = 'text', list, disabled = false, hint = '' }) {
+function Input({ label, value, onChange, onBlur, type = 'text', list, disabled = false, hint = '' }) {
 
   const id = `list-${label.replaceAll(' ', '-')}`;
 
-  return <label><span>{label}</span><input type={type} value={value ?? ''} disabled={disabled} onChange={e => onChange(e.target.value)} list={list ? id : undefined} />{list && <datalist id={id}>{list.map(x => <option key={x} value={x} />)}</datalist>}{hint && <small className="field-hint">{hint}</small>}</label>;
+  return <label><span>{label}</span><input type={type} value={value ?? ''} disabled={disabled} onChange={e => onChange(e.target.value)} onBlur={onBlur ? e => onBlur(e.target.value) : undefined} list={list ? id : undefined} />{list && <datalist id={id}>{list.map(x => <option key={x} value={x} />)}</datalist>}{hint && <small className="field-hint">{hint}</small>}</label>;
 
 }
 
