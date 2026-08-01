@@ -1,0 +1,25 @@
+{
+  "id": "/executive/",
+  "name": "مرکز فرمان مدیر نساجی",
+  "short_name": "فرمان نساجی",
+  "description": "داشبورد زنده عملیات، مالی و راندمان سالن باف",
+  "lang": "fa",
+  "dir": "rtl",
+  "start_url": "/executive/",
+  "scope": "/executive/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#06191c",
+  "theme_color": "#082b2f",
+  "categories": ["business", "productivity"],
+  "icons": [
+    {"src": "/executive/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/executive/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ],
+  "shortcuts": [
+    {"name": "عملیات", "short_name": "عملیات", "url": "/executive/?tab=operations"},
+    {"name": "مالی", "short_name": "مالی", "url": "/executive/?tab=finance"},
+    {"name": "راندمان سالن", "short_name": "راندمان", "url": "/executive/?tab=hall"}
+  ]
+}
