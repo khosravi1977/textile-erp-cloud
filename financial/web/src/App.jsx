@@ -13,7 +13,7 @@ const API_BASE = window.ERP_FINANCIAL_API || import.meta.env.VITE_API_BASE || (
   window.location.port === '5173' ? `${window.location.protocol}//${window.location.hostname}:8081/api` : '/api/financial/api'
 );
 const PORTAL_FINANCIAL_SESSION = window.ERP_PORTAL_FINANCIAL_SESSION || '';
-const MOBILE_APP_DOWNLOAD_URL = `${window.location.origin}/HesabYar.apk?v=1.0.1-local-20260722-2`;
+const MOBILE_APP_DOWNLOAD_URL = `${window.location.origin}/HesabYar.apk?v=1.0.2-production-20260802`;
 
 const authHeaders = () => {
 
@@ -1375,7 +1375,7 @@ function MobileAppPage() {
         <h3 className="text-xl font-black">اتصال امن حسابیار</h3>
         <p className="mt-3 text-sm leading-7 text-slate-300">این کد تا ۳۰ دقیقه و فقط برای اتصال اولیه یک گوشی معتبر است. پس از اتصال، گوشی بدون اسکن مجدد به همین شرکت متصل می‌ماند.</p>
         <a href={MOBILE_APP_DOWNLOAD_URL} className="mt-5 inline-flex items-center justify-center rounded-md border border-emerald-600 bg-emerald-950 px-4 py-3 text-sm font-bold text-emerald-100 hover:bg-emerald-900">
-          دانلود/به‌روزرسانی حسابیار 1.0.1-local
+          دانلود/به‌روزرسانی حسابیار 1.0.2
         </a>
         <a href={MOBILE_APP_DOWNLOAD_URL} target="_blank" rel="noreferrer" className="mr-3 mt-5 inline-flex items-center justify-center rounded-md border border-slate-500 bg-slate-800 px-4 py-3 text-sm font-bold text-slate-100 hover:bg-slate-700">
           اگر دانلود نشد، فایل را مستقیم باز کنید

@@ -571,7 +571,7 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
 	record, err := a.accessRecordFromRequest(r)
 	hasAccess := err == nil && record.ProjectKey == "textile-erp"
 	cardParts := make([]string, 0, 5)
-	cardParts = append(cardParts, `<a class="card mobile" href="/HesabYar.apk?v=1.0.1-local-20260722-2">دانلود اپ حسابیار برای اندروید</a>`)
+	cardParts = append(cardParts, `<a class="card mobile" href="/HesabYar.apk?v=1.0.2-production-20260802">دانلود اپ حسابیار برای اندروید</a>`)
 	cardParts = append(cardParts, `<a class="card executive" href="/executive/">مرکز فرمان سه‌گانه مدیر</a>`)
 	statusParts := []string{
 		`<div class="pill">هر بخش ورود مستقل و امن دارد</div>`,
