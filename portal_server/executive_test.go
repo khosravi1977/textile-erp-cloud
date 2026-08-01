@@ -107,7 +107,7 @@ func TestExecutiveAppServesThreeTabPWA(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, expected := range []string{"عملیات", "مالی", "راندمان سالن", "manifest.webmanifest"} {
+	for _, expected := range []string{"عملیات", "مالی", "راندمان سالن", "رتبه‌بندی بافنده‌ها", "manifest.webmanifest"} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("executive PWA is missing %q", expected)
 		}
@@ -181,8 +181,17 @@ func TestExecutiveHallProxyKeepsServiceTokenPrivate(t *testing.T) {
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]any{
-			"hallEfficiency": 94.2,
-			"machines":       []map[string]any{{"machine": 1, "weaver": "بافنده نمونه"}},
+			"schemaVersion": 1,
+			"module":        "textie-weaving-efficiency",
+			"basis":         "latest-confirmed-complete-shift",
+			"generatedAt":   "2026-08-01T08:30:00Z",
+			"hall": map[string]any{
+				"efficiency":         94.2,
+				"activeMachineCount": 1,
+				"totalStops":         3,
+			},
+			"machines": []map[string]any{{"number": 1, "weaverName": "بافنده نمونه", "efficiency": 94.2, "meters": nil, "stops": 3, "status": "watch"}},
+			"weavers":  []map[string]any{{"name": "بافنده نمونه", "machineNumbers": []int{1}, "efficiency": 94.2, "performanceScore": 91, "rank": 1}},
 		})
 	}))
 	defer monitor.Close()
@@ -204,8 +213,61 @@ func TestExecutiveHallProxyKeepsServiceTokenPrivate(t *testing.T) {
 	if strings.Contains(rec.Body.String(), privateToken) {
 		t.Fatal("service token leaked to the browser response")
 	}
-	if !strings.Contains(rec.Body.String(), "specialized") {
+	if !strings.Contains(rec.Body.String(), "specialized") || !strings.Contains(rec.Body.String(), `"hallEfficiency":94.2`) {
 		t.Fatalf("unexpected hall response: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"machine":1`) || !strings.Contains(rec.Body.String(), `"weaver":"بافنده نمونه"`) {
+		t.Fatalf("nested monitor payload was not normalized: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"meters":null`) {
+		t.Fatalf("unconfirmed meter value must remain empty: %s", rec.Body.String())
+	}
+}
+
+func TestNormalizeExecutiveHallPayloadSupportsLegacyFlatContract(t *testing.T) {
+	t.Parallel()
+
+	result, err := normalizeExecutiveHallPayload(map[string]any{
+		"hallEfficiency": 88.5,
+		"activeMachines": 2,
+		"totalStops":     7,
+		"machines": []any{
+			map[string]any{"machine": "4", "weaver": "کاربر", "efficiency": 88.5, "meters": 1200, "stops": 7, "status": "good"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["hallEfficiency"] != 88.5 || result["activeMachines"] != 2 || result["totalStops"] != float64(7) {
+		t.Fatalf("legacy summary was not preserved: %#v", result)
+	}
+}
+
+func TestNormalizeExecutiveHallPayloadRejectsNonObject(t *testing.T) {
+	t.Parallel()
+
+	if _, err := normalizeExecutiveHallPayload([]any{"invalid"}); err == nil {
+		t.Fatal("non-object hall payload must be rejected")
+	}
+	if _, err := normalizeExecutiveHallPayload(map[string]any{"error": "upstream failure"}); err == nil {
+		t.Fatal("object without a supported hall summary must be rejected")
+	}
+}
+
+func TestNormalizeExecutiveHallPayloadPreservesExplicitShutdown(t *testing.T) {
+	t.Parallel()
+
+	result, err := normalizeExecutiveHallPayload(map[string]any{
+		"hall": map[string]any{"efficiency": 0, "activeMachineCount": 0, "totalStops": 0},
+		"machines": []map[string]any{
+			{"number": 1, "efficiency": 90, "status": "stopped"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["hallEfficiency"] != float64(0) || result["activeMachines"] != 0 {
+		t.Fatalf("explicit shutdown summary was overwritten: %#v", result)
 	}
 }
 
