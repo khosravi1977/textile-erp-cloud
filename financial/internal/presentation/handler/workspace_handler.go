@@ -213,6 +213,10 @@ func saveWorkspace(r *http.Request, companyID, userID int64, expectedRevision *i
 				return err
 			}
 		}
+		state, checksum, err = annotateAccountingProcessing(current.State, state, userID, time.Now().UTC())
+		if err != nil {
+			return err
+		}
 		if err := validateWorkspaceAccountingChanges(decodeWorkspaceMap(current.State), decodeWorkspaceMap(state)); err != nil {
 			return err
 		}
@@ -251,6 +255,61 @@ func saveWorkspace(r *http.Request, companyID, userID int64, expectedRevision *i
 		return syncWorkspaceLedger(r.Context(), tx, companyID, userID, saved.Revision, decodeWorkspaceMap(current.State), decodeWorkspaceMap(saved.State))
 	})
 	return saved, err
+}
+
+func annotateAccountingProcessing(currentRaw, proposedRaw json.RawMessage, userID int64, processedAt time.Time) (json.RawMessage, string, error) {
+	current := decodeWorkspaceMap(currentRaw)
+	proposed := decodeWorkspaceMap(proposedRaw)
+	for _, field := range []string{"invoices", "incomingInvoices", "yarnOutInvoices", "expenses"} {
+		existing := make(map[string]struct{})
+		for _, row := range rowsFrom(current, field) {
+			if key := accountingSourceKey(field, row); key != "" {
+				existing[key] = struct{}{}
+			}
+		}
+		rows := rowsFrom(proposed, field)
+		for _, row := range rows {
+			key := accountingSourceKey(field, row)
+			if key == "" {
+				continue
+			}
+			if _, found := existing[key]; found {
+				continue
+			}
+			row["_accountingProcessedAt"] = processedAt.Format(time.RFC3339Nano)
+			row["_accountingProcessedBy"] = userID
+		}
+		if len(rows) > 0 {
+			values := make([]any, 0, len(rows))
+			for _, row := range rows {
+				values = append(values, row)
+			}
+			proposed[field] = values
+		}
+	}
+	payload, err := json.Marshal(proposed)
+	if err != nil {
+		return nil, "", err
+	}
+	return validateWorkspaceState(payload)
+}
+
+func accountingSourceKey(field string, row map[string]any) string {
+	if field == "invoices" {
+		operationalID := strings.TrimSpace(stringValue(row["operationalId"]))
+		operationalDate := strings.TrimSpace(stringValue(row["operationalDate"]))
+		number := strings.TrimSpace(stringValue(row["number"]))
+		if (operationalID == "" && operationalDate == "") || number == "" {
+			return ""
+		}
+		return "operational_out_invoice:" + number
+	}
+	sourceType := strings.TrimSpace(stringValue(row["source_type"]))
+	sourceID := strings.TrimSpace(stringValue(row["sourceId"]))
+	if !strings.HasPrefix(sourceType, "operational_") || sourceID == "" {
+		return ""
+	}
+	return sourceType + ":" + sourceID
 }
 
 func validateWorkspaceState(raw json.RawMessage) (json.RawMessage, string, error) {

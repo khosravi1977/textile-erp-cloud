@@ -48,6 +48,7 @@ func SetupRouter(services ...*telegramreport.Service) http.Handler {
 	mux.HandleFunc("/api/accounting/periods", h.AccountingPeriods)
 	mux.HandleFunc("/api/telegram-reports/config", h.TelegramReportConfig)
 	mux.HandleFunc("/api/telegram-reports/pairing", h.TelegramReportPairing)
+	mux.HandleFunc("/api/telegram-reports/recipients", h.TelegramReportRecipients)
 	mux.HandleFunc("/api/telegram-reports/test", h.TelegramReportTest)
 	mux.HandleFunc("/api/telegram-reports/history", h.TelegramReportHistory)
 
