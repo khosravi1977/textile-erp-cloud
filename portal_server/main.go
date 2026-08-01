@@ -1714,7 +1714,10 @@ func (a *portalApp) issueLaunchTicket(accessToken string) (string, time.Time, er
 	if record.ProjectKey != "textile-erp" || !record.IsActive || time.Now().After(record.ExpiresAt) {
 		return "", time.Time{}, errors.New("access is not active")
 	}
-	if record.MustChangePassword || accessRequiresSetup(record) {
+	// The launch endpoint is admin-authenticated and is called only after the
+	// customer has authenticated in the central Viora portal. Legacy setup and
+	// password-change flags must not force that customer through a second login.
+	if strings.TrimSpace(record.Username) == "" || strings.TrimSpace(record.PasswordHash) == "" {
 		return "", time.Time{}, errors.New("access setup is incomplete")
 	}
 
@@ -1759,7 +1762,7 @@ func (a *portalApp) consumeLaunchTicket(ticket string) (projectAccess, error) {
 	if record.ProjectKey != "textile-erp" || !record.IsActive || time.Now().After(record.ExpiresAt) {
 		return projectAccess{}, errors.New("access is not active")
 	}
-	if record.MustChangePassword || accessRequiresSetup(record) {
+	if strings.TrimSpace(record.Username) == "" || strings.TrimSpace(record.PasswordHash) == "" {
 		return projectAccess{}, errors.New("access setup is incomplete")
 	}
 	return record, nil
