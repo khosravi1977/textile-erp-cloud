@@ -153,6 +153,7 @@ tbody tr:hover { background: rgba(67, 195, 165, .04); }
 
 .integration-note { border: 1px solid rgba(117, 191, 242, .38); background: rgba(30, 77, 103, .22); color: #c5e4f8; border-radius: 14px; padding: 12px 14px; margin-bottom: 13px; line-height: 1.8; font-size: 11px; }
 .hall-table-card { min-height: 390px; }
+.hall-weaver-card { margin-top: 12px; }
 
 footer { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-top: 18px; border-top: 1px solid var(--line); padding: 16px 3px 0; color: var(--muted); font-size: 10px; }
 footer a { color: #d5e9e4; text-decoration: none; }

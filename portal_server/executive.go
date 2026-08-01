@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -221,11 +222,194 @@ func (a *portalApp) executiveHallSummary(w http.ResponseWriter, r *http.Request)
 		respondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "ساختار داده راندمان معتبر نیست."})
 		return
 	}
+	normalized, err := normalizeExecutiveHallPayload(payload)
+	if err != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "ساختار داده راندمان معتبر نیست."})
+		return
+	}
 	respondJSON(w, http.StatusOK, map[string]any{
 		"source":     "specialized",
 		"capturedAt": time.Now().UTC().Format(time.RFC3339),
-		"data":       payload,
+		"data":       normalized,
 	})
+}
+
+func normalizeExecutiveHallPayload(payload any) (map[string]any, error) {
+	root, ok := payload.(map[string]any)
+	if !ok {
+		return nil, errors.New("hall payload must be an object")
+	}
+	_, hasHall := root["hall"]
+	_, hasMachines := root["machines"]
+	_, hasFlatEfficiency := executiveLookup(root, "hallEfficiency", "hall_efficiency", "efficiency")
+	if !hasHall && !hasMachines && !hasFlatEfficiency {
+		return nil, errors.New("hall payload does not contain a supported summary")
+	}
+	hall, _ := root["hall"].(map[string]any)
+	machineRows := executiveObjectRows(root["machines"])
+	weaverRows := executiveObjectRows(root["weavers"])
+
+	machines := make([]map[string]any, 0, len(machineRows))
+	for _, row := range machineRows {
+		machines = append(machines, map[string]any{
+			"machine":    executiveFirst(row, "machine", "number", "id", "machineNumber", "machine_number"),
+			"weaver":     executiveFirst(row, "weaver", "weaverName", "weaver_name"),
+			"efficiency": executiveNumber(executiveFirst(row, "efficiency", "efficiencyPercent", "efficiency_percent")),
+			"meters":     executiveNullableNumber(executiveFirst(row, "meters", "productionMeters", "production_meters")),
+			"stops":      executiveNumber(executiveFirst(row, "stops", "stopCount", "stop_count")),
+			"warpStops":  executiveNumber(executiveFirst(row, "warpStops", "warp_stops", "warpBreaks", "warp_breaks")),
+			"weftStops":  executiveNumber(executiveFirst(row, "weftStops", "weft_stops", "weftBreaks", "weft_breaks")),
+			"status":     strings.ToLower(strings.TrimSpace(executiveString(executiveFirst(row, "status")))),
+		})
+	}
+
+	weavers := make([]map[string]any, 0, len(weaverRows))
+	for _, row := range weaverRows {
+		weavers = append(weavers, map[string]any{
+			"name":                   executiveString(executiveFirst(row, "name", "weaver", "weaverName", "weaver_name")),
+			"machineNumbers":         executiveFirst(row, "machineNumbers", "machine_numbers", "machines"),
+			"efficiency":             executiveNumber(executiveFirst(row, "efficiency", "score")),
+			"performanceScore":       executiveNumber(executiveFirst(row, "performanceScore", "performance_score")),
+			"averageRecoveryMinutes": executiveNullableNumber(executiveFirst(row, "averageRecoveryMinutes", "average_recovery_minutes")),
+			"rank":                   executiveNumber(executiveFirst(row, "rank")),
+		})
+	}
+
+	efficiencyValue, hasEfficiency := executiveLookup(root, "hallEfficiency", "hall_efficiency", "efficiency")
+	if !hasEfficiency {
+		efficiencyValue, hasEfficiency = executiveLookup(hall, "efficiency", "hallEfficiency", "hall_efficiency")
+	}
+	efficiency := executiveNumber(efficiencyValue)
+	if !hasEfficiency && len(machines) > 0 {
+		for _, row := range machines {
+			efficiency += executiveNumber(row["efficiency"])
+		}
+		efficiency /= float64(len(machines))
+	}
+
+	activeValue, hasActiveMachines := executiveLookup(root, "activeMachines", "active_machines")
+	if !hasActiveMachines {
+		activeValue, hasActiveMachines = executiveLookup(hall, "activeMachineCount", "active_machine_count", "activeMachines", "active_machines")
+	}
+	activeMachines := int(executiveNumber(activeValue))
+	if !hasActiveMachines && len(machines) > 0 {
+		for _, row := range machines {
+			if status := executiveString(row["status"]); status != "stopped" && status != "offline" {
+				activeMachines++
+			}
+		}
+	}
+
+	totalStops := executiveNumber(executiveFirst(root, "totalStops", "total_stops"))
+	if totalStops == 0 {
+		totalStops = executiveNumber(executiveFirst(hall, "totalStops", "total_stops"))
+	}
+	if totalStops == 0 {
+		for _, row := range machines {
+			totalStops += executiveNumber(row["stops"])
+		}
+	}
+
+	dataStatus := strings.ToLower(strings.TrimSpace(executiveString(executiveFirst(root, "dataStatus", "data_status"))))
+	isSample := executiveBool(executiveFirst(root, "sample", "isSample", "is_sample", "demo")) || dataStatus == "sample" || dataStatus == "demo"
+	return map[string]any{
+		"schemaVersion":  executiveFirst(root, "schemaVersion", "schema_version"),
+		"module":         executiveString(executiveFirst(root, "module")),
+		"basis":          executiveString(executiveFirst(root, "basis")),
+		"generatedAt":    executiveString(executiveFirst(root, "generatedAt", "generated_at")),
+		"sample":         isSample,
+		"hallEfficiency": efficiency,
+		"activeMachines": activeMachines,
+		"totalStops":     totalStops,
+		"machines":       machines,
+		"weavers":        weavers,
+	}, nil
+}
+
+func executiveObjectRows(value any) []map[string]any {
+	if rows, ok := value.([]map[string]any); ok {
+		return rows
+	}
+	values, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		if row, ok := value.(map[string]any); ok {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+func executiveFirst(row map[string]any, keys ...string) any {
+	value, _ := executiveLookup(row, keys...)
+	return value
+}
+
+func executiveLookup(row map[string]any, keys ...string) (any, bool) {
+	for _, key := range keys {
+		if value, exists := row[key]; exists && value != nil {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func executiveNumber(value any) float64 {
+	switch typed := value.(type) {
+	case json.Number:
+		result, _ := typed.Float64()
+		return result
+	case float64:
+		return typed
+	case float32:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case string:
+		result, _ := strconv.ParseFloat(strings.ReplaceAll(strings.TrimSpace(typed), ",", ""), 64)
+		return result
+	default:
+		return 0
+	}
+}
+
+func executiveNullableNumber(value any) any {
+	if value == nil {
+		return nil
+	}
+	if stringValue, ok := value.(string); ok && strings.TrimSpace(stringValue) == "" {
+		return nil
+	}
+	return executiveNumber(value)
+}
+
+func executiveString(value any) string {
+	if value == nil {
+		return ""
+	}
+	if stringValue, ok := value.(string); ok {
+		return stringValue
+	}
+	if numberValue, ok := value.(json.Number); ok {
+		return numberValue.String()
+	}
+	return ""
+}
+
+func executiveBool(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true") || strings.TrimSpace(typed) == "1"
+	default:
+		return executiveNumber(value) == 1
+	}
 }
 
 func validateExecutiveMonitorConfig(endpoint, token string) error {

@@ -29,6 +29,10 @@ function valueNumber(value) {
 function formatNumber(value, integer = false) {
   return (integer ? integerFormat : numberFormat).format(valueNumber(value));
 }
+function formatOptionalNumber(value, integer = false) {
+  if (value === null || value === undefined || value === "") return "—";
+  return formatNumber(value, integer);
+}
 function formatMoney(value) { return integerFormat.format(valueNumber(value)); }
 function escapeHTML(value) {
   return String(value ?? "")
@@ -245,9 +249,16 @@ function renderSpecializedHall(payload) {
   const attention = machines.filter((row) => ["alert", "warning", "watch", "stopped"].includes(String(row.status || "").toLowerCase())).length;
   const topWeaver = [...weavers].sort((a, b) => valueNumber(firstValue(b, "efficiency", "score")) - valueNumber(firstValue(a, "efficiency", "score")))[0];
 
-  byId("hallSourceLabel").textContent = "متصل به سامانه تخصصی راندمان";
+  const generatedAt = firstValue(payload, "generatedAt", "generated_at");
+  const generatedDate = generatedAt ? new Date(generatedAt) : null;
+  const freshness = generatedDate && !Number.isNaN(generatedDate.getTime())
+    ? `آخرین داده سالن: ${generatedDate.toLocaleString("fa-IR", { dateStyle: "short", timeStyle: "short" })}`
+    : "متصل به سامانه تخصصی راندمان";
+  byId("hallSourceLabel").textContent = freshness;
   byId("hallModeBadge").textContent = "راندمان تخصصی";
-  byId("hallIntegrationNote").hidden = true;
+  const integrationNote = byId("hallIntegrationNote");
+  integrationNote.hidden = !payload.sample;
+  integrationNote.textContent = payload.sample ? "داده‌های تخصصی سالن هنوز آزمایشی‌اند و نباید مبنای تصمیم نهایی قرار گیرند. پس از ثبت و تأیید اولین شیفت واقعی، این پیام خودکار حذف می‌شود." : "";
   byId("hallMetrics").innerHTML = [
     metricCard("راندمان کل سالن", formatNumber(efficiency), "درصد", "میانگین آخرین داده‌های تأییدشده", efficiency < 80 ? "danger" : "positive"),
     metricCard("ماشین فعال", formatNumber(activeMachines, true), "ماشین", `از ${formatNumber(machines.length, true)} ماشین پایش‌شده`),
@@ -260,9 +271,21 @@ function renderSpecializedHall(payload) {
   byId("hallMachineRows").innerHTML = machines.length
     ? machines.map((row) => {
         const status = String(row.status || "good").toLowerCase();
-        return `<tr><td>ماشین ${escapeHTML(firstValue(row, "machine", "id", "machineNumber") || "—")}</td><td>${escapeHTML(firstValue(row, "weaver", "weaverName", "weaver_name") || "—")}</td><td>${formatNumber(firstValue(row, "efficiency", "efficiency_percent"))}٪</td><td>${formatNumber(firstValue(row, "meters", "productionMeters", "production_meters"))}</td><td>${formatNumber(firstValue(row, "stops", "stop_count"), true)}</td><td>${statusPill(status)}</td></tr>`;
+        return `<tr><td>ماشین ${escapeHTML(firstValue(row, "machine", "number", "id", "machineNumber") || "—")}</td><td>${escapeHTML(firstValue(row, "weaver", "weaverName", "weaver_name") || "—")}</td><td>${formatOptionalNumber(firstValue(row, "efficiency", "efficiency_percent"))}٪</td><td>${formatOptionalNumber(firstValue(row, "meters", "productionMeters", "production_meters"))}</td><td>${formatNumber(firstValue(row, "stops", "stop_count"), true)}</td><td>${statusPill(status)}</td></tr>`;
       }).join("")
     : emptyTableRow(6, "هنوز داده‌ای از ماشین‌های سالن دریافت نشده است.");
+
+  const weaverCard = byId("hallWeaverCard");
+  weaverCard.hidden = weavers.length === 0;
+  byId("hallWeaverRows").innerHTML = weavers.length
+    ? [...weavers]
+        .sort((a, b) => valueNumber(firstValue(a, "rank")) - valueNumber(firstValue(b, "rank")))
+        .map((row, index) => {
+          const machineNumbers = list(firstValue(row, "machineNumbers", "machine_numbers", "machines"));
+          const recovery = firstValue(row, "averageRecoveryMinutes", "average_recovery_minutes");
+          return `<tr><td>${formatNumber(firstValue(row, "rank") || index + 1, true)}</td><td>${escapeHTML(firstValue(row, "name", "weaver") || "—")}</td><td>${escapeHTML(machineNumbers.length ? machineNumbers.join("، ") : "—")}</td><td>${formatOptionalNumber(firstValue(row, "efficiency", "score"))}٪</td><td>${formatOptionalNumber(firstValue(row, "performanceScore", "performance_score"))}</td><td>${recovery === null || recovery === undefined ? "—" : `${formatNumber(recovery)} دقیقه`}</td></tr>`;
+        }).join("")
+    : emptyTableRow(6, "داده‌ای برای مقایسه بافنده‌ها ثبت نشده است.");
 }
 
 function renderOperationalHallFallback() {
@@ -286,6 +309,7 @@ function renderOperationalHallFallback() {
   ].join("");
 
   byId("hallTableTitle").textContent = "مواد، تولید و ضایعات ماشین‌ها";
+  byId("hallWeaverCard").hidden = true;
   byId("hallTableHead").innerHTML = "<tr><th>ماشین</th><th>شماره چله</th><th>متر تولید</th><th>مواد باقی‌مانده</th><th>ضایعات</th><th>وضعیت</th></tr>";
   byId("hallMachineRows").innerHTML = machines.length
     ? machines.map((row) => {
