@@ -515,14 +515,16 @@ func TestOneTimeLaunchTicketCreatesPortalSessionAndCannotBeReused(t *testing.T) 
 
 	accessFile := filepath.Join(t.TempDir(), "portal-access.db")
 	payload, _ := json.Marshal([]projectAccess{{
-		ID:             1,
-		ProjectKey:     "textile-erp",
-		Username:       "launch-user",
-		AccessToken:    "launch-access-token",
-		PasswordHash:   "stored-password-hash",
-		AllowFinancial: true,
-		IsActive:       true,
-		ExpiresAt:      time.Now().Add(time.Hour),
+		ID:                 1,
+		ProjectKey:         "textile-erp",
+		Username:           "launch-user",
+		AccessToken:        "launch-access-token",
+		PasswordHash:       "stored-password-hash",
+		MustChangePassword: true,
+		RequiresSetup:      true,
+		AllowFinancial:     true,
+		IsActive:           true,
+		ExpiresAt:          time.Now().Add(time.Hour),
 	}})
 	if err := os.WriteFile(accessFile, payload, 0o600); err != nil {
 		t.Fatal(err)
