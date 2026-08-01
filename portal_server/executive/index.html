@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#082b2f">
+  <meta name="description" content="مرکز فرمان سه‌گانه مدیر نساجی برای پایش عملیات، مالی و راندمان سالن باف">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="مرکز فرمان نساجی">
+  <link rel="manifest" href="/executive/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/executive/icon-512.png">
+  <link rel="stylesheet" href="/executive/styles.css">
+  <title>مرکز فرمان مدیر نساجی</title>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand-block">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <div>
+          <p class="eyebrow">دید یکپارچه و زنده</p>
+          <h1>مرکز فرمان مدیر نساجی</h1>
+          <p class="identity"><span id="companyName">در حال شناسایی شرکت</span><span class="dot">•</span><span id="managerName">مدیر</span></p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button class="action-button" id="refreshButton" type="button">به‌روزرسانی</button>
+        <button class="action-button" id="installButton" type="button">نصب روی دستگاه</button>
+        <button class="action-button tv-button" id="tvButton" type="button">حالت تلویزیون</button>
+        <a class="action-button quiet" href="/">درگاه اصلی</a>
+      </div>
+    </header>
+
+    <section class="connection-bar" aria-live="polite">
+      <div class="connection-state"><span class="live-dot" id="liveDot"></span><strong id="connectionTitle">در حال اتصال امن</strong></div>
+      <div class="connection-meta"><span id="lastUpdated">هنوز به‌روزرسانی نشده</span><span id="countdown"></span></div>
+    </section>
+
+    <nav class="tabs" role="tablist" aria-label="بخش‌های مرکز فرمان">
+      <button class="tab active" id="tabOperations" data-tab="operations" type="button" role="tab" aria-selected="true" aria-controls="panelOperations">
+        <span class="tab-index">۱</span><span><strong>عملیات</strong><small>تولید، انبار و هشدارها</small></span>
+      </button>
+      <button class="tab" id="tabFinance" data-tab="finance" type="button" role="tab" aria-selected="false" aria-controls="panelFinance">
+        <span class="tab-index">۲</span><span><strong>مالی</strong><small>نقدینگی، فروش و تعهدات</small></span>
+      </button>
+      <button class="tab" id="tabHall" data-tab="hall" type="button" role="tab" aria-selected="false" aria-controls="panelHall">
+        <span class="tab-index">۳</span><span><strong>راندمان سالن</strong><small>ماشین، بافنده و توقف</small></span>
+      </button>
+    </nav>
+
+    <section class="priority-strip" id="priorityStrip" aria-live="polite">
+      <div class="priority-title"><span class="pulse-ring"></span><span>نبض مدیریت</span></div>
+      <div class="priority-items" id="priorityItems"><span class="skeleton-line"></span></div>
+    </section>
+
+    <main>
+      <section class="tab-panel active" id="panelOperations" role="tabpanel" aria-labelledby="tabOperations">
+        <div class="section-heading">
+          <div><p class="eyebrow">وضعیت همین امروز</p><h2>عملیات و جریان کالا</h2></div>
+          <a class="module-link" href="/module-login?module=operational">ورود به بخش کامل عملیاتی</a>
+        </div>
+        <div class="metric-grid" id="operationsMetrics"></div>
+        <div class="content-grid">
+          <article class="panel-card span-two">
+            <div class="card-heading"><div><p class="eyebrow">مقایسه ماشین‌ها</p><h3>تولید ماه جاری</h3></div><span class="source-badge">داده زنده</span></div>
+            <div class="table-wrap"><table><thead><tr><th>ماشین</th><th>تعداد طاقه</th><th>متر تولید</th><th>وزن تولید</th></tr></thead><tbody id="machineProductionRows"></tbody></table></div>
+          </article>
+          <article class="panel-card">
+            <div class="card-heading"><div><p class="eyebrow">موارد نیازمند اقدام</p><h3>هشدارهای عملیات</h3></div><span class="count-badge" id="operationsAlertCount">۰</span></div>
+            <div class="alert-list" id="operationsAlerts"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="panelFinance" role="tabpanel" aria-labelledby="tabFinance" hidden>
+        <div class="section-heading">
+          <div><p class="eyebrow">تصویر مالی لحظه‌ای</p><h2>سلامت مالی و تعهدات</h2></div>
+          <a class="module-link" href="/module-login?module=financial">ورود به بخش کامل مالی</a>
+        </div>
+        <div class="metric-grid" id="financeMetrics"></div>
+        <div class="content-grid finance-content">
+          <article class="panel-card span-two">
+            <div class="card-heading"><div><p class="eyebrow">جریان پول</p><h3>فروش، خرید و هزینه</h3></div><span class="source-badge">تومان</span></div>
+            <div class="cash-flow" id="cashFlow"></div>
+          </article>
+          <article class="panel-card">
+            <div class="card-heading"><div><p class="eyebrow">ریسک‌های فوری</p><h3>هشدارهای مالی</h3></div><span class="count-badge" id="financeAlertCount">۰</span></div>
+            <div class="alert-list" id="financeAlerts"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="panelHall" role="tabpanel" aria-labelledby="tabHall" hidden>
+        <div class="section-heading">
+          <div><p class="eyebrow">پایش پیوسته سالن باف</p><h2>راندمان ماشین و بافنده</h2></div>
+          <span class="module-link muted-link" id="hallSourceLabel">در حال بررسی منبع داده</span>
+        </div>
+        <div class="integration-note" id="hallIntegrationNote" hidden></div>
+        <div class="metric-grid" id="hallMetrics"></div>
+        <article class="panel-card hall-table-card">
+          <div class="card-heading"><div><p class="eyebrow">صفحه کنترل سالن</p><h3 id="hallTableTitle">وضعیت ماشین‌ها</h3></div><span class="source-badge" id="hallModeBadge">پایش پایه</span></div>
+          <div class="table-wrap"><table><thead id="hallTableHead"></thead><tbody id="hallMachineRows"></tbody></table></div>
+        </article>
+      </section>
+    </main>
+
+    <footer>
+      <span>اطلاعات این صفحه فقط خواندنی است و تغییری در حساب‌ها یا تولید ایجاد نمی‌کند.</span>
+      <a href="/logout">خروج امن</a>
+    </footer>
+  </div>
+
+  <dialog id="installDialog">
+    <form method="dialog" class="dialog-card">
+      <button class="dialog-close" value="close" aria-label="بستن">×</button>
+      <p class="eyebrow">نصب مرکز فرمان</p>
+      <h2>روی موبایل، رایانه یا تلویزیون</h2>
+      <ol>
+        <li>در اندروید یا رایانه، گزینه «نصب برنامه» را از منوی مرورگر انتخاب کنید.</li>
+        <li>در آیفون، گزینه اشتراک‌گذاری و سپس «افزودن به صفحه اصلی» را بزنید.</li>
+        <li>در تلویزیون هوشمند، همین نشانی را باز کنید و «حالت تلویزیون» را فعال کنید.</li>
+      </ol>
+      <button class="dialog-primary" value="close">متوجه شدم</button>
+    </form>
+  </dialog>
+
+  <script src="/executive/app.js" defer></script>
+</body>
+</html>
