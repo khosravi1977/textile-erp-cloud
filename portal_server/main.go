@@ -52,6 +52,8 @@ type portalApp struct {
 	allowOperationalCustomerAccess bool
 	operationalAdminPassword       string
 	operationalSessionSecret       string
+	weavingMonitorURL              string
+	weavingMonitorToken            string
 	adminUsername                  string
 	adminPassword                  string
 	sessionSecret                  string
@@ -195,6 +197,9 @@ func effectiveAccessRole(record projectAccess) string {
 func effectivePermissions(record projectAccess) []string {
 	if record.ProjectKey != "textile-erp" {
 		return nil
+	}
+	if effectiveAccessRole(record) == "owner" {
+		return append([]string(nil), financialPermissionCatalog...)
 	}
 	return normalizePermissions(record.Permissions, effectiveAccessRole(record))
 }
@@ -361,11 +366,16 @@ func main() {
 	allowOperationalCustomerAccess := envBool("PORTAL_ALLOW_OPERATIONAL_CUSTOMER_ACCESS", false)
 	operationalAdminPassword := strings.TrimSpace(env("OPERATIONAL_ADMIN_PASSWORD", "admin123"))
 	operationalSessionSecret := strings.TrimSpace(env("PORTAL_OPERATIONAL_SECRET", sessionSecret))
+	weavingMonitorURL := strings.TrimSpace(env("PORTAL_WEAVING_MONITOR_SUMMARY_URL", ""))
+	weavingMonitorToken := strings.TrimSpace(env("PORTAL_WEAVING_MONITOR_TOKEN", ""))
 	localMode := envBool("PORTAL_LOCAL_MODE", false)
 	localCompanyID := envInt64("PORTAL_LOCAL_COMPANY_ID", 2)
 	localCompanyName := strings.TrimSpace(env("PORTAL_LOCAL_COMPANY_NAME", "پرگل"))
 	dbPath := strings.TrimSpace(env("ACCESS_DB_PATH", "/data/portal-access.db"))
 	validatePortalProductionConfig(adminPassword, sessionSecret, financialJWTKey, operationalSessionSecret)
+	if err := validateExecutiveMonitorConfig(weavingMonitorURL, weavingMonitorToken); err != nil {
+		log.Printf("executive monitor configuration warning: %v", err)
+	}
 
 	if err := ensureAccessStore(dbPath); err != nil {
 		log.Fatal(err)
@@ -384,6 +394,8 @@ func main() {
 		allowOperationalCustomerAccess: allowOperationalCustomerAccess,
 		operationalAdminPassword:       operationalAdminPassword,
 		operationalSessionSecret:       operationalSessionSecret,
+		weavingMonitorURL:              weavingMonitorURL,
+		weavingMonitorToken:            weavingMonitorToken,
 		adminUsername:                  adminUsername,
 		adminPassword:                  adminPassword,
 		sessionSecret:                  sessionSecret,
@@ -418,6 +430,10 @@ func main() {
 	mux.HandleFunc("/api/portal/operational-session", app.portalOperationalSession)
 	mux.HandleFunc("/api/portal/team", app.portalTeam)
 	mux.HandleFunc("/api/portal/team/", app.portalTeamByID)
+	mux.HandleFunc("/api/portal/executive-session", app.executiveSession)
+	mux.HandleFunc("/api/portal/executive-hall", app.executiveHallSummary)
+	mux.HandleFunc("/executive", app.executiveApp)
+	mux.HandleFunc("/executive/", app.executiveApp)
 	mux.Handle("/financial/", app.requireModuleAccess("financial", stripAndProxy("/financial", *financial)))
 	mux.Handle("/assets/", app.requireModuleAccess("financial", stripAndProxy("", *financial)))
 	mux.Handle("/operational/", app.requireModuleAccess("operational", stripAndProxy("/operational", *operational)))
@@ -554,8 +570,9 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := a.accessRecordFromRequest(r)
 	hasAccess := err == nil && record.ProjectKey == "textile-erp"
-	cardParts := make([]string, 0, 4)
+	cardParts := make([]string, 0, 5)
 	cardParts = append(cardParts, `<a class="card mobile" href="/HesabYar.apk?v=1.0.1-local-20260722-2">دانلود اپ حسابیار برای اندروید</a>`)
+	cardParts = append(cardParts, `<a class="card executive" href="/executive/">مرکز فرمان سه‌گانه مدیر</a>`)
 	statusParts := []string{
 		`<div class="pill">هر بخش ورود مستقل و امن دارد</div>`,
 		`<div class="pill">مدیر: دسترسی کامل</div>`,
@@ -591,6 +608,7 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
     a.secondary{background:#44665a;border-color:#7ca28d}
     a.accent{background:#5c4334;border-color:#8c6a51}
     a.mobile{background:#176b5b;border-color:#2c927c}
+    a.executive{background:#0f4c5c;border-color:#2b8398}
     .empty{background:#f4e7d6;color:#5f4635;border-color:#ddc2a5}
     a:hover{filter:brightness(1.08)}
     .status{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:22px;color:#7a6355;font-size:12px}
@@ -697,7 +715,7 @@ func safePortalNext(value string) string {
 		return ""
 	}
 	parsed, err := url.ParseRequestURI(value)
-	if err != nil || parsed.IsAbs() || (parsed.Path != "/team" && !strings.HasPrefix(parsed.Path, "/operational/") && !strings.HasPrefix(parsed.Path, "/financial/")) {
+	if err != nil || parsed.IsAbs() || (parsed.Path != "/team" && !strings.HasPrefix(parsed.Path, "/executive/") && !strings.HasPrefix(parsed.Path, "/operational/") && !strings.HasPrefix(parsed.Path, "/financial/")) {
 		return ""
 	}
 	return parsed.RequestURI()
@@ -940,7 +958,11 @@ func (a *portalApp) moduleLogout(w http.ResponseWriter, r *http.Request) {
 	if module != "financial" && module != "operational" {
 		module = "financial"
 	}
-	for _, name := range []string{moduleCookieName(module), "operational_session"} {
+	cookieNames := []string{moduleCookieName(module), "operational_session"}
+	if r.URL.Query().Get("login") == "1" {
+		cookieNames = append(cookieNames, accessCookieName)
+	}
+	for _, name := range cookieNames {
 		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: isSecureRequest(r), MaxAge: -1})
 	}
 	if r.URL.Query().Get("login") == "1" {
@@ -2097,7 +2119,7 @@ func (a *portalApp) portalOperationalSession(w http.ResponseWriter, r *http.Requ
 	}
 	menus := loginData["menus"]
 	if menuItems, ok := menus.([]any); !ok || len(menuItems) == 0 {
-		menus = operationalPortalMenus()
+		menus = operationalPortalMenusForKeys(operationalMenuKeys(record))
 	}
 	respondJSON(w, http.StatusOK, map[string]any{
 		"user": map[string]any{
@@ -2122,8 +2144,8 @@ func (a *portalApp) createOperationalSessionForRecord(w http.ResponseWriter, r *
 	if record.FinancialCompanyID <= 0 || record.ID <= 0 || strings.TrimSpace(record.Username) == "" {
 		return nil, errors.New("operational access is not configured")
 	}
-	role := "viewer"
-	if normalizeAccessRole(effectiveAccessRole(record)) == "owner" {
+	role := normalizeAccessRole(effectiveAccessRole(record))
+	if role == "owner" {
 		role = "admin"
 	}
 	payload, err := json.Marshal(map[string]any{
@@ -2131,6 +2153,7 @@ func (a *portalApp) createOperationalSessionForRecord(w http.ResponseWriter, r *
 		"access_id":  record.ID,
 		"username":   record.Username,
 		"role":       role,
+		"menu_keys":  operationalMenuKeys(record),
 	})
 	if err != nil {
 		return nil, err
@@ -3572,7 +3595,11 @@ func (a *portalApp) signFinancialJWT(record projectAccess) (string, error) {
 	return unsigned + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 }
 func operationalPortalMenus() []map[string]any {
-	return []map[string]any{
+	return operationalPortalMenusForKeys([]string{"*"})
+}
+
+func operationalPortalMenusForKeys(keys []string) []map[string]any {
+	catalog := []map[string]any{
 		{"menu_key": "dashboard", "menu_name": "داشبورد", "path": "/", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "initial", "menu_name": "اطلاعات اولیه", "path": "/initial", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "nakh-vor", "menu_name": "ورود نخ", "path": "/nakh-vor", "icon": "", "is_restricted": 0, "has_access": 1},
@@ -3586,8 +3613,27 @@ func operationalPortalMenus() []map[string]any {
 		{"menu_key": "empty-beam-out", "menu_name": "خروج نورد خالی", "path": "/empty-beam-out", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "out-invoice", "menu_name": "فاکتور خروج", "path": "/out-invoice", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "advisor", "menu_name": "تحلیل و مشاور هوشمند", "path": "/advisor", "icon": "", "is_restricted": 0, "has_access": 1},
+		{"menu_key": "expenses", "menu_name": "هزینه‌ها", "path": "/expenses", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "reports", "menu_name": "گزارشات", "path": "/reports", "icon": "", "is_restricted": 0, "has_access": 1},
+		{"menu_key": "database", "menu_name": "مدیریت دیتابیس", "path": "/database", "icon": "", "is_restricted": 1, "has_access": 1},
+		{"menu_key": "machinery-services", "menu_name": "خدمات ماشین‌آلات", "path": "/machinery-services", "icon": "", "is_restricted": 1, "has_access": 1},
+		{"menu_key": "spare-parts", "menu_name": "موجودی انبار قطعات", "path": "/spare-parts", "icon": "", "is_restricted": 1, "has_access": 1},
 	}
+	allowed := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key != "" {
+			allowed[key] = true
+		}
+	}
+	out := make([]map[string]any, 0, len(catalog))
+	for _, item := range catalog {
+		key, _ := item["menu_key"].(string)
+		if allowed["*"] || allowed[key] {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func validatePortalProductionConfig(adminPassword, sessionSecret, financialJWTKey, operationalSessionSecret string) {

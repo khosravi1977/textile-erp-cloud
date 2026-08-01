@@ -194,6 +194,11 @@ func TestFormulaIsReusedOnlyForSameHambaftAndFabric(t *testing.T) {
 
 func TestSalonRequiresConfirmationOnlyForNewHambaftCombination(t *testing.T) {
 	application := newBeamFormulaTestApp(t)
+	sessionResponse := httptest.NewRecorder()
+	if err := application.createSession(sessionResponse, httptest.NewRequest(http.MethodPost, "/api/login", nil), sessionInfo{UserID: 7, Username: "operator", Role: "manager"}); err != nil {
+		t.Fatal(err)
+	}
+	sessionCookie := sessionResponse.Result().Cookies()[0]
 	if _, err := application.exec(`INSERT INTO kala_name (id_kala_name,name_kala_name) VALUES (1,'مازراتی')`); err != nil {
 		t.Fatal(err)
 	}
@@ -215,6 +220,7 @@ func TestSalonRequiresConfirmationOnlyForNewHambaftCombination(t *testing.T) {
 		"shom_chelle":"2950","user":"operator","tar_percent":62,"pod_percent":38
 	}`
 	unconfirmedRequest := httptest.NewRequest(http.MethodPost, "/api/salon", bytes.NewBufferString(newCombination))
+	unconfirmedRequest.AddCookie(sessionCookie)
 	unconfirmedResponse := httptest.NewRecorder()
 	application.salon(unconfirmedResponse, unconfirmedRequest)
 	if unconfirmedResponse.Code != http.StatusBadRequest {
@@ -224,6 +230,7 @@ func TestSalonRequiresConfirmationOnlyForNewHambaftCombination(t *testing.T) {
 	confirmedRequest := httptest.NewRequest(http.MethodPost, "/api/salon", bytes.NewBufferString(strings.Replace(
 		newCombination, `"pod_percent":38`, `"pod_percent":38,"formula_confirmed":true`, 1,
 	)))
+	confirmedRequest.AddCookie(sessionCookie)
 	confirmedResponse := httptest.NewRecorder()
 	application.salon(confirmedResponse, confirmedRequest)
 	if confirmedResponse.Code != http.StatusOK {
@@ -245,6 +252,7 @@ func TestSalonRequiresConfirmationOnlyForNewHambaftCombination(t *testing.T) {
 		"ham_pod":"همبافت پود الف","ham_chelle":"همبافت تار الف",
 		"shom_chelle":"2951","user":"operator","tar_percent":62,"pod_percent":38
 	}`))
+	reusedRequest.AddCookie(sessionCookie)
 	reusedResponse := httptest.NewRecorder()
 	application.salon(reusedResponse, reusedRequest)
 	if reusedResponse.Code != http.StatusOK {

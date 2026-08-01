@@ -31,6 +31,18 @@ cd F:\project\textile_erp_clean
 .\sync_legacy_operational_db.ps1 -Source 'H:\9\database.db'
 ```
 
+For the multi-tenant PostgreSQL deployment, select the tenant explicitly:
+
+```powershell
+$env:OPERATIONAL_SCHEMA = 'tenant_textile_100003'
+$env:OPERATIONAL_COMPANY_ID = '100003'
+go run ./operational_cycle_go/cmd/legacysync --source 'H:\9\database.db' --target-schema $env:OPERATIONAL_SCHEMA --dry-run
+```
+
+The tool validates the schema identifier, selects it transactionally, and aborts if
+`current_schema()` does not exactly match the requested tenant. Never use `public`
+for customer imports.
+
 Each run writes a report under `legacy_sync_reports\YYYYMMDD_HHMMSS\summary.json`.
 
 ## What the tool does
