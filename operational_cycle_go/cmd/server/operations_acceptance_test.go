@@ -243,7 +243,11 @@ func TestAcceptanceProductionEditDeleteRebuildsConsumptionAndUsesSession(t *test
 	}
 	cookie := sessionResponse.Result().Cookies()[0]
 	postProduction := func(id int64, weight float64) *httptest.ResponseRecorder {
-		payload := map[string]any{"id": id, "metr": 50, "weight": weight, "machine": "M-1", "kala_id": f.kalaID, "ham_pod": "HB-1", "ham_chelle": "HB-1", "shom_chelle": "CH-1", "user": "spoofed"}
+		payload := map[string]any{
+			"id": id, "metr": 50, "weight": weight, "machine": "M-1", "kala_id": f.kalaID,
+			"ham_pod": "HB-1", "ham_chelle": "HB-1", "shom_chelle": "CH-1", "chelle_id": chelleID,
+			"tar_percent": 60, "pod_percent": 40, "formula_confirmed": true, "user": "spoofed",
+		}
 		body, _ := json.Marshal(payload)
 		req := httptest.NewRequest(http.MethodPost, "/api/salon", bytes.NewReader(body))
 		req.AddCookie(cookie)
