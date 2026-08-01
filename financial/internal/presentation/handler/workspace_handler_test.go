@@ -25,6 +25,54 @@ func TestValidateWorkspaceState(t *testing.T) {
 	}
 }
 
+func TestAnnotateAccountingProcessingMarksOnlyNewOperationalSettlements(t *testing.T) {
+	current := json.RawMessage(`{
+		"invoices":[{"number":"OLD-1","operationalId":1}],
+		"incomingInvoices":[],
+		"yarnOutInvoices":[],
+		"expenses":[]
+	}`)
+	proposed := json.RawMessage(`{
+		"invoices":[
+			{"number":"OLD-1","operationalId":1},
+			{"number":"NEW-2","operationalId":2},
+			{"number":"MANUAL-3"}
+		],
+		"incomingInvoices":[
+			{"id":"manual","source_type":"manual"},
+			{"id":"op","source_type":"operational_yarn_in","sourceId":8}
+		],
+		"yarnOutInvoices":[],
+		"expenses":[]
+	}`)
+	now := time.Date(2026, 7, 27, 12, 30, 0, 0, time.UTC)
+	annotated, _, err := annotateAccountingProcessing(current, proposed, 42, now)
+	if err != nil {
+		t.Fatalf("annotate accounting processing: %v", err)
+	}
+	state := decodeWorkspaceMap(annotated)
+	invoices := rowsFrom(state, "invoices")
+	if _, exists := invoices[0]["_accountingProcessedAt"]; exists {
+		t.Fatal("existing settlement must not be re-attributed")
+	}
+	if got := stringValue(invoices[1]["_accountingProcessedAt"]); got != now.Format(time.RFC3339Nano) {
+		t.Fatalf("new settlement timestamp mismatch: %q", got)
+	}
+	if got := number(invoices[1]["_accountingProcessedBy"]); got != 42 {
+		t.Fatalf("new settlement actor mismatch: %v", got)
+	}
+	if _, exists := invoices[2]["_accountingProcessedAt"]; exists {
+		t.Fatal("manual invoice must not be attributed as an operational settlement")
+	}
+	incoming := rowsFrom(state, "incomingInvoices")
+	if _, exists := incoming[0]["_accountingProcessedAt"]; exists {
+		t.Fatal("manual invoice must not be attributed as an operational settlement")
+	}
+	if got := number(incoming[1]["_accountingProcessedBy"]); got != 42 {
+		t.Fatalf("operational incoming actor mismatch: %v", got)
+	}
+}
+
 func TestRestrictedWorkspaceMergePreservesOtherModules(t *testing.T) {
 	current := json.RawMessage(`{"invoices":[{"id":"original"}],"expenses":[{"id":"old"}]}`)
 	proposed := json.RawMessage(`{"invoices":[{"id":"tampered"}],"expenses":[{"id":"new"}]}`)

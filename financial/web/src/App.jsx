@@ -69,7 +69,7 @@ const pages = [
   { id: 'taxReports', label: 'گزارش مالیاتی' },
   { id: 'credit', label: 'اعتبارسنجی' },
   { id: 'advisor', label: 'تحلیل و مشاور هوشمند' },
-  { id: 'telegramReports', label: 'گزارش روزانه تلگرام' },
+  { id: 'telegramReports', label: 'گزارش‌های تلگرام' },
   { id: 'mobileApp', label: 'اتصال به اپ حسابیار' },
 ];
 
@@ -1400,18 +1400,21 @@ function TelegramReportsPage() {
   const [pairing, setPairing] = useState(null);
   const [qrImage, setQrImage] = useState('');
   const [history, setHistory] = useState([]);
+  const [recipients, setRecipients] = useState([]);
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
   const load = async () => {
     try {
-      const [config, deliveries] = await Promise.all([
+      const [config, deliveries, recipientResult] = await Promise.all([
         apiJSON('/telegram-reports/config'),
         apiJSON('/telegram-reports/history?limit=20'),
+        apiJSON('/telegram-reports/recipients'),
       ]);
       setSettings(config);
       setHistory(deliveries.rows || []);
+      setRecipients(recipientResult.rows || []);
       setError('');
     } catch (err) {
       setError(err.message || 'دریافت تنظیمات گزارش تلگرام انجام نشد');
@@ -1441,6 +1444,13 @@ function TelegramReportsPage() {
           enabled: Boolean(settings.enabled),
           alerts_enabled: Boolean(settings.alerts_enabled),
           daily_time: settings.daily_time || '20:00',
+          weekly_enabled: Boolean(settings.weekly_enabled),
+          weekly_day: Number(settings.weekly_day ?? 4),
+          weekly_time: settings.weekly_time || '20:00',
+          monthly_enabled: Boolean(settings.monthly_enabled),
+          monthly_day: Number(settings.monthly_day || 1),
+          monthly_time: settings.monthly_time || '20:00',
+          accounting_sla_days: Number(settings.accounting_sla_days || 2),
           timezone: settings.timezone || 'Asia/Tehran',
         },
       });
@@ -1448,6 +1458,32 @@ function TelegramReportsPage() {
       setMessage('تنظیمات ذخیره شد.');
     } catch (err) {
       setError(err.message || 'ذخیره تنظیمات انجام نشد');
+    } finally { setBusy(''); }
+  };
+
+  const updateRecipient = async (recipient, changes) => {
+    setBusy(`recipient-${recipient.id}`); setError(''); setMessage('');
+    try {
+      await apiJSON(`/telegram-reports/recipients?id=${recipient.id}`, {
+        method: 'PUT',
+        body: { ...recipient, ...changes },
+      });
+      await load();
+      setMessage('دسترسی گیرنده به‌روزرسانی شد.');
+    } catch (err) {
+      setError(err.message || 'به‌روزرسانی گیرنده انجام نشد');
+    } finally { setBusy(''); }
+  };
+
+  const removeRecipient = async (recipient) => {
+    if (!window.confirm(`اتصال تلگرام «${recipient.chat_title || 'گیرنده'}» حذف شود؟`)) return;
+    setBusy(`recipient-${recipient.id}`); setError(''); setMessage('');
+    try {
+      await apiJSON(`/telegram-reports/recipients?id=${recipient.id}`, { method: 'DELETE' });
+      await load();
+      setMessage('گیرنده حذف شد.');
+    } catch (err) {
+      setError(err.message || 'حذف گیرنده انجام نشد');
     } finally { setBusy(''); }
   };
 
@@ -1472,11 +1508,11 @@ function TelegramReportsPage() {
         <Card>
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h3 className="text-xl font-black">گزارش مدیریتی روزانه</h3>
-              <p className="mt-2 text-sm leading-7 text-slate-300">خلاصه تولید و خروج به تفکیک وزن و متر، ورود کالا و نخ، خروج نخ، ضایعات و موجودی برای همین شرکت ارسال می‌شود.</p>
+              <h3 className="text-xl font-black">گزارش‌های مدیریتی تلگرام</h3>
+              <p className="mt-2 text-sm leading-7 text-slate-300">دو گزارش مستقل برای گیرندگان مجاز همین شرکت ارسال می‌شود: گزارش تولید و موجودی، و گزارش عملکرد حسابداری. هر دو گزارش می‌توانند روزانه، هفتگی و ماهانه باشند.</p>
             </div>
             <span className={`rounded-full px-3 py-1 text-xs font-bold ${settings.connected ? 'bg-emerald-950 text-emerald-200' : 'bg-amber-950 text-amber-200'}`}>
-              {settings.connected ? `متصل به ${settings.chat_title || 'تلگرام'}` : 'متصل نشده'}
+              {settings.connected ? `${settings.recipient_count || recipients.length} گیرنده متصل` : 'متصل نشده'}
             </span>
           </div>
           {!settings.available && <div className="mt-4 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm leading-7 text-amber-100">توکن و نام بات باید فقط در Secrets سرور تنظیم شود؛ هیچ توکنی در این صفحه یا کد پروژه ذخیره نمی‌شود.</div>}
@@ -1490,10 +1526,47 @@ function TelegramReportsPage() {
                 <option value="UTC">UTC</option>
               </SelectInput>
             </label>
+            <label className="text-sm text-slate-300">روز گزارش هفتگی
+              <SelectInput className="mt-2 w-full" value={Number(settings.weekly_day ?? 4)} onChange={e => setSettings(current => ({ ...current, weekly_day: Number(e.target.value) }))}>
+                <option value={6}>شنبه</option>
+                <option value={0}>یکشنبه</option>
+                <option value={1}>دوشنبه</option>
+                <option value={2}>سه‌شنبه</option>
+                <option value={3}>چهارشنبه</option>
+                <option value={4}>پنجشنبه</option>
+                <option value={5}>جمعه</option>
+              </SelectInput>
+            </label>
+            <label className="text-sm text-slate-300">زمان گزارش هفتگی
+              <TextInput type="time" className="mt-2 w-full" value={settings.weekly_time || '20:00'} onChange={e => setSettings(current => ({ ...current, weekly_time: e.target.value }))} />
+            </label>
+            <label className="text-sm text-slate-300">روز گزارش ماهانه
+              <SelectInput className="mt-2 w-full" value={Number(settings.monthly_day || 1)} onChange={e => setSettings(current => ({ ...current, monthly_day: Number(e.target.value) }))}>
+                {Array.from({ length: 28 }, (_, index) => <option key={index + 1} value={index + 1}>روز {index + 1} ماه</option>)}
+              </SelectInput>
+            </label>
+            <label className="text-sm text-slate-300">زمان گزارش ماهانه
+              <TextInput type="time" className="mt-2 w-full" value={settings.monthly_time || '20:00'} onChange={e => setSettings(current => ({ ...current, monthly_time: e.target.value }))} />
+            </label>
+            <label className="text-sm text-slate-300">مهلت استاندارد رسیدگی حسابداری
+              <TextInput type="number" min="1" max="30" className="mt-2 w-full" value={settings.accounting_sla_days || 2} onChange={e => setSettings(current => ({ ...current, accounting_sla_days: Number(e.target.value) }))} />
+              <span className="mt-1 block text-xs text-slate-500">تعداد روز مجاز از تاریخ سند عملیاتی تا تعیین‌تکلیف مالی</span>
+            </label>
+          </div>
+          <div className="mt-4 rounded-md border border-blue-800 bg-blue-950/60 p-3 text-xs leading-6 text-blue-100">
+            گزارش حسابداری، تعداد اسناد رسیدگی‌شده، میانگین و بیشترین تأخیر، درصد انجام در مهلت، اسناد معطل و عملکرد هر حسابدار را نشان می‌دهد. اگر سندی بیشتر از مهلت تعیین‌شده معطل بماند، روزانه یک هشدار مستقل نیز ارسال می‌شود. برای سوابق قدیمی فاصله تاریخ اسناد محاسبه می‌شود؛ از زمان فعال‌شدن این نسخه، ساعت دقیق و کاربر انجام‌دهنده نیز ثبت خواهد شد.
           </div>
           <label className="mt-5 flex items-center gap-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-sm">
             <input type="checkbox" checked={Boolean(settings.enabled)} onChange={e => setSettings(current => ({ ...current, enabled: e.target.checked }))} />
             ارسال خودکار گزارش روزانه فعال باشد
+          </label>
+          <label className="mt-3 flex items-center gap-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-sm">
+            <input type="checkbox" checked={Boolean(settings.weekly_enabled)} onChange={e => setSettings(current => ({ ...current, weekly_enabled: e.target.checked }))} />
+            ارسال خودکار گزارش هفتگی فعال باشد
+          </label>
+          <label className="mt-3 flex items-center gap-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-sm">
+            <input type="checkbox" checked={Boolean(settings.monthly_enabled)} onChange={e => setSettings(current => ({ ...current, monthly_enabled: e.target.checked }))} />
+            ارسال خودکار گزارش ماهانه فعال باشد
           </label>
           <label className="mt-3 flex items-center gap-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-sm">
             <input type="checkbox" checked={Boolean(settings.alerts_enabled)} onChange={e => setSettings(current => ({ ...current, alerts_enabled: e.target.checked }))} />
@@ -1502,7 +1575,7 @@ function TelegramReportsPage() {
           <div className="mt-5 flex flex-wrap gap-3">
             <PrimaryButton onClick={save}>{busy === 'save' ? 'در حال ذخیره...' : 'ذخیره تنظیمات'}</PrimaryButton>
             <GhostButton onClick={sendTest}>{busy === 'test' ? 'در حال ارسال...' : 'ارسال گزارش آزمایشی'}</GhostButton>
-            <GhostButton onClick={createPairing}>{busy === 'pair' ? 'در حال ساخت...' : settings.connected ? 'اتصال تلگرام دیگر' : 'ساخت QR اتصال'}</GhostButton>
+            <GhostButton disabled={recipients.length >= 5} onClick={createPairing}>{busy === 'pair' ? 'در حال ساخت...' : settings.connected ? 'افزودن گیرنده جدید' : 'ساخت کد اتصال'}</GhostButton>
           </div>
           {message && <div className="mt-4 rounded-md border border-emerald-800 bg-emerald-950 p-3 text-sm text-emerald-100">{message}</div>}
           {error && <div className="mt-4"><ErrorBox message={error} /></div>}
@@ -1520,10 +1593,38 @@ function TelegramReportsPage() {
         </Card>
       </div>
       <Card>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-black">گیرندگان گزارش</h3>
+            <p className="mt-2 text-sm leading-7 text-slate-400">هر شخص با کد یک‌بارمصرف خودش متصل می‌شود. حداکثر پنج گیرنده برای هر شرکت قابل ثبت است.</p>
+          </div>
+          <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">{recipients.length} از ۵</span>
+        </div>
+        <div className="mt-4 grid gap-3">
+          {recipients.length ? recipients.map(recipient => (
+            <div key={recipient.id} className="rounded-md border border-slate-700 bg-slate-900 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="font-bold">{recipient.chat_title || 'گیرنده تلگرام'}</div>
+                <div className="flex flex-wrap gap-2">
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={Boolean(recipient.enabled)} onChange={e => updateRecipient(recipient, { enabled: e.target.checked })} /> فعال</label>
+                  <GhostButton onClick={() => removeRecipient(recipient)} disabled={busy === `recipient-${recipient.id}`}>حذف اتصال</GhostButton>
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-4 text-sm text-slate-300">
+                <label className="flex items-center gap-2"><input type="checkbox" checked={Boolean(recipient.receive_daily)} onChange={e => updateRecipient(recipient, { receive_daily: e.target.checked })} /> روزانه</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={Boolean(recipient.receive_weekly)} onChange={e => updateRecipient(recipient, { receive_weekly: e.target.checked })} /> هفتگی</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={Boolean(recipient.receive_monthly)} onChange={e => updateRecipient(recipient, { receive_monthly: e.target.checked })} /> ماهانه</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={Boolean(recipient.receive_alerts)} onChange={e => updateRecipient(recipient, { receive_alerts: e.target.checked })} /> هشدارها</label>
+              </div>
+            </div>
+          )) : <EmptyState />}
+        </div>
+      </Card>
+      <Card>
         <h3 className="mb-4 text-lg font-black">سوابق گزارش‌های خودکار</h3>
         {history.length ? <GenericTable rows={history.map(row => ({
           date: toJalali(row.report_date),
-          type: row.report_type === 'daily' ? 'روزانه' : row.report_type,
+          type: row.report_type === 'daily' ? 'روزانه' : row.report_type === 'weekly' ? 'هفتگی' : row.report_type === 'monthly' ? 'ماهانه' : row.report_type === 'accounting_alert' ? 'هشدار تأخیر حسابداری' : row.report_type === 'alert' ? 'هشدار' : row.report_type,
           status: row.status === 'sent' ? 'ارسال شد' : row.status === 'failed' ? 'ناموفق' : 'در حال ارسال',
           summary: row.summary || '-',
           error: row.error_message || '-',
@@ -2921,7 +3022,7 @@ function YarnOutInvoicePage({ finance, setFinance }) {
 
   const [editingId, setEditingId] = useState('');
 
-  const [form, setForm] = useState({ date: today(), customer: '', itemName: '', quantity: '', unitPrice: '', costUnitPrice: '', amount: '', outMode: 'return_customer', stockType: 'amanat', source_type: 'manual', sourceId: '', description: '' });
+  const [form, setForm] = useState({ date: today(), operationalDate: '', customer: '', itemName: '', quantity: '', unitPrice: '', costUnitPrice: '', amount: '', outMode: 'return_customer', stockType: 'amanat', source_type: 'manual', sourceId: '', description: '' });
 
   const rows = finance.yarnOutInvoices || [];
 
@@ -2947,17 +3048,17 @@ function YarnOutInvoicePage({ finance, setFinance }) {
 
   const costAmount = shouldRecognizeYarnCost ? Number(form.quantity || 0) * Number(form.costUnitPrice || 0) : 0;
 
-  const resetForm = () => { setEditingId(''); setForm({ date: today(), customer: '', itemName: '', quantity: '', unitPrice: '', costUnitPrice: '', amount: '', outMode: 'return_customer', stockType: 'amanat', source_type: 'manual', sourceId: '', description: '' }); };
+  const resetForm = () => { setEditingId(''); setForm({ date: today(), operationalDate: '', customer: '', itemName: '', quantity: '', unitPrice: '', costUnitPrice: '', amount: '', outMode: 'return_customer', stockType: 'amanat', source_type: 'manual', sourceId: '', description: '' }); };
 
   const selectOperational = row => {
 
     setEditingId('');
 
-    setForm({ date: today(), customer: row.customer_name || '', itemName: row.yarn_name || '', quantity: Math.abs(Number(row.weight || 0)) || '', unitPrice: '', costUnitPrice: '', amount: '', outMode: 'return_customer', stockType: 'amanat', source_type: 'operational_yarn_out', sourceId: row.id, description: `خروج نخ عملياتي | همبافت ${row.doc_no || '-'} | تاريخ ${row.date || '-'}` });
+    setForm({ date: today(), operationalDate: row.date || '', customer: row.customer_name || '', itemName: row.yarn_name || '', quantity: Math.abs(Number(row.weight || 0)) || '', unitPrice: '', costUnitPrice: '', amount: '', outMode: 'return_customer', stockType: 'amanat', source_type: 'operational_yarn_out', sourceId: row.id, description: `خروج نخ عملياتي | همبافت ${row.doc_no || '-'} | تاريخ ${row.date || '-'}` });
 
   };
 
-  const edit = row => { setEditingId(row.id); setForm({ date: row.date || today(), customer: row.customer || '', itemName: row.itemName || '', quantity: Math.abs(Number(row.quantity || 0)) || '', unitPrice: row.unitPrice || '', costUnitPrice: row.costUnitPrice || '', amount: row.amount || '', outMode: row.outMode || 'return_customer', stockType: row.stockType || 'amanat', source_type: row.source_type || 'manual', sourceId: row.sourceId || '', description: row.description || '' }); };
+  const edit = row => { setEditingId(row.id); setForm({ date: row.date || today(), operationalDate: row.operationalDate || '', customer: row.customer || '', itemName: row.itemName || '', quantity: Math.abs(Number(row.quantity || 0)) || '', unitPrice: row.unitPrice || '', costUnitPrice: row.costUnitPrice || '', amount: row.amount || '', outMode: row.outMode || 'return_customer', stockType: row.stockType || 'amanat', source_type: row.source_type || 'manual', sourceId: row.sourceId || '', description: row.description || '' }); };
 
   const remove = id => setFinance(prev => ({ ...prev, yarnOutInvoices: (prev.yarnOutInvoices || []).filter(x => x.id !== id), ownedInventory: (prev.ownedInventory || []).filter(x => x.sourceYarnOutInvoice !== id) }));
 
@@ -3043,7 +3144,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
   const [payments, setPayments] = useState([newPaymentLine('credit')]);
 
-  const [form, setForm] = useState({ date: today(), customer: '', inventoryType: 'yarn', itemName: '', quantity: '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'manual', sourceId: '', description: '', nonFinancial: false });
+  const [form, setForm] = useState({ date: today(), operationalDate: '', customer: '', inventoryType: 'yarn', itemName: '', quantity: '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'manual', sourceId: '', description: '', nonFinancial: false });
 
   const customers = [...new Set([
     ...data.customers.map(x => x.name),
@@ -3106,7 +3207,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
     setPayments([newPaymentLine('credit')]);
 
-    setForm({ date: today(), customer: '', inventoryType: 'yarn', itemName: '', quantity: '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'manual', sourceId: '', description: '', nonFinancial: false });
+    setForm({ date: today(), operationalDate: '', customer: '', inventoryType: 'yarn', itemName: '', quantity: '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'manual', sourceId: '', description: '', nonFinancial: false });
 
   };
 
@@ -3118,7 +3219,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
     if (row.pendingType === 'operational_yarn_in' || row.type === 'incoming') {
 
-      setForm({ date: today(), customer: row.customer_name || '', inventoryType: 'yarn', itemName: row.yarn_name || '', quantity: Math.abs(Number(row.weight || 0)) || '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'operational_yarn_in', sourceId: row.id, description: `ورود نخ عملياتي | همبافت ${row.doc_no || '-'} | تاريخ ${row.date || '-'}`, nonFinancial: false });
+      setForm({ date: today(), operationalDate: row.date || '', customer: row.customer_name || '', inventoryType: 'yarn', itemName: row.yarn_name || '', quantity: Math.abs(Number(row.weight || 0)) || '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'operational_yarn_in', sourceId: row.id, description: `ورود نخ عملياتي | همبافت ${row.doc_no || '-'} | تاريخ ${row.date || '-'}`, nonFinancial: false });
 
       return;
 
@@ -3126,7 +3227,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
     if (row.pendingType === 'operational_chelle_in') {
 
-      setForm({ date: today(), customer: row.warper || row.customer_name || '', inventoryType: 'yarn', itemName: row.yarn_name || row.hambaft || '', quantity: Math.abs(Number(row.weight || 0)) || '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'operational_chelle_in', sourceId: row.id, description: `ورود چله عملياتي | شماره ${row.doc_no || '-'} | چله پیچ ${row.warper || '-'} | صاحب نخ ${row.customer_name || '-'} | همبافت ${row.hambaft || '-'} | تاريخ ${row.date || '-'}`, nonFinancial: false });
+      setForm({ date: today(), operationalDate: row.date || '', customer: row.warper || row.customer_name || '', inventoryType: 'yarn', itemName: row.yarn_name || row.hambaft || '', quantity: Math.abs(Number(row.weight || 0)) || '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'operational_chelle_in', sourceId: row.id, description: `ورود چله عملياتي | شماره ${row.doc_no || '-'} | چله پیچ ${row.warper || '-'} | صاحب نخ ${row.customer_name || '-'} | همبافت ${row.hambaft || '-'} | تاريخ ${row.date || '-'}`, nonFinancial: false });
 
       return;
 
@@ -3134,7 +3235,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
     if (row.pendingType === 'operational_spare_part') {
 
-      setForm({ date: today(), customer: row.vendor_name || 'تأمین‌کننده قطعات', inventoryType: 'spare_part', itemName: row.part_name || row.part_number || '', quantity: Math.abs(Number(row.quantity || 0)) || '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'operational_spare_part', sourceId: row.id, description: `ورود قطعه عملیاتی | شماره قطعه ${row.part_number || '-'} | وضعیت ${row.condition_status || '-'} | تاریخ ${row.date || '-'}`, nonFinancial: false });
+      setForm({ date: today(), operationalDate: row.date || '', customer: row.vendor_name || 'تأمین‌کننده قطعات', inventoryType: 'spare_part', itemName: row.part_name || row.part_number || '', quantity: Math.abs(Number(row.quantity || 0)) || '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'operational_spare_part', sourceId: row.id, description: `ورود قطعه عملیاتی | شماره قطعه ${row.part_number || '-'} | وضعیت ${row.condition_status || '-'} | تاریخ ${row.date || '-'}`, nonFinancial: false });
 
       return;
 
@@ -3220,7 +3321,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
     setPayments((row.payments || [newPaymentLine('credit')]).map(p => ({ ...newPaymentLine(p.type), ...p, id: uid('pay') })));
 
-    setForm({ date: row.date || today(), customer: row.customer || '', inventoryType: row.inventoryType || 'yarn', itemName: row.itemName || '', quantity: row.quantity || '', unitPrice: row.unitPrice || '', subtotal: row.subtotal ?? Math.max(0, Number(row.amount || 0) - Number(row.taxAmount || 0)), taxable: !!row.taxable, taxRate: row.taxRate || '', source_type: row.source_type || 'manual', sourceId: row.sourceId || '', description: row.description || '', nonFinancial: !!row.nonFinancial });
+    setForm({ date: row.date || today(), operationalDate: row.operationalDate || '', customer: row.customer || '', inventoryType: row.inventoryType || 'yarn', itemName: row.itemName || '', quantity: row.quantity || '', unitPrice: row.unitPrice || '', subtotal: row.subtotal ?? Math.max(0, Number(row.amount || 0) - Number(row.taxAmount || 0)), taxable: !!row.taxable, taxRate: row.taxRate || '', source_type: row.source_type || 'manual', sourceId: row.sourceId || '', description: row.description || '', nonFinancial: !!row.nonFinancial });
 
   };
 
@@ -3945,7 +4046,7 @@ function CostsPage({ finance, setFinance }) {
   const [editingId, setEditingId] = useState('');
 
   const groups = finance.smsGroups?.length ? finance.smsGroups : defaultExpenseGroups;
-  const emptyExpenseForm = () => ({ date: today(), group: groups[0]?.name || '', subgroup: groups[0]?.subgroups?.[0] || '', amount: '', description: '', accountId: finance.accounts[0]?.id || '', source_type: 'manual', sourceId: '' });
+  const emptyExpenseForm = () => ({ date: today(), operationalDate: '', group: groups[0]?.name || '', subgroup: groups[0]?.subgroups?.[0] || '', amount: '', description: '', accountId: finance.accounts[0]?.id || '', source_type: 'manual', sourceId: '' });
 
   const [form, setForm] = useState(emptyExpenseForm);
 
@@ -4027,7 +4128,7 @@ function CostsPage({ finance, setFinance }) {
 
     setEditingId(row.id);
 
-    setForm({ date: row.date, group: expenseGroup(row), subgroup: expenseSubgroup(row), amount: row.amount, description: row.description || '', accountId: row.accountId || finance.accounts[0]?.id || '', source_type: row.source_type || 'manual', sourceId: row.sourceId || '' });
+    setForm({ date: row.date, operationalDate: row.operationalDate || '', group: expenseGroup(row), subgroup: expenseSubgroup(row), amount: row.amount, description: row.description || '', accountId: row.accountId || finance.accounts[0]?.id || '', source_type: row.source_type || 'manual', sourceId: row.sourceId || '' });
 
   };
 
@@ -4035,7 +4136,7 @@ function CostsPage({ finance, setFinance }) {
     if (row.settled) return;
     setEditingId('');
     setForm({
-      date: row.date || today(), group: 'عملیاتی', subgroup: row.title || 'سایر', amount: Number(row.amount || 0),
+      date: row.date || today(), operationalDate: row.date || '', group: 'عملیاتی', subgroup: row.title || 'سایر', amount: Number(row.amount || 0),
       description: `${row.description || 'هزینه ثبت‌شده در بخش عملیاتی'}${row.doc_no ? ` | سند ${row.doc_no}` : ''}`,
       accountId: finance.accounts[0]?.id || '', source_type: 'operational_expense', sourceId: row.id,
     });
