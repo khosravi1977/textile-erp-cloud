@@ -96,10 +96,6 @@ jobs:
           scp -o BatchMode=yes "$RUNNER_TEMP/release.tar.gz" "$VPS_USER@$VPS_HOST:$REMOTE_ARCHIVE"
           ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
             "sudo /usr/local/sbin/viora-deploy textile-erp '$RELEASE_SHA' '$REMOTE_ARCHIVE'"
-          pergol_archive="/tmp/viora-deploy-pergol-operational-$RELEASE_SHA.tar.gz"
-          scp -o BatchMode=yes "$RUNNER_TEMP/release.tar.gz" "$VPS_USER@$VPS_HOST:$pergol_archive"
-          ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
-            "sudo /usr/local/sbin/viora-deploy pergol-operational '$RELEASE_SHA' '$pergol_archive'"
       - name: Remove temporary registry credentials
         if: always()
         env:
