@@ -1,6 +1,28 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestProductionImagePackagesLegacySync(t *testing.T) {
+	dockerfilePath := filepath.Join("..", "..", "Dockerfile")
+	payload, err := os.ReadFile(dockerfilePath)
+	if err != nil {
+		t.Fatalf("read production Dockerfile: %v", err)
+	}
+	dockerfile := string(payload)
+	for _, required := range []string{
+		"go build -o /out/legacysync ./cmd/legacysync",
+		"COPY --from=builder /out/legacysync /app/legacysync",
+	} {
+		if !strings.Contains(dockerfile, required) {
+			t.Fatalf("production Dockerfile does not package legacy sync tool: missing %q", required)
+		}
+	}
+}
 
 func TestValidPostgresIdentifier(t *testing.T) {
 	t.Parallel()
