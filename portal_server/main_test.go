@@ -74,7 +74,7 @@ func TestCreateAccessPersistsPasswordHash(t *testing.T) {
 	}
 }
 
-func TestAccessUsernameTakenScopesTextileByTenant(t *testing.T) {
+func TestAccessUsernameTakenIsGlobalForCentralTextileLogin(t *testing.T) {
 	t.Parallel()
 
 	items := []projectAccess{
@@ -87,12 +87,12 @@ func TestAccessUsernameTakenScopesTextileByTenant(t *testing.T) {
 		},
 	}
 
-	if accessUsernameTaken(items, projectAccess{
+	if !accessUsernameTaken(items, projectAccess{
 		ProjectKey:         "textile-erp",
 		CompanyName:        "Company B",
 		FinancialCompanyID: 2,
 	}, "shared_manager", 0) {
-		t.Fatal("expected username reuse across different textile tenants to be allowed")
+		t.Fatal("expected central textile usernames to be globally unique")
 	}
 
 	if !accessUsernameTaken(items, projectAccess{
@@ -101,6 +101,28 @@ func TestAccessUsernameTakenScopesTextileByTenant(t *testing.T) {
 		FinancialCompanyID: 1,
 	}, "shared_manager", 0) {
 		t.Fatal("expected username collision inside the same textile tenant")
+	}
+}
+
+func TestReadAccessesMigratesOnlyLegacyRecordsWithoutModuleFlags(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "portal-access.db")
+	payload := `[
+  {"id":1,"project_key":"textile-erp","company_name":"قدیمی","username":"legacy","access_token":"one","expires_at":"2099-01-01T00:00:00Z","is_active":true},
+  {"id":2,"project_key":"textile-erp","company_name":"صریح","username":"explicit","access_token":"two","allow_financial":false,"allow_operational":false,"allow_weaving":true,"expires_at":"2099-01-01T00:00:00Z","is_active":true}
+]`
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	items, err := readAccesses(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !items[0].AllowFinancial || !items[0].AllowOperational || items[0].AllowWeaving {
+		t.Fatalf("legacy module access was not preserved: %#v", items[0])
+	}
+	if items[1].AllowFinancial || items[1].AllowOperational || !items[1].AllowWeaving {
+		t.Fatalf("explicit module purchase was changed: %#v", items[1])
 	}
 }
 
@@ -386,15 +408,42 @@ func TestModuleLoginPromotesValidPortalSessionWithoutSecondPassword(t *testing.T
 		t.Fatalf("expected financial module cookie, got %#v", cookies)
 	}
 	claims, err := app.verifyModuleSession(cookies[financialAccessCookieName].Value, "financial")
-	if err != nil || claims.AccessToken != "portal-sso-token" || claims.AuthMode != "single-user" {
-		t.Fatalf("unexpected single-user module session: %#v err=%v", claims, err)
+	if err != nil || claims.AccessToken != "portal-sso-token" || claims.AuthMode != "portal" {
+		t.Fatalf("unexpected portal module session: %#v err=%v", claims, err)
 	}
 	if cookies[operationalAccessCookieName] != nil {
 		t.Fatal("financial SSO must not grant the operational module")
 	}
 }
 
-func TestModuleLoginRequiresPasswordAfterFirstTeamMemberIsCreated(t *testing.T) {
+func TestModuleLoginRedirectsPurchasedWeavingToTenantSSO(t *testing.T) {
+	t.Parallel()
+	accessFile := filepath.Join(t.TempDir(), "portal-access.db")
+	record := projectAccess{
+		ID: 9, ProjectKey: "textile-erp", CompanyName: "سالن آزمون", Username: "weaving_manager",
+		AccessToken: "weaving-portal-token", AllowWeaving: true,
+		WeavingTenantID: "11111111-1111-4111-8111-111111111111",
+		PasswordHash:    "stored-password-hash", IsActive: true, ExpiresAt: time.Now().Add(time.Hour),
+	}
+	payload, _ := json.Marshal([]projectAccess{record})
+	if err := os.WriteFile(accessFile, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &portalApp{
+		accessFile:          accessFile,
+		weavingAppURL:       "https://weaving.example.test",
+		weavingMonitorToken: "weaving-shared-secret-that-is-long-enough",
+	}
+	req := httptest.NewRequest(http.MethodGet, "/module-login?module=weaving", nil)
+	req.AddCookie(&http.Cookie{Name: accessCookieName, Value: record.AccessToken})
+	rec := httptest.NewRecorder()
+	app.moduleLogin(rec, req)
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "https://weaving.example.test/api/auth/portal-sso?token=") {
+		t.Fatalf("expected tenant SSO redirect, got %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestModuleLoginUsesCentralSessionWhenTeamMembersExist(t *testing.T) {
 	t.Parallel()
 
 	accessFile := filepath.Join(t.TempDir(), "portal-access.db")
@@ -421,13 +470,18 @@ func TestModuleLoginRequiresPasswordAfterFirstTeamMemberIsCreated(t *testing.T) 
 	req.AddCookie(&http.Cookie{Name: accessCookieName, Value: owner.AccessToken})
 	rec := httptest.NewRecorder()
 	app.moduleLogin(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `name="password"`) {
-		t.Fatalf("team mode must render password login, got %d %s", rec.Code, rec.Header().Get("Location"))
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/operational/" {
+		t.Fatalf("central session must enter the operational module, got %d %s", rec.Code, rec.Header().Get("Location"))
 	}
+	foundPortalSession := false
 	for _, cookie := range rec.Result().Cookies() {
 		if cookie.Name == operationalAccessCookieName && cookie.Value != "" {
-			t.Fatal("team mode must not promote the portal cookie to an operational session")
+			claims, err := app.verifyModuleSession(cookie.Value, "operational")
+			foundPortalSession = err == nil && claims.AuthMode == "portal"
 		}
+	}
+	if !foundPortalSession {
+		t.Fatal("expected an operational session derived from the central login")
 	}
 
 	legacySingleUserCookie := signedModuleCookie(t, app, "operational", "single-user", owner)

@@ -18,6 +18,7 @@ const state = {
 };
 
 const tabs = ["operations", "finance", "hall"];
+let availableTabs = [...tabs];
 const numberFormat = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 1 });
 const integerFormat = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 0 });
 
@@ -77,6 +78,7 @@ async function loadDashboard(manual = false) {
 
   try {
     state.session = await fetchJSON("/api/portal/executive-session");
+    configureModuleTabs();
   } catch (error) {
     state.loading = false;
     document.body.classList.remove("loading");
@@ -93,18 +95,18 @@ async function loadDashboard(manual = false) {
   state.refreshSeconds = Math.max(30, valueNumber(state.session.refreshSeconds) || 60);
   const requests = [];
 
-  if (state.session.operationalReady) {
+  if (state.session.allowOperational && state.session.operationalReady) {
     requests.push(
       fetchJSON("/api/operational/api/management-report")
         .then((data) => { state.operational = data; })
         .catch((error) => { state.errors.operational = error.message; state.operational = null; })
     );
-  } else {
+  } else if (state.session.allowOperational) {
     state.errors.operational = state.session.operationalMessage || "داده عملیاتی آماده نیست.";
     state.operational = null;
   }
 
-  if (state.session.financialReady && state.session.financialToken) {
+  if (state.session.allowFinancial && state.session.financialReady && state.session.financialToken) {
     const headers = { Authorization: `Bearer ${state.session.financialToken}` };
     requests.push(
       fetchJSON("/api/financial/api/workspace/summary", { headers })
@@ -116,7 +118,7 @@ async function loadDashboard(manual = false) {
         .then((data) => { state.financialAlerts = list(data?.rows); })
         .catch((error) => { state.errors.financialAlerts = error.message; state.financialAlerts = []; })
     );
-  } else {
+  } else if (state.session.allowFinancial) {
     state.errors.financial = state.session.financialMessage || "داده مالی آماده نیست.";
     state.financial = null;
     state.financialAlerts = [];
@@ -236,8 +238,26 @@ function renderHall() {
   if (specialized) {
     renderSpecializedHall(state.hall.data);
   } else {
-    renderOperationalHallFallback();
+    renderUnavailableHall();
   }
+}
+
+function renderUnavailableHall() {
+  byId("hallSourceLabel").textContent = "ورود به برنامه راندمان سالن";
+  byId("hallModeBadge").textContent = "در انتظار داده";
+  const note = byId("hallIntegrationNote");
+  note.hidden = false;
+  note.textContent = state.errors.hall || "هنوز داده تأییدشده‌ای از برنامه راندمان سالن دریافت نشده است.";
+  byId("hallMetrics").innerHTML = [
+    metricCard("راندمان کل سالن", "—", "", "پس از ثبت اولین شیفت نمایش داده می‌شود"),
+    metricCard("ماشین فعال", "—", "", "منتظر داده سالن"),
+    metricCard("توقف ثبت‌شده", "—", "", "منتظر داده سالن"),
+    metricCard("بافنده‌ها", "—", "", "منتظر داده سالن")
+  ].join("");
+  byId("hallTableTitle").textContent = "وضعیت ماشین‌ها";
+  byId("hallTableHead").innerHTML = "<tr><th>ماشین</th><th>بافنده</th><th>راندمان</th><th>متر تولید</th><th>توقف</th><th>وضعیت</th></tr>";
+  byId("hallMachineRows").innerHTML = emptyTableRow(6, note.textContent);
+  byId("hallWeaverCard").hidden = true;
 }
 
 function renderSpecializedHall(payload) {
@@ -340,21 +360,43 @@ function emptyTableRow(columns, message) {
 }
 
 function setTab(tab, userInitiated = false) {
-  if (!tabs.includes(tab)) tab = "operations";
+  if (!availableTabs.includes(tab)) tab = availableTabs[0] || "operations";
   state.activeTab = tab;
   for (const name of tabs) {
     const button = document.querySelector(`[data-tab="${name}"]`);
     const panel = byId(`panel${name[0].toUpperCase()}${name.slice(1)}`);
     const active = name === tab;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", String(active));
-    panel.classList.toggle("active", active);
-    panel.hidden = !active;
+    if (button) {
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", String(active));
+    }
+    if (panel) {
+      panel.classList.toggle("active", active);
+      panel.hidden = !active;
+    }
   }
   const url = new URL(window.location.href);
   url.searchParams.set("tab", tab);
   history.replaceState(null, "", url);
   if (userInitiated && state.tvMode) restartTVRotation();
+}
+
+function configureModuleTabs() {
+  const allowed = {
+    operations: Boolean(state.session?.allowOperational),
+    finance: Boolean(state.session?.allowFinancial),
+    hall: Boolean(state.session?.allowWeaving)
+  };
+  availableTabs = tabs.filter((name) => allowed[name]);
+  for (const name of tabs) {
+    const button = document.querySelector(`[data-tab="${name}"]`);
+    const panel = byId(`panel${name[0].toUpperCase()}${name.slice(1)}`);
+    if (button) button.hidden = !allowed[name];
+    if (panel && !allowed[name]) panel.hidden = true;
+  }
+  const hallLink = byId("hallSourceLabel");
+  if (hallLink && state.session?.weavingEntryURL) hallLink.href = state.session.weavingEntryURL;
+  setTab(availableTabs.includes(state.activeTab) ? state.activeTab : availableTabs[0]);
 }
 
 function toggleTVMode() {
@@ -376,8 +418,8 @@ function restartTVRotation() {
   clearInterval(state.tvTimer);
   if (!state.tvMode) return;
   state.tvTimer = setInterval(() => {
-    const index = tabs.indexOf(state.activeTab);
-    setTab(tabs[(index + 1) % tabs.length]);
+    const index = availableTabs.indexOf(state.activeTab);
+    if (availableTabs.length) setTab(availableTabs[(index + 1) % availableTabs.length]);
   }, 25000);
 }
 
