@@ -15,7 +15,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web-builder /web/dist ./web/dist
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/operational-cycle ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/operational-cycle ./cmd/server \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/legacysync ./cmd/legacysync
 
 FROM alpine:3.22
 
@@ -26,6 +27,7 @@ ENV PORT=8091
 ENV OPERATIONAL_DB_DRIVER=postgres
 
 COPY --from=builder /out/operational-cycle /app/operational-cycle
+COPY --from=builder /out/legacysync /app/legacysync
 COPY --from=builder /app/web/dist /app/web/dist
 
 EXPOSE 8091

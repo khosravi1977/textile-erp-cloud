@@ -14,6 +14,13 @@ This project now includes a repeatable sync tool for importing the legacy operat
 - PowerShell: [sync_legacy_operational_db.ps1](/F:/project/textile_erp_clean/sync_legacy_operational_db.ps1)
 - Batch wrapper: [sync_legacy_operational_db.bat](/F:/project/textile_erp_clean/sync_legacy_operational_db.bat)
 - Go command: [operational_cycle_go/cmd/legacysync/main.go](/F:/project/textile_erp_clean/operational_cycle_go/cmd/legacysync/main.go)
+- Production operational image: `/app/legacysync`
+
+The production binary is built in GitHub Actions together with the reviewed
+operational image. Do not compile the migration tool on the VPS. Copy the source
+snapshot into the running operational container, run a dry run against the
+explicit tenant schema, inspect the generated report, and only then run the
+committing import.
 
 ## Usage
 
