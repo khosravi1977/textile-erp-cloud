@@ -54,6 +54,7 @@ type portalApp struct {
 	operationalSessionSecret       string
 	weavingMonitorURL              string
 	weavingMonitorToken            string
+	weavingAppURL                  string
 	adminUsername                  string
 	adminPassword                  string
 	sessionSecret                  string
@@ -89,6 +90,8 @@ type projectAccess struct {
 	MustChangePassword bool      `json:"must_change_password,omitempty"`
 	AllowFinancial     bool      `json:"allow_financial,omitempty"`
 	AllowOperational   bool      `json:"allow_operational,omitempty"`
+	AllowWeaving       bool      `json:"allow_weaving,omitempty"`
+	WeavingTenantID    string    `json:"weaving_tenant_id,omitempty"`
 	ExpiresAt          time.Time `json:"expires_at"`
 	AccessToken        string    `json:"access_token"`
 	PasswordHash       string    `json:"password_hash,omitempty"`
@@ -218,6 +221,10 @@ func effectiveAllowOperational(record projectAccess) bool {
 	return record.AllowOperational
 }
 
+func effectiveAllowWeaving(record projectAccess) bool {
+	return record.ProjectKey == "textile-erp" && record.AllowWeaving
+}
+
 func effectiveCanManageTeam(record projectAccess) bool {
 	if record.ProjectKey != "textile-erp" {
 		return false
@@ -234,32 +241,31 @@ func accessRequiresSetup(record projectAccess) bool {
 		strings.TrimSpace(record.PasswordHash) == ""
 }
 
-func normalizeModuleAccess(projectKey string, allowFinancial, allowOperational bool) (bool, bool) {
+func normalizeModuleAccess(projectKey string, allowFinancial, allowOperational, allowWeaving bool) (bool, bool, bool) {
 	if projectKey != "textile-erp" {
-		return false, false
+		return false, false, false
 	}
-	if !allowFinancial && !allowOperational {
-		return true, true
-	}
-	return allowFinancial, allowOperational
+	return allowFinancial, allowOperational, allowWeaving
 }
 
 func accessModuleLabel(record projectAccess) string {
 	if record.ProjectKey != "textile-erp" {
 		return "پروژه"
 	}
-	financial := effectiveAllowFinancial(record)
-	operational := effectiveAllowOperational(record)
-	switch {
-	case financial && operational:
-		return "مالی + عملیاتی"
-	case financial:
-		return "فقط مالی"
-	case operational:
-		return "فقط عملیاتی"
-	default:
+	parts := make([]string, 0, 3)
+	if effectiveAllowFinancial(record) {
+		parts = append(parts, "مالی")
+	}
+	if effectiveAllowOperational(record) {
+		parts = append(parts, "عملیاتی")
+	}
+	if effectiveAllowWeaving(record) {
+		parts = append(parts, "راندمان سالن")
+	}
+	if len(parts) == 0 {
 		return "بدون دسترسی ماژول"
 	}
+	return strings.Join(parts, " + ")
 }
 
 func accessRoleLabel(role string) string {
@@ -304,7 +310,7 @@ func accessUsernameTaken(items []projectAccess, scope projectAccess, username st
 			continue
 		}
 		if scope.ProjectKey == "textile-erp" {
-			if !sameTenantAccess(scope, item) {
+			if item.ProjectKey != "textile-erp" {
 				continue
 			}
 		} else if item.ProjectKey != scope.ProjectKey {
@@ -368,6 +374,7 @@ func main() {
 	operationalSessionSecret := strings.TrimSpace(env("PORTAL_OPERATIONAL_SECRET", sessionSecret))
 	weavingMonitorURL := strings.TrimSpace(env("PORTAL_WEAVING_MONITOR_SUMMARY_URL", ""))
 	weavingMonitorToken := strings.TrimSpace(env("PORTAL_WEAVING_MONITOR_TOKEN", ""))
+	weavingAppURL := normalizeBaseURL(env("PORTAL_WEAVING_APP_URL", "https://weaving.vioraapps.com"), "https://weaving.vioraapps.com")
 	localMode := envBool("PORTAL_LOCAL_MODE", false)
 	localCompanyID := envInt64("PORTAL_LOCAL_COMPANY_ID", 2)
 	localCompanyName := strings.TrimSpace(env("PORTAL_LOCAL_COMPANY_NAME", "پرگل"))
@@ -396,6 +403,7 @@ func main() {
 		operationalSessionSecret:       operationalSessionSecret,
 		weavingMonitorURL:              weavingMonitorURL,
 		weavingMonitorToken:            weavingMonitorToken,
+		weavingAppURL:                  strings.TrimRight(weavingAppURL, "/"),
 		adminUsername:                  adminUsername,
 		adminPassword:                  adminPassword,
 		sessionSecret:                  sessionSecret,
@@ -559,6 +567,7 @@ func (a *portalApp) health(w http.ResponseWriter, r *http.Request) {
 		"financialApi":   a.financialAPIURL,
 		"operationalApi": a.operationalAPI,
 		"coolerStore":    a.coolerStoreURL,
+		"weavingApp":     a.weavingAppURL,
 		"accessManager":  "ok",
 	})
 }
@@ -570,26 +579,37 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := a.accessRecordFromRequest(r)
 	hasAccess := err == nil && record.ProjectKey == "textile-erp"
-	cardParts := make([]string, 0, 5)
-	cardParts = append(cardParts, `<a class="card mobile" href="/HesabYar.apk?v=1.0.2-production-20260802">دانلود اپ حسابیار برای اندروید</a>`)
-	cardParts = append(cardParts, `<a class="card executive" href="/executive/">مرکز فرمان سه‌گانه مدیر</a>`)
+	cardParts := make([]string, 0, 6)
 	statusParts := []string{
-		`<div class="pill">هر بخش ورود مستقل و امن دارد</div>`,
-		`<div class="pill">مدیر: دسترسی کامل</div>`,
+		`<div class="pill">یک نام کاربری و رمز برای همه بخش‌های مجاز</div>`,
+		`<div class="pill">نمایش فقط بخش‌های خریداری‌شده</div>`,
 	}
 	title := "درگاه دسترسی ERP نساجی"
-	hint := "برای ورود به هر بخش، نام کاربری و رمز عبور همان کاربر را وارد کنید."
-	foot := "کاربران و سطح دسترسی آن‌ها ابتدا در بخش مدیریت کاربران تعریف می‌شوند. مدیر به همه بخش‌ها دسترسی کامل دارد."
-	cardParts = append(cardParts,
-		`<a class="card" href="/module-login?module=financial">ورود به ماژول مالی</a>`,
-		`<a class="card secondary" href="/module-login?module=operational">ورود به ماژول عملیاتی</a>`,
-		`<a class="card accent" href="/team">مدیریت کاربران</a>`,
-	)
+	hint := "یک‌بار وارد شوید؛ سپس بخش‌های مجاز بدون درخواست دوبارهٔ رمز باز می‌شوند."
+	foot := "مدیر شرکت می‌تواند برای هر کارمند، از میان بخش‌های خریداری‌شده دسترسی مناسب تعیین کند."
 	if hasAccess {
+		if effectiveAllowFinancial(record) {
+			cardParts = append(cardParts, `<a class="card" href="/module-login?module=financial">ورود به بخش مالی</a>`, `<a class="card mobile" href="/HesabYar.apk?v=1.0.2-production-20260802">دانلود اپ حسابیار</a>`)
+		}
+		if effectiveAllowOperational(record) {
+			cardParts = append(cardParts, `<a class="card secondary" href="/module-login?module=operational">ورود به بخش عملیاتی</a>`)
+		}
+		if effectiveAllowWeaving(record) {
+			cardParts = append(cardParts, `<a class="card weaving" href="/module-login?module=weaving">ورود به راندمان سالن بافت</a>`)
+		}
+		role := effectiveAccessRole(record)
+		if role == "owner" || role == "manager" {
+			cardParts = append(cardParts, `<a class="card executive" href="/executive/">مرکز فرمان مدیر نساجی</a>`)
+		}
+		if effectiveCanManageTeam(record) {
+			cardParts = append(cardParts, `<a class="card accent" href="/team">مدیریت کاربران و دسترسی‌ها</a>`)
+		}
 		statusParts = append(statusParts,
 			`<div class="pill">شرکت: `+html.EscapeString(record.CompanyName)+`</div>`,
 			`<div class="pill">کاربر فعلی: `+html.EscapeString(record.Username)+`</div>`,
 		)
+	} else {
+		cardParts = append(cardParts, `<a class="card" href="/login">ورود یکپارچه به Textile ERP</a>`)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -609,6 +629,7 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
     a.accent{background:#5c4334;border-color:#8c6a51}
     a.mobile{background:#176b5b;border-color:#2c927c}
     a.executive{background:#0f4c5c;border-color:#2b8398}
+	    a.weaving{background:#176b5b;border-color:#42a78f}
     .empty{background:#f4e7d6;color:#5f4635;border-color:#ddc2a5}
     a:hover{filter:brightness(1.08)}
     .status{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:22px;color:#7a6355;font-size:12px}
@@ -693,9 +714,12 @@ func (a *portalApp) customerLogin(w http.ResponseWriter, r *http.Request) {
 		if a.verifyAccessPassword(record.AccessToken, password) != nil {
 			continue
 		}
-		if record.MustChangePassword || accessRequiresSetup(record) {
+		if accessRequiresSetup(record) {
 			http.Redirect(w, r, "/access/"+url.PathEscape(record.AccessToken), http.StatusSeeOther)
 			return
+		}
+		if record.MustChangePassword {
+			record, _ = a.setAccessMustChangePassword(record.ID, false)
 		}
 		a.setPortalAccessCookie(w, r, record.AccessToken, record.ExpiresAt)
 		_ = a.markAccessUsed(record.ID)
@@ -722,8 +746,13 @@ func safePortalNext(value string) string {
 }
 
 func (a *portalApp) customerLogout(w http.ResponseWriter, r *http.Request) {
+	record, recordErr := a.accessRecordFromRequest(r)
 	for _, cookieName := range []string{accessCookieName, financialAccessCookieName, operationalAccessCookieName, "operational_session"} {
 		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: isSecureRequest(r), MaxAge: -1})
+	}
+	if recordErr == nil && effectiveAllowWeaving(record) {
+		http.Redirect(w, r, strings.TrimRight(a.weavingAppURL, "/")+"/api/auth/portal-logout", http.StatusSeeOther)
+		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -739,12 +768,18 @@ func moduleTitle(module string) string {
 	if module == "operational" {
 		return "بخش عملیاتی"
 	}
+	if module == "weaving" {
+		return "راندمان سالن بافت"
+	}
 	return "بخش مالی"
 }
 
 func moduleTarget(module string) string {
 	if module == "operational" {
 		return "/operational/"
+	}
+	if module == "weaving" {
+		return "/module-login?module=weaving"
 	}
 	return "/financial/"
 }
@@ -753,11 +788,14 @@ func moduleAllowed(record projectAccess, module string) bool {
 	if module == "operational" {
 		return effectiveAllowOperational(record)
 	}
+	if module == "weaving" {
+		return effectiveAllowWeaving(record)
+	}
 	return module == "financial" && effectiveAllowFinancial(record)
 }
 
 func (a *portalApp) moduleRecordFromRequest(r *http.Request, module string) (projectAccess, error) {
-	if module != "financial" && module != "operational" {
+	if module != "financial" && module != "operational" && module != "weaving" {
 		return projectAccess{}, errors.New("invalid module")
 	}
 	cookie, err := r.Cookie(moduleCookieName(module))
@@ -781,6 +819,7 @@ func (a *portalApp) moduleRecordFromRequest(r *http.Request, module string) (pro
 		if !a.canUseSingleUserModuleSSO(record) {
 			return projectAccess{}, errors.New("password login is required in team mode")
 		}
+	case "portal":
 	default:
 		return projectAccess{}, errors.New("module session is not valid")
 	}
@@ -893,7 +932,7 @@ func (a *portalApp) moduleLogin(w http.ResponseWriter, r *http.Request) {
 			module = strings.ToLower(strings.TrimSpace(r.Form.Get("module")))
 		}
 	}
-	if module != "financial" && module != "operational" {
+	if module != "financial" && module != "operational" && module != "weaving" {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
@@ -902,6 +941,18 @@ func (a *portalApp) moduleLogin(w http.ResponseWriter, r *http.Request) {
 		nextPath = moduleTarget(module)
 	}
 	if r.Method == http.MethodGet {
+		if module == "weaving" {
+			if record, err := a.accessRecordFromRequest(r); err == nil &&
+				record.ProjectKey == "textile-erp" &&
+				!record.MustChangePassword &&
+				!accessRequiresSetup(record) &&
+				moduleAllowed(record, module) {
+				a.redirectToWeavingSSO(w, r, record)
+				return
+			}
+			a.renderModuleLogin(w, module, nextPath, "")
+			return
+		}
 		if _, err := a.moduleRecordFromRequest(r, module); err == nil {
 			http.Redirect(w, r, nextPath, http.StatusSeeOther)
 			return
@@ -910,9 +961,8 @@ func (a *portalApp) moduleLogin(w http.ResponseWriter, r *http.Request) {
 			record.ProjectKey == "textile-erp" &&
 			!record.MustChangePassword &&
 			!accessRequiresSetup(record) &&
-			moduleAllowed(record, module) &&
-			a.canUseSingleUserModuleSSO(record) {
-			if err := a.setModuleAccessCookie(w, r, module, "single-user", record); err != nil {
+			moduleAllowed(record, module) {
+			if err := a.setModuleAccessCookie(w, r, module, "portal", record); err != nil {
 				log.Printf("single-user module session failed for access=%d: %v", record.ID, err)
 				a.renderModuleLogin(w, module, nextPath, "ورود خودکار برقرار نشد؛ با نام کاربری و رمز عبور وارد شوید.")
 				return
@@ -935,15 +985,23 @@ func (a *portalApp) moduleLogin(w http.ResponseWriter, r *http.Request) {
 		a.renderModuleLogin(w, module, nextPath, "نام کاربری یا رمز عبور صحیح نیست.")
 		return
 	}
-	if record.MustChangePassword || accessRequiresSetup(record) {
+	if accessRequiresSetup(record) {
 		a.renderModuleLogin(w, module, nextPath, "حساب کاربر هنوز تکمیل نشده است. مدیر باید برای این کاربر نام کاربری و رمز عبور مشخص کند.")
 		return
+	}
+	if record.MustChangePassword {
+		record, _ = a.setAccessMustChangePassword(record.ID, false)
 	}
 	if !moduleAllowed(record, module) {
 		a.renderModuleLogin(w, module, nextPath, "این کاربر اجازه ورود به "+moduleTitle(module)+" را ندارد.")
 		return
 	}
 	a.setPortalAccessCookie(w, r, record.AccessToken, record.ExpiresAt)
+	if module == "weaving" {
+		_ = a.markAccessUsed(record.ID)
+		a.redirectToWeavingSSO(w, r, record)
+		return
+	}
 	if err := a.setModuleAccessCookie(w, r, module, "password", record); err != nil {
 		log.Printf("password module session failed for access=%d: %v", record.ID, err)
 		a.renderModuleLogin(w, module, nextPath, "نشست امن ورود ایجاد نشد؛ دوباره تلاش کنید.")
@@ -1105,6 +1163,7 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
     .active{background:#ecfdf5;color:#166534}
     .inactive{background:#fef2f2;color:#991b1b}
     .muted{color:#6b7c93}
+	    .module-options{display:grid;gap:9px;padding:12px;border:1px solid #ced8e3;border-radius:12px;background:#f8fafc}.module-option{display:flex;align-items:center;gap:9px}.module-option input{width:auto}
     .table-actions{display:flex;gap:8px;flex-wrap:wrap}
     .empty{padding:24px;text-align:center;color:#6b7c93}
     @media(max-width:980px){.grid{grid-template-columns:1fr}.row{grid-template-columns:1fr}}
@@ -1136,6 +1195,13 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
           <label id="financialCompanyField">شناسه شرکت مالی (Textile ERP)
             <input name="financial_company_id" type="number" min="1" placeholder="مثلا 1">
           </label>
+	          <div id="moduleFields" class="module-options">
+	            <strong>بخش‌های خریداری‌شده مشتری</strong>
+	            <label class="module-option"><input name="allow_financial" type="checkbox" checked> بخش مالی</label>
+	            <label class="module-option"><input name="allow_operational" type="checkbox"> بخش عملیاتی</label>
+	            <label class="module-option"><input name="allow_weaving" type="checkbox"> راندمان سالن بافت</label>
+	            <span class="muted">مرکز فرمان مدیر برای همه رایگان است و فقط همین بخش‌های فعال را نمایش می‌دهد.</span>
+	          </div>
           <label>نام شرکت
             <input name="company_name" required placeholder="مثلا: شرکت بافت نوین">
           </label>
@@ -1220,6 +1286,7 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
     const passwordHelp = document.getElementById('passwordHelp');
     const tenantHelp = document.getElementById('tenantHelp');
     const financialCompanyField = document.getElementById('financialCompanyField');
+	    const moduleFields = document.getElementById('moduleFields');
     const projectKeyInput = form.querySelector('[name="project_key"]');
     const financialCompanyInput = form.querySelector('[name="financial_company_id"]');
     const resultBox = document.getElementById('resultBox');
@@ -1251,6 +1318,7 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
     function syncProjectFields() {
       const isTextile = projectKeyInput.value === 'textile-erp';
       financialCompanyField.style.display = isTextile ? 'grid' : 'none';
+	      moduleFields.style.display = isTextile ? 'grid' : 'none';
       financialCompanyInput.required = isTextile;
       form.username.required = !isTextile;
       form.password.required = !isTextile;
@@ -1298,6 +1366,10 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
         access_role: row.access_role || row.accessRole || '',
         permissions: Array.isArray(row.permissions) ? row.permissions : [],
         can_manage_team: typeof row.can_manage_team === 'boolean' ? row.can_manage_team : !!row.canManageTeam,
+	        allow_financial: typeof row.allow_financial === 'boolean' ? row.allow_financial : !!row.allowFinancial,
+	        allow_operational: typeof row.allow_operational === 'boolean' ? row.allow_operational : !!row.allowOperational,
+	        allow_weaving: typeof row.allow_weaving === 'boolean' ? row.allow_weaving : !!row.allowWeaving,
+	        module_access_label: row.module_access_label || row.moduleAccessLabel || '',
         requires_setup: typeof row.requires_setup === 'boolean' ? row.requires_setup : !!row.requiresSetup,
         expires_at: row.expires_at || row.expiresAt || '',
         access_link: row.access_link || row.accessLink || '',
@@ -1321,6 +1393,9 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
       form.access_id.value = '';
       form.trial_days.value = '30';
       financialCompanyInput.value = '';
+	      form.allow_financial.checked = true;
+	      form.allow_operational.checked = false;
+	      form.allow_weaving.checked = false;
       formTitle.textContent = 'ایجاد دسترسی جدید';
       submitBtn.textContent = 'ایجاد دسترسی';
       cancelEditBtn.style.display = 'none';
@@ -1338,6 +1413,9 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
       form.contact_name.value = row.contact_name || '';
       form.username.value = row.username;
       financialCompanyInput.value = row.financial_company_id > 0 ? String(row.financial_company_id) : '';
+	      form.allow_financial.checked = row.allow_financial;
+	      form.allow_operational.checked = row.allow_operational;
+	      form.allow_weaving.checked = row.allow_weaving;
       form.trial_days.value = '30';
       form.expires_at.value = toLocalInputValue(row.expires_at);
       form.notes.value = row.notes || '';
@@ -1356,6 +1434,7 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
         'شرکت: ' + row.company_name,
         'نام کاربری: ' + row.username,
         'رمز عبور: ' + (row.password || 'برای این رکورد رمز ذخیره نشده است؛ یک ویرایش با رمز جدید انجام دهید.'),
+	        'بخش‌های خریداری‌شده: ' + (row.module_access_label || '-'),
         'انقضا: ' + formatDate(row.expires_at),
         'لینک: ' + row.access_link,
       ].join('\n');
@@ -1373,7 +1452,7 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
         return '<tr>'
           + '<td>' + row.project_label + '</td>'
           + '<td><strong>' + row.company_name + '</strong><div class="muted">' + (row.contact_name || '-') + '</div></td>'
-          + '<td>' + row.username + '</td>'
+	          + '<td>' + row.username + '<div class="muted">' + row.module_access_label + '</div></td>'
           + '<td>' + formatDate(row.expires_at) + '</td>'
           + '<td>' + badge(row.is_active, row.is_expired) + '</td>'
           + '<td><div class="table-actions">'
@@ -1397,6 +1476,7 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
         '<div>شرکت: <strong>' + latestResult.company_name + '</strong></div>' +
         '<div>نام کاربری: <strong>' + (latestResult.username || 'در انتظار ایجاد حساب') + '</strong></div>' +
         '<div>رمز عبور: <strong>' + passwordText + '</strong></div>' +
+	    '<div>بخش‌های خریداری‌شده: <strong>' + (latestResult.module_access_label || '-') + '</strong></div>' +
         '<div>تاریخ انقضا: <strong>' + formatDate(latestResult.expires_at) + '</strong></div>';
       resultLinkInput.value = latestResult.access_link;
       resultOpenLink.href = latestResult.access_link;
@@ -1453,15 +1533,18 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       try {
+	        if (projectKeyInput.value === 'textile-erp' && !form.access_id.value && (!form.username.value.trim() || !form.password.value.trim())) suggestCredentials();
         const formData = new FormData(form);
         const accessID = String(formData.get('access_id') || '').trim();
         const editingRow = accessCache.find((item) => String(item.id) === accessID);
         const projectKey = formData.get('project_key');
         const username = String(formData.get('username') || '').trim();
         const password = String(formData.get('password') || '').trim();
-        const requiresSetup = projectKey === 'textile-erp'
-          ? (editingRow ? !!editingRow.requires_setup : (!username && !password))
-          : false;
+	        const requiresSetup = false;
+	        const allowFinancial = form.allow_financial.checked;
+	        const allowOperational = form.allow_operational.checked;
+	        const allowWeaving = form.allow_weaving.checked;
+	        if (projectKey === 'textile-erp' && !allowFinancial && !allowOperational && !allowWeaving) throw new Error('حداقل یکی از سه بخش را برای مشتری فعال کنید.');
         const payload = {
           projectKey,
           companyName: formData.get('company_name'),
@@ -1476,6 +1559,9 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
           accessRole: editingRow ? editingRow.access_role : (projectKey === 'textile-erp' ? 'owner' : 'customer'),
           permissions: editingRow ? editingRow.permissions : [],
           canManageTeam: editingRow ? editingRow.can_manage_team : (projectKey === 'textile-erp'),
+	          allowFinancial,
+	          allowOperational,
+	          allowWeaving,
         };
         const isEdit = accessID !== '';
         const data = await api(isEdit ? '/admin/api/accesses/' + accessID : '/admin/api/accesses', {
@@ -1574,6 +1660,8 @@ type accessRequest struct {
 	AllowFinancial2     *bool    `json:"allow_financial"`
 	AllowOperational    *bool    `json:"allowOperational"`
 	AllowOperational2   *bool    `json:"allow_operational"`
+	AllowWeaving        *bool    `json:"allowWeaving"`
+	AllowWeaving2       *bool    `json:"allow_weaving"`
 }
 
 func decodeAccessRequest(r *http.Request) (accessRequest, error) {
@@ -1619,6 +1707,9 @@ func decodeAccessRequest(r *http.Request) (accessRequest, error) {
 	}
 	if req.AllowOperational == nil {
 		req.AllowOperational = req.AllowOperational2
+	}
+	if req.AllowWeaving == nil {
+		req.AllowWeaving = req.AllowWeaving2
 	}
 	req.ProjectKey = strings.TrimSpace(req.ProjectKey)
 	req.CompanyName = strings.TrimSpace(req.CompanyName)
@@ -1840,6 +1931,7 @@ func (a *portalApp) adminAccesses(w http.ResponseWriter, r *http.Request) {
 		canManageTeam := boolPtrValue(req.CanManageTeam, req.ProjectKey == "textile-erp")
 		allowFinancial := boolPtrValue(req.AllowFinancial, req.ProjectKey == "textile-erp")
 		allowOperational := boolPtrValue(req.AllowOperational, req.ProjectKey == "textile-erp")
+		allowWeaving := boolPtrValue(req.AllowWeaving, false)
 		accessRole := strings.TrimSpace(req.AccessRole)
 		if accessRole == "" && req.ProjectKey == "textile-erp" {
 			accessRole = "owner"
@@ -1857,7 +1949,7 @@ func (a *portalApp) adminAccesses(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		access, rawPassword, err := a.createManagedAccess(req.ProjectKey, req.CompanyName, req.ContactName, req.Username, req.Password, req.FinancialCompanyID, expiresAt, req.Notes, accessRole, req.Permissions, canManageTeam, requiresSetup, allowFinancial, allowOperational)
+		access, rawPassword, err := a.createManagedAccess(req.ProjectKey, req.CompanyName, req.ContactName, req.Username, req.Password, req.FinancialCompanyID, expiresAt, req.Notes, accessRole, req.Permissions, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving)
 		if err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -1908,6 +2000,7 @@ func (a *portalApp) adminAccessByID(w http.ResponseWriter, r *http.Request) {
 		canManageTeam := boolPtrValue(req.CanManageTeam, req.ProjectKey == "textile-erp")
 		allowFinancial := boolPtrValue(req.AllowFinancial, req.ProjectKey == "textile-erp")
 		allowOperational := boolPtrValue(req.AllowOperational, req.ProjectKey == "textile-erp")
+		allowWeaving := boolPtrValue(req.AllowWeaving, false)
 		accessRole := strings.TrimSpace(req.AccessRole)
 		if accessRole == "" && req.ProjectKey == "textile-erp" {
 			accessRole = "owner"
@@ -1929,7 +2022,7 @@ func (a *portalApp) adminAccessByID(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		access, rawPassword, err := a.updateManagedAccess(id, req.ProjectKey, req.CompanyName, req.ContactName, req.Username, req.Password, req.FinancialCompanyID, expiresAt, req.Notes, accessRole, req.Permissions, canManageTeam, requiresSetup, allowFinancial, allowOperational)
+		access, rawPassword, err := a.updateManagedAccess(id, req.ProjectKey, req.CompanyName, req.ContactName, req.Username, req.Password, req.FinancialCompanyID, expiresAt, req.Notes, accessRole, req.Permissions, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving)
 		if err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -2227,12 +2320,27 @@ func (a *portalApp) teamPage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`<!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>مدیریت کاربران ERP</title>
 <style>
-*{box-sizing:border-box}body{margin:0;background:#08111f;color:#e5edf8;font-family:Tahoma,Arial;min-height:100vh}.top{position:sticky;top:0;z-index:3;background:#0d192b;border-bottom:1px solid #263850;padding:14px 22px;display:flex;align-items:center;justify-content:space-between;gap:12px}.top h1{font-size:21px;margin:0}.top a{color:#bfdbfe;text-decoration:none;border:1px solid #3b4f69;border-radius:10px;padding:9px 12px}.wrap{max-width:1250px;margin:auto;padding:24px}.intro{color:#9fb0c8;line-height:1.9;margin:5px 0 20px}.layout{display:grid;grid-template-columns:390px 1fr;gap:20px}.card{background:#111e31;border:1px solid #2d4059;border-radius:16px;padding:20px;box-shadow:0 16px 45px #0003}h2{margin:0 0 16px;font-size:18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:grid;gap:7px;margin-bottom:12px}.field.full{grid-column:1/-1}label{font-size:13px;color:#b8c5d6}input,select,textarea{width:100%;border:1px solid #40536d;border-radius:10px;padding:11px 12px;background:#081323;color:#f8fafc;font:inherit}textarea{resize:vertical;min-height:75px}.check{display:flex;align-items:center;gap:9px;border:1px solid #40536d;border-radius:10px;padding:11px}.check input{width:auto}.primary,.small{border:0;border-radius:10px;background:#2563eb;color:white;padding:11px 15px;font-weight:bold;cursor:pointer}.primary{width:100%}.mutedBtn{background:#334155}.danger{background:#b91c1c}.warn{background:#b45309}.msg{display:none;margin:14px 0;border-radius:10px;padding:11px;line-height:1.7}.msg.ok{display:block;background:#064e3b;color:#d1fae5}.msg.err{display:block;background:#7f1d1d;color:#fee2e2}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px}.user{border:1px solid #30445d;background:#0a1627;border-radius:13px;padding:15px;margin-bottom:12px}.userHead{display:flex;justify-content:space-between;gap:12px;align-items:start}.name{font-weight:bold;font-size:16px}.sub{color:#94a3b8;font-size:12px;margin-top:7px;line-height:1.9}.tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.tag{border-radius:999px;padding:5px 9px;font-size:11px;font-weight:bold;background:#1e3a5f;color:#bfdbfe}.tag.fin{background:#064e3b;color:#a7f3d0}.tag.op{background:#0c4a6e;color:#bae6fd}.tag.off{background:#7f1d1d;color:#fecaca}.credentials{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}.cred{direction:ltr;text-align:left;border:1px dashed #415a77;border-radius:9px;padding:9px;color:#dbeafe;font-size:12px;overflow-wrap:anywhere}.actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.small{font-size:11px;padding:8px 10px}.empty{text-align:center;color:#94a3b8;padding:35px}.current{color:#fbbf24;font-size:11px}.help{font-size:12px;color:#93a4ba;line-height:1.8;border:1px solid #334155;background:#0a1627;border-radius:10px;padding:10px;margin-bottom:12px}@media(max-width:900px){.layout{grid-template-columns:1fr}.grid{grid-template-columns:1fr}.credentials{grid-template-columns:1fr}.top{align-items:flex-start}.wrap{padding:14px}}
+*{box-sizing:border-box}body{margin:0;background:#08111f;color:#e5edf8;font-family:Tahoma,Arial;min-height:100vh}.top{position:sticky;top:0;z-index:3;background:#0d192b;border-bottom:1px solid #263850;padding:14px 22px;display:flex;align-items:center;justify-content:space-between;gap:12px}.top h1{font-size:21px;margin:0}.top a{color:#bfdbfe;text-decoration:none;border:1px solid #3b4f69;border-radius:10px;padding:9px 12px}.wrap{max-width:1250px;margin:auto;padding:24px}.intro{color:#9fb0c8;line-height:1.9;margin:5px 0 20px}.layout{display:grid;grid-template-columns:390px 1fr;gap:20px}.card{background:#111e31;border:1px solid #2d4059;border-radius:16px;padding:20px;box-shadow:0 16px 45px #0003}h2{margin:0 0 16px;font-size:18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:grid;gap:7px;margin-bottom:12px}.field.full{grid-column:1/-1}label{font-size:13px;color:#b8c5d6}input,select,textarea{width:100%;border:1px solid #40536d;border-radius:10px;padding:11px 12px;background:#081323;color:#f8fafc;font:inherit}textarea{resize:vertical;min-height:75px}.check{display:flex;align-items:center;gap:9px;border:1px solid #40536d;border-radius:10px;padding:11px}.check input{width:auto}.primary,.small{border:0;border-radius:10px;background:#2563eb;color:white;padding:11px 15px;font-weight:bold;cursor:pointer}.primary{width:100%}.mutedBtn{background:#334155}.danger{background:#b91c1c}.warn{background:#b45309}.msg{display:none;margin:14px 0;border-radius:10px;padding:11px;line-height:1.7}.msg.ok{display:block;background:#064e3b;color:#d1fae5}.msg.err{display:block;background:#7f1d1d;color:#fee2e2}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px}.user{border:1px solid #30445d;background:#0a1627;border-radius:13px;padding:15px;margin-bottom:12px}.userHead{display:flex;justify-content:space-between;gap:12px;align-items:start}.name{font-weight:bold;font-size:16px}.sub{color:#94a3b8;font-size:12px;margin-top:7px;line-height:1.9}.tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.tag{border-radius:999px;padding:5px 9px;font-size:11px;font-weight:bold;background:#1e3a5f;color:#bfdbfe}.tag.fin{background:#064e3b;color:#a7f3d0}.tag.op{background:#0c4a6e;color:#bae6fd}.tag.weave{background:#134e4a;color:#99f6e4}.tag.off{background:#7f1d1d;color:#fecaca}.credentials{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}.cred{direction:ltr;text-align:left;border:1px dashed #415a77;border-radius:9px;padding:9px;color:#dbeafe;font-size:12px;overflow-wrap:anywhere}.cred button{float:right;margin-left:6px}.actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}.small{font-size:11px;padding:8px 10px}.empty{text-align:center;color:#94a3b8;padding:35px}.current{color:#fbbf24;font-size:11px}.help{font-size:12px;color:#93a4ba;line-height:1.8;border:1px solid #334155;background:#0a1627;border-radius:10px;padding:10px;margin-bottom:12px}@media(max-width:900px){.layout{grid-template-columns:1fr}.grid{grid-template-columns:1fr}.credentials{grid-template-columns:1fr}.top{align-items:flex-start}.wrap{padding:14px}}
 </style></head><body>
 <header class="top"><div><h1>مدیریت کاربران و سطح دسترسی</h1><div class="sub">مدیر فعلی: ` + html.EscapeString(record.ContactName) + ` (` + html.EscapeString(record.Username) + `)</div></div><div><a href="/">صفحه اصلی</a> <a href="/logout">خروج مدیر</a></div></header>
-<main class="wrap"><p class="intro">در این صفحه فقط کاربر و سطح دسترسی او تعریف می‌شود. ورود به بخش مالی و عملیاتی با نام کاربری و رمز همین کاربران انجام خواهد شد.</p><div id="message" class="msg"></div>
-<div class="layout"><section class="card"><h2 id="formTitle">تعریف کاربر جدید</h2><div class="help">برای اجرای آفلاین، اعتبار پیش‌فرض کاربر ۱۰ سال است. حداقل یکی از بخش‌های مالی یا عملیاتی را فعال کنید.</div>
-<form id="userForm"><input type="hidden" id="editingId"><div class="field"><label>نام و نام خانوادگی</label><input id="contactName" required></div><div class="grid"><div class="field"><label>نام کاربری</label><input id="username" autocomplete="off" required></div><div class="field"><label>رمز عبور</label><input id="password" type="password" autocomplete="new-password" placeholder="در ویرایش برای حفظ رمز خالی بماند"></div><div class="field"><label>نقش کاربر</label><select id="accessRole"><option value="viewer">مشاهده‌گر</option><option value="accountant">حسابدار</option><option value="manager">مدیر اجرایی</option></select></div><div class="field"><label>مدت اعتبار (روز)</label><input id="trialDays" type="number" min="1" value="3650"></div></div><div class="field"><label>بخش‌های قابل ورود</label><select id="moduleAccess"><option value="financial">فقط بخش مالی</option><option value="operational">فقط بخش عملیاتی</option><option value="both">مالی و عملیاتی</option></select></div><label class="check"><input id="canManageTeam" type="checkbox"> اجازه مدیریت و ساخت کاربران دیگر</label><div class="field" style="margin-top:12px"><label>یادداشت</label><textarea id="notes" placeholder="مثلاً واحد حسابداری یا انبار"></textarea></div><button class="primary" id="saveBtn" type="submit">ایجاد کاربر</button><button class="primary mutedBtn" id="cancelBtn" type="button" style="display:none;margin-top:8px">انصراف از ویرایش</button></form></section>
+<main class="wrap"><p class="intro">هر کارمند یک نام کاربری و رمز دارد. فقط بخش‌هایی را می‌توانید به او بدهید که شرکت شما تهیه کرده است؛ ورود همه بخش‌ها از همین درگاه انجام می‌شود.</p><div id="message" class="msg"></div>
+<div class="layout"><section class="card"><h2 id="formTitle">تعریف کاربر جدید</h2><div class="help">نام، نقش و بخش‌های مجاز را انتخاب کنید؛ سپس نام کاربری و رمز را با دکمه کپی برای کارمند بفرستید.</div>
+<form id="userForm"><input type="hidden" id="editingId"><div class="field"><label>نام و نام خانوادگی</label><input id="contactName" required></div><div class="grid"><div class="field"><label>نام کاربری</label><input id="username" autocomplete="off" required></div><div class="field"><label>رمز عبور</label><input id="password" type="password" autocomplete="new-password" placeholder="در ویرایش برای حفظ رمز خالی بماند"></div><div class="field"><label>نقش کاربر</label><select id="accessRole"><option value="viewer">مشاهده‌گر</option><option value="accountant">حسابدار</option><option value="manager">مدیر اجرایی</option></select></div><div class="field"><label>مدت اعتبار (روز)</label><input id="trialDays" type="number" min="1" value="3650"></div></div><div class="field"><label>بخش‌های قابل ورود</label><div class="grid"><label class="check"><input id="allowFinancial" type="checkbox" ` + func() string {
+		if effectiveAllowFinancial(record) {
+			return ""
+		}
+		return "disabled"
+	}() + `> مالی</label><label class="check"><input id="allowOperational" type="checkbox" ` + func() string {
+		if effectiveAllowOperational(record) {
+			return ""
+		}
+		return "disabled"
+	}() + `> عملیاتی</label><label class="check"><input id="allowWeaving" type="checkbox" ` + func() string {
+		if effectiveAllowWeaving(record) {
+			return ""
+		}
+		return "disabled"
+	}() + `> راندمان سالن</label></div><div class="help">گزینه غیرفعال یعنی این بخش در اشتراک شرکت خریداری نشده است.</div></div><label class="check"><input id="canManageTeam" type="checkbox"> اجازه مدیریت و ساخت کاربران دیگر</label><div class="field" style="margin-top:12px"><label>یادداشت</label><textarea id="notes" placeholder="مثلاً واحد حسابداری یا انبار"></textarea></div><button class="primary" id="saveBtn" type="submit">ایجاد کاربر</button><button class="primary mutedBtn" id="cancelBtn" type="button" style="display:none;margin-top:8px">انصراف از ویرایش</button></form></section>
 <section class="card"><div class="toolbar"><div><h2 style="margin:0">کاربران تعریف‌شده</h2><div id="count" class="sub"></div></div><button class="small mutedBtn" id="refreshBtn">بازخوانی</button></div><div id="users"><div class="empty">در حال دریافت کاربران...</div></div></section></div></main>
 <script>
 const state={rows:[],editing:null};const $=id=>document.getElementById(id);const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -2248,13 +2356,14 @@ const baseResetForm=resetForm;resetForm=()=>{baseResetForm();setPermissionChecks
 function tell(text,type){const el=$('message');el.textContent=text;el.className='msg '+(type||'ok');window.scrollTo({top:0,behavior:'smooth'});}
 async function api(path,options){const res=await fetch(path,{headers:{Accept:'application/json','Content-Type':'application/json'},...(options||{})});const data=await res.json().catch(()=>({}));if(!res.ok)throw new Error(data.error||('خطای '+res.status));return data;}
 function roleLabel(v){return({owner:'مدیر اصلی',manager:'مدیر اجرایی',accountant:'حسابدار',viewer:'مشاهده‌گر'})[v]||v||'-';}
-function resetForm(){$('userForm').reset();$('trialDays').value='3650';$('moduleAccess').value='financial';$('editingId').value='';state.editing=null;$('formTitle').textContent='تعریف کاربر جدید';$('saveBtn').textContent='ایجاد کاربر';$('cancelBtn').style.display='none';}
-function editUser(id){const r=state.rows.find(x=>Number(x.id)===Number(id));if(!r)return;state.editing=r;$('editingId').value=r.id;$('contactName').value=r.contact_name||r.contactName||'';$('username').value=r.username||'';$('password').value='';$('accessRole').value=r.access_role||r.accessRole||'viewer';const f=Boolean(r.allow_financial??r.allowFinancial),o=Boolean(r.allow_operational??r.allowOperational);$('moduleAccess').value=f&&o?'both':(o?'operational':'financial');$('canManageTeam').checked=Boolean(r.can_manage_team??r.canManageTeam);$('notes').value=r.notes||'';$('formTitle').textContent='ویرایش کاربر';$('saveBtn').textContent='ذخیره تغییرات';$('cancelBtn').style.display='block';window.scrollTo({top:0,behavior:'smooth'});}
+function resetForm(){$('userForm').reset();$('trialDays').value='3650';$('allowFinancial').checked=!$('allowFinancial').disabled;$('allowOperational').checked=false;$('allowWeaving').checked=false;$('editingId').value='';state.editing=null;$('formTitle').textContent='تعریف کاربر جدید';$('saveBtn').textContent='ایجاد کاربر';$('cancelBtn').style.display='none';}
+function editUser(id){const r=state.rows.find(x=>Number(x.id)===Number(id));if(!r)return;state.editing=r;$('editingId').value=r.id;$('contactName').value=r.contact_name||r.contactName||'';$('username').value=r.username||'';$('password').value='';$('accessRole').value=r.access_role||r.accessRole||'viewer';$('allowFinancial').checked=Boolean(r.allow_financial??r.allowFinancial);$('allowOperational').checked=Boolean(r.allow_operational??r.allowOperational);$('allowWeaving').checked=Boolean(r.allow_weaving??r.allowWeaving);$('canManageTeam').checked=Boolean(r.can_manage_team??r.canManageTeam);$('notes').value=r.notes||'';$('formTitle').textContent='ویرایش کاربر';$('saveBtn').textContent='ذخیره تغییرات';$('cancelBtn').style.display='block';window.scrollTo({top:0,behavior:'smooth'});}
 async function removeUser(id,name){if(!confirm('کاربر '+name+' حذف شود؟'))return;try{await api('/api/portal/team/'+id,{method:'DELETE'});tell('کاربر حذف شد.','ok');await load();}catch(e){tell(e.message,'err');}}
 async function toggleUser(id,active){try{await api('/api/portal/team/'+id+'/toggle',{method:'POST'});tell(active?'دسترسی کاربر غیرفعال شد.':'دسترسی کاربر فعال شد.','ok');await load();}catch(e){tell(e.message,'err');}}
-function render(){const box=$('users');$('count').textContent=state.rows.length+' کاربر';if(!state.rows.length){box.innerHTML='<div class="empty">هنوز کاربری تعریف نشده است.</div>';return;}box.innerHTML=state.rows.map(r=>{const current=Boolean(r.is_current??r.isCurrent),active=Boolean(r.is_active??r.isActive),f=Boolean(r.allow_financial??r.allowFinancial),o=Boolean(r.allow_operational??r.allowOperational),name=r.contact_name||r.contactName||r.username||'بدون نام',role=r.access_role||r.accessRole,password=r.password||'ثبت شده و مخفی';return '<article class="user"><div class="userHead"><div><div class="name">'+esc(name)+' '+(current?'<span class="current">(مدیر فعلی)</span>':'')+'</div><div class="sub">نقش: '+esc(roleLabel(role))+' | '+(active?'فعال':'غیرفعال')+'</div><div class="tags">'+(f?'<span class="tag fin">مالی</span>':'')+(o?'<span class="tag op">عملیاتی</span>':'')+(!active?'<span class="tag off">غیرفعال</span>':'')+'</div></div></div><div class="credentials"><div class="cred">Username: '+esc(r.username||'-')+'</div><div class="cred">Password: '+esc(password)+'</div></div>'+(!current?'<div class="actions"><button class="small" onclick="editUser('+r.id+')">ویرایش</button><button class="small warn" onclick="toggleUser('+r.id+','+active+')">'+(active?'غیرفعال‌کردن':'فعال‌کردن')+'</button><button class="small danger" onclick="removeUser('+r.id+',\''+esc(name).replace(/'/g,'&#39;')+'\')">حذف</button></div>':'')+'</article>';}).join('');}
+function copyValue(value,label){navigator.clipboard.writeText(String(value||'')).then(()=>tell(label+' کپی شد.','ok')).catch(()=>tell('کپی خودکار ممکن نشد؛ متن را انتخاب و کپی کنید.','err'));}
+function render(){const box=$('users');$('count').textContent=state.rows.length+' کاربر';if(!state.rows.length){box.innerHTML='<div class="empty">هنوز کاربری تعریف نشده است.</div>';return;}box.innerHTML=state.rows.map(r=>{const current=Boolean(r.is_current??r.isCurrent),active=Boolean(r.is_active??r.isActive),f=Boolean(r.allow_financial??r.allowFinancial),o=Boolean(r.allow_operational??r.allowOperational),w=Boolean(r.allow_weaving??r.allowWeaving),name=r.contact_name||r.contactName||r.username||'بدون نام',role=r.access_role||r.accessRole,password=r.password||'ثبت شده و مخفی',username=r.username||'-';return '<article class="user"><div class="userHead"><div><div class="name">'+esc(name)+' '+(current?'<span class="current">(مدیر فعلی)</span>':'')+'</div><div class="sub">نقش: '+esc(roleLabel(role))+' | '+(active?'فعال':'غیرفعال')+'</div><div class="tags">'+(f?'<span class="tag fin">مالی</span>':'')+(o?'<span class="tag op">عملیاتی</span>':'')+(w?'<span class="tag weave">راندمان سالن</span>':'')+(!active?'<span class="tag off">غیرفعال</span>':'')+'</div></div></div><div class="credentials"><div class="cred"><button class="small" type="button" data-value="'+esc(username)+'" onclick="copyValue(this.dataset.value,\'نام کاربری\')">کپی</button>Username: '+esc(username)+'</div><div class="cred"><button class="small" type="button" data-value="'+esc(password)+'" onclick="copyValue(this.dataset.value,\'رمز عبور\')">کپی</button>Password: '+esc(password)+'</div></div>'+(!current?'<div class="actions"><button class="small" onclick="editUser('+r.id+')">ویرایش</button><button class="small warn" onclick="toggleUser('+r.id+','+active+')">'+(active?'غیرفعال‌کردن':'فعال‌کردن')+'</button><button class="small danger" onclick="removeUser('+r.id+',\''+esc(name).replace(/'/g,'&#39;')+'\')">حذف</button></div>':'')+'</article>';}).join('');}
 async function load(){try{const data=await api('/api/portal/team');state.rows=data.items||[];render();}catch(e){tell(e.message,'err');$('users').innerHTML='<div class="empty">دریافت فهرست کاربران ممکن نشد.</div>';}}
-$('userForm').addEventListener('submit',async e=>{e.preventDefault();const mode=$('moduleAccess').value;const payload={contactName:$('contactName').value.trim(),username:$('username').value.trim(),password:$('password').value,accessRole:$('accessRole').value,canManageTeam:$('canManageTeam').checked,allowFinancial:mode==='financial'||mode==='both',allowOperational:mode==='operational'||mode==='both',trialDays:Number($('trialDays').value||3650),notes:$('notes').value.trim()};if(!state.editing&&!payload.password){tell('برای کاربر جدید رمز عبور مشخص کنید.','err');return;}try{$('saveBtn').disabled=true;await api(state.editing?'/api/portal/team/'+state.editing.id:'/api/portal/team',{method:state.editing?'PUT':'POST',body:JSON.stringify(payload)});tell(state.editing?'تغییرات کاربر ذخیره شد.':'کاربر جدید ساخته شد و اکنون می‌تواند با همین نام کاربری و رمز وارد بخش مجاز شود.','ok');resetForm();await load();}catch(err){tell(err.message,'err');}finally{$('saveBtn').disabled=false;}});
+$('userForm').addEventListener('submit',async e=>{e.preventDefault();const payload={contactName:$('contactName').value.trim(),username:$('username').value.trim(),password:$('password').value,accessRole:$('accessRole').value,canManageTeam:$('canManageTeam').checked,allowFinancial:$('allowFinancial').checked,allowOperational:$('allowOperational').checked,allowWeaving:$('allowWeaving').checked,trialDays:Number($('trialDays').value||3650),notes:$('notes').value.trim()};if(!payload.allowFinancial&&!payload.allowOperational&&!payload.allowWeaving){tell('حداقل یک بخش را برای کارمند انتخاب کنید.','err');return;}if(!state.editing&&!payload.password){tell('برای کاربر جدید رمز عبور مشخص کنید.','err');return;}try{$('saveBtn').disabled=true;await api(state.editing?'/api/portal/team/'+state.editing.id:'/api/portal/team',{method:state.editing?'PUT':'POST',body:JSON.stringify(payload)});tell(state.editing?'تغییرات کاربر ذخیره شد.':'کاربر جدید ساخته شد و اکنون می‌تواند با همین نام کاربری و رمز وارد بخش مجاز شود.','ok');resetForm();await load();}catch(err){tell(err.message,'err');}finally{$('saveBtn').disabled=false;}});
 $('cancelBtn').addEventListener('click',resetForm);$('refreshBtn').addEventListener('click',load);load();
 </script></body></html>`))
 }
@@ -2304,8 +2413,9 @@ func (a *portalApp) portalTeam(w http.ResponseWriter, r *http.Request) {
 			role = "manager"
 		}
 		canManage := boolPtrValue(req.CanManageTeam, false)
-		allowFinancial := boolPtrValue(req.AllowFinancial, true)
-		allowOperational := boolPtrValue(req.AllowOperational, false)
+		allowFinancial := boolPtrValue(req.AllowFinancial, true) && effectiveAllowFinancial(record)
+		allowOperational := boolPtrValue(req.AllowOperational, false) && effectiveAllowOperational(record)
+		allowWeaving := boolPtrValue(req.AllowWeaving, false) && effectiveAllowWeaving(record)
 		if effectiveAccessRole(record) != "owner" && canManage {
 			respondJSON(w, http.StatusForbidden, map[string]string{"error": "only the owner can grant team management"})
 			return
@@ -2319,7 +2429,7 @@ func (a *portalApp) portalTeam(w http.ResponseWriter, r *http.Request) {
 			}
 			expiresAt = minTime(customExpiry, record.ExpiresAt)
 		}
-		access, rawPassword, err := a.createManagedAccess(record.ProjectKey, record.CompanyName, req.ContactName, req.Username, req.Password, record.FinancialCompanyID, expiresAt, req.Notes, role, req.Permissions, canManage, false, allowFinancial, allowOperational)
+		access, rawPassword, err := a.createManagedAccess(record.ProjectKey, record.CompanyName, req.ContactName, req.Username, req.Password, record.FinancialCompanyID, expiresAt, req.Notes, role, req.Permissions, canManage, false, allowFinancial, allowOperational, allowWeaving)
 		if err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -2392,8 +2502,9 @@ func (a *portalApp) portalTeamByID(w http.ResponseWriter, r *http.Request) {
 			role = "manager"
 		}
 		canManage := boolPtrValue(req.CanManageTeam, target.CanManageTeam)
-		allowFinancial := boolPtrValue(req.AllowFinancial, effectiveAllowFinancial(target))
-		allowOperational := boolPtrValue(req.AllowOperational, effectiveAllowOperational(target))
+		allowFinancial := boolPtrValue(req.AllowFinancial, effectiveAllowFinancial(target)) && effectiveAllowFinancial(record)
+		allowOperational := boolPtrValue(req.AllowOperational, effectiveAllowOperational(target)) && effectiveAllowOperational(record)
+		allowWeaving := boolPtrValue(req.AllowWeaving, effectiveAllowWeaving(target)) && effectiveAllowWeaving(record)
 		if effectiveAccessRole(record) != "owner" && canManage {
 			respondJSON(w, http.StatusForbidden, map[string]string{"error": "only the owner can grant team management"})
 			return
@@ -2407,7 +2518,7 @@ func (a *portalApp) portalTeamByID(w http.ResponseWriter, r *http.Request) {
 			}
 			expiresAt = minTime(customExpiry, record.ExpiresAt)
 		}
-		access, rawPassword, err := a.updateManagedAccess(id, target.ProjectKey, target.CompanyName, req.ContactName, req.Username, req.Password, target.FinancialCompanyID, expiresAt, req.Notes, role, req.Permissions, canManage, false, allowFinancial, allowOperational)
+		access, rawPassword, err := a.updateManagedAccess(id, target.ProjectKey, target.CompanyName, req.ContactName, req.Username, req.Password, target.FinancialCompanyID, expiresAt, req.Notes, role, req.Permissions, canManage, false, allowFinancial, allowOperational, allowWeaving)
 		if err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -2774,7 +2885,7 @@ func (a *portalApp) ensureLocalOwnerAccess() (projectAccess, error) {
 		if item.ProjectKey != "textile-erp" || item.FinancialCompanyID != a.localCompanyID || !strings.EqualFold(strings.TrimSpace(item.Username), a.adminUsername) {
 			continue
 		}
-		updated, _, err := a.updateManagedAccess(item.ID, "textile-erp", a.localCompanyName, "مدیر محلی", a.adminUsername, a.adminPassword, a.localCompanyID, expiresAt, "حساب مدیر نسخه آفلاین", "owner", financialPermissionCatalog, true, false, true, true)
+		updated, _, err := a.updateManagedAccess(item.ID, "textile-erp", a.localCompanyName, "مدیر محلی", a.adminUsername, a.adminPassword, a.localCompanyID, expiresAt, "حساب مدیر نسخه آفلاین", "owner", financialPermissionCatalog, true, false, true, true, false)
 		if err != nil {
 			return projectAccess{}, err
 		}
@@ -2788,7 +2899,7 @@ func (a *portalApp) ensureLocalOwnerAccess() (projectAccess, error) {
 		}
 		return a.setAccessMustChangePassword(updated.ID, false)
 	}
-	created, _, err := a.createManagedAccess("textile-erp", a.localCompanyName, "مدیر محلی", a.adminUsername, a.adminPassword, a.localCompanyID, expiresAt, "حساب مدیر نسخه آفلاین", "owner", financialPermissionCatalog, true, false, true, true)
+	created, _, err := a.createManagedAccess("textile-erp", a.localCompanyName, "مدیر محلی", a.adminUsername, a.adminPassword, a.localCompanyID, expiresAt, "حساب مدیر نسخه آفلاین", "owner", financialPermissionCatalog, true, false, true, true, false)
 	if err != nil {
 		return projectAccess{}, err
 	}
@@ -2856,7 +2967,133 @@ func (a *portalApp) provisionTextileTenant(financialCompanyID, accessID int64, c
 	return result.CompanyID, nil
 }
 
-func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, username, password string, financialCompanyID int64, expiresAt time.Time, notes, accessRole string, permissions []string, canManageTeam, requiresSetup, allowFinancial, allowOperational bool) (projectAccess, string, error) {
+func existingWeavingTenantID(items []projectAccess, financialCompanyID int64) string {
+	for _, item := range items {
+		if item.ProjectKey == "textile-erp" && item.FinancialCompanyID == financialCompanyID && strings.TrimSpace(item.WeavingTenantID) != "" {
+			return strings.TrimSpace(item.WeavingTenantID)
+		}
+	}
+	return ""
+}
+
+func (a *portalApp) provisionWeavingTenant(financialCompanyID, accessID int64, companyName, contactName, username, password string) (string, error) {
+	if strings.TrimSpace(a.weavingAppURL) == "" || len(strings.TrimSpace(a.weavingMonitorToken)) < 32 {
+		return "", errors.New("اتصال امن راندمان سالن روی سرور تنظیم نشده است")
+	}
+	payload, err := json.Marshal(map[string]any{
+		"tenantName":        companyName,
+		"displayName":       contactName,
+		"username":          username,
+		"password":          password,
+		"externalTenantKey": fmt.Sprintf("textile-company:%d", financialCompanyID),
+		"externalUserId":    fmt.Sprintf("textile-access:%d", accessID),
+	})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(a.weavingAppURL, "/")+"/api/internal/provision", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(a.weavingMonitorToken))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		TenantID string `json:"tenantId"`
+		Error    string `json:"error"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+		return "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || strings.TrimSpace(result.TenantID) == "" {
+		if strings.TrimSpace(result.Error) == "" {
+			result.Error = fmt.Sprintf("weaving tenant provisioning failed with status %d", resp.StatusCode)
+		}
+		return "", errors.New(result.Error)
+	}
+	return strings.TrimSpace(result.TenantID), nil
+}
+
+func (a *portalApp) syncWeavingUser(record projectAccess, password string, active bool) error {
+	if strings.TrimSpace(record.WeavingTenantID) == "" {
+		return errors.New("شناسه مشتری راندمان سالن آماده نیست")
+	}
+	role := "worker"
+	if effectiveAccessRole(record) == "owner" || effectiveAccessRole(record) == "manager" {
+		role = "manager"
+	}
+	payload, err := json.Marshal(map[string]any{
+		"tenantId": record.WeavingTenantID, "externalUserId": fmt.Sprintf("textile-access:%d", record.ID),
+		"username": record.Username, "password": password, "displayName": record.ContactName,
+		"role": role, "active": active,
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(a.weavingAppURL, "/")+"/api/internal/users/sync", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(a.weavingMonitorToken))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	var result struct {
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result)
+	if strings.TrimSpace(result.Error) == "" {
+		result.Error = fmt.Sprintf("weaving user sync failed with status %d", resp.StatusCode)
+	}
+	return errors.New(result.Error)
+}
+
+func (a *portalApp) signWeavingSSO(record projectAccess) (string, error) {
+	secret := strings.TrimSpace(a.weavingMonitorToken)
+	if len(secret) < 32 || strings.TrimSpace(record.WeavingTenantID) == "" {
+		return "", errors.New("ورود یکپارچه راندمان سالن آماده نیست")
+	}
+	claims := map[string]any{
+		"tenantId":         record.WeavingTenantID,
+		"externalUserId":   fmt.Sprintf("textile-access:%d", record.ID),
+		"expiresAt":        time.Now().Add(2 * time.Minute).Unix(),
+		"sessionExpiresAt": minTime(record.ExpiresAt, time.Now().Add(12*time.Hour)).Unix(),
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	body := base64.RawURLEncoding.EncodeToString(payload)
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(body))
+	return body + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
+}
+
+func (a *portalApp) redirectToWeavingSSO(w http.ResponseWriter, r *http.Request, record projectAccess) {
+	token, err := a.signWeavingSSO(record)
+	if err != nil {
+		log.Printf("weaving SSO failed for access=%d: %v", record.ID, err)
+		a.renderModuleLogin(w, "weaving", moduleTarget("weaving"), "ورود یکپارچه راندمان سالن آماده نیست؛ با پشتیبانی تماس بگیرید.")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	http.Redirect(w, r, strings.TrimRight(a.weavingAppURL, "/")+"/api/auth/portal-sso?token="+url.QueryEscape(token), http.StatusSeeOther)
+}
+
+func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, username, password string, financialCompanyID int64, expiresAt time.Time, notes, accessRole string, permissions []string, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving bool) (projectAccess, string, error) {
 	if !validProject(projectKey) {
 		return projectAccess{}, "", fmt.Errorf("invalid project key")
 	}
@@ -2882,10 +3119,14 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 		requiresSetup = false
 		allowFinancial = false
 		allowOperational = false
+		allowWeaving = false
 	} else {
-		allowFinancial, allowOperational = normalizeModuleAccess(projectKey, allowFinancial, allowOperational)
-		if canManageTeam {
-			allowFinancial = true
+		allowFinancial, allowOperational, allowWeaving = normalizeModuleAccess(projectKey, allowFinancial, allowOperational, allowWeaving)
+		if !allowFinancial && !allowOperational && !allowWeaving {
+			return projectAccess{}, "", fmt.Errorf("حداقل یکی از بخش‌های مالی، عملیاتی یا راندمان سالن باید فعال باشد")
+		}
+		if requiresSetup && allowWeaving {
+			return projectAccess{}, "", fmt.Errorf("برای فعال‌سازی راندمان سالن، نام کاربری و رمز مدیر را همین حالا تعیین کنید")
 		}
 		if !allowFinancial {
 			normalizedPermissions = nil
@@ -2951,6 +3192,13 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 	if projectKey == "textile-erp" && financialCompanyID <= 0 {
 		return projectAccess{}, "", fmt.Errorf("financial company id is required for textile customer access")
 	}
+	weavingTenantID := existingWeavingTenantID(items, financialCompanyID)
+	if projectKey == "textile-erp" && allowWeaving && weavingTenantID == "" {
+		weavingTenantID, err = a.provisionWeavingTenant(financialCompanyID, accessID, companyName, contactName, username, password)
+		if err != nil {
+			return projectAccess{}, "", err
+		}
+	}
 	token, err := randomHex(24)
 	if err != nil {
 		return projectAccess{}, "", err
@@ -2966,9 +3214,11 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 		Permissions:        normalizedPermissions,
 		CanManageTeam:      canManageTeam,
 		RequiresSetup:      requiresSetup,
-		MustChangePassword: !requiresSetup && !a.localMode,
+		MustChangePassword: false,
 		AllowFinancial:     allowFinancial,
 		AllowOperational:   allowOperational,
+		AllowWeaving:       allowWeaving,
+		WeavingTenantID:    weavingTenantID,
 		ExpiresAt:          expiresAt.UTC(),
 		AccessToken:        token,
 		PasswordHash:       hash,
@@ -2977,6 +3227,11 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 		IsActive:           true,
 		CreatedAt:          time.Now().UTC(),
 	}
+	if allowWeaving && weavingTenantID != "" {
+		if err := a.syncWeavingUser(record, password, true); err != nil {
+			return projectAccess{}, "", err
+		}
+	}
 	items = append(items, record)
 	if err := writeAccesses(a.accessFile, items); err != nil {
 		return projectAccess{}, "", err
@@ -2984,7 +3239,7 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 	return record, rawPassword, nil
 }
 
-func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, contactName, username, password string, financialCompanyID int64, expiresAt time.Time, notes, accessRole string, permissions []string, canManageTeam, requiresSetup, allowFinancial, allowOperational bool) (projectAccess, string, error) {
+func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, contactName, username, password string, financialCompanyID int64, expiresAt time.Time, notes, accessRole string, permissions []string, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving bool) (projectAccess, string, error) {
 	if !validProject(projectKey) {
 		return projectAccess{}, "", fmt.Errorf("invalid project key")
 	}
@@ -3010,10 +3265,14 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 		requiresSetup = false
 		allowFinancial = false
 		allowOperational = false
+		allowWeaving = false
 	} else {
-		allowFinancial, allowOperational = normalizeModuleAccess(projectKey, allowFinancial, allowOperational)
-		if canManageTeam {
-			allowFinancial = true
+		allowFinancial, allowOperational, allowWeaving = normalizeModuleAccess(projectKey, allowFinancial, allowOperational, allowWeaving)
+		if !allowFinancial && !allowOperational && !allowWeaving {
+			return projectAccess{}, "", fmt.Errorf("حداقل یکی از بخش‌های مالی، عملیاتی یا راندمان سالن باید فعال باشد")
+		}
+		if requiresSetup && allowWeaving {
+			return projectAccess{}, "", fmt.Errorf("برای فعال‌سازی راندمان سالن، نام کاربری و رمز مدیر را همین حالا تعیین کنید")
 		}
 		if !allowFinancial {
 			normalizedPermissions = nil
@@ -3039,6 +3298,7 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 	}
 
 	record := items[index]
+	previousAllowWeaving := record.AllowWeaving
 	if requiresSetup {
 		username = ""
 		password = ""
@@ -3069,6 +3329,7 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 	record.RequiresSetup = requiresSetup
 	record.AllowFinancial = allowFinancial
 	record.AllowOperational = allowOperational
+	record.AllowWeaving = allowWeaving
 	record.ExpiresAt = expiresAt.UTC()
 	record.Notes = notes
 
@@ -3078,6 +3339,7 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 		record.PasswordEnc = ""
 		record.MustChangePassword = false
 	} else {
+		record.MustChangePassword = false
 		rawPassword = a.mustDecryptPassword(record)
 		if password == "" && strings.TrimSpace(rawPassword) == "" {
 			password = generatedAccessPassword(username)
@@ -3094,7 +3356,26 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 			record.PasswordHash = string(passwordHash)
 			record.PasswordEnc = passwordEnc
 			rawPassword = password
-			record.MustChangePassword = true
+			record.MustChangePassword = false
+		}
+	}
+	weavingTenantID := strings.TrimSpace(record.WeavingTenantID)
+	if weavingTenantID == "" {
+		weavingTenantID = existingWeavingTenantID(items, financialCompanyID)
+	}
+	if allowWeaving && weavingTenantID == "" {
+		if role != "owner" {
+			return projectAccess{}, "", fmt.Errorf("ابتدا باید راندمان سالن برای مدیر اصلی این مشتری فعال شود")
+		}
+		weavingTenantID, err = a.provisionWeavingTenant(financialCompanyID, id, companyName, contactName, username, rawPassword)
+		if err != nil {
+			return projectAccess{}, "", err
+		}
+	}
+	record.WeavingTenantID = weavingTenantID
+	if weavingTenantID != "" && (allowWeaving || previousAllowWeaving) {
+		if err := a.syncWeavingUser(record, rawPassword, allowWeaving && record.IsActive); err != nil {
+			return projectAccess{}, "", err
 		}
 	}
 
@@ -3181,7 +3462,7 @@ func (a *portalApp) finalizeAccessSetup(token, contactName, username, password s
 		record.Permissions = defaultPermissionsForRole("owner")
 		record.CanManageTeam = true
 	}
-	record.AllowFinancial, record.AllowOperational = normalizeModuleAccess(record.ProjectKey, record.AllowFinancial, record.AllowOperational)
+	record.AllowFinancial, record.AllowOperational, record.AllowWeaving = normalizeModuleAccess(record.ProjectKey, record.AllowFinancial, record.AllowOperational, record.AllowWeaving)
 	items[index] = record
 	if err := writeAccesses(a.accessFile, items); err != nil {
 		return projectAccess{}, err
@@ -3309,6 +3590,11 @@ func (a *portalApp) deleteAccess(id int64) error {
 	removed := false
 	for _, item := range items {
 		if item.ID == id {
+			if strings.TrimSpace(item.WeavingTenantID) != "" {
+				if err := a.syncWeavingUser(item, a.mustDecryptPassword(item), false); err != nil {
+					return fmt.Errorf("غیرفعال‌سازی حساب راندمان انجام نشد: %w", err)
+				}
+			}
 			removed = true
 			continue
 		}
@@ -3354,7 +3640,13 @@ func (a *portalApp) toggleAccess(id int64) error {
 	found := false
 	for i := range items {
 		if items[i].ID == id {
-			items[i].IsActive = !items[i].IsActive
+			nextActive := !items[i].IsActive
+			if strings.TrimSpace(items[i].WeavingTenantID) != "" {
+				if err := a.syncWeavingUser(items[i], a.mustDecryptPassword(items[i]), nextActive && effectiveAllowWeaving(items[i])); err != nil {
+					return fmt.Errorf("همگام‌سازی حساب راندمان انجام نشد: %w", err)
+				}
+			}
+			items[i].IsActive = nextActive
 			found = true
 			break
 		}
@@ -3461,6 +3753,10 @@ func (a *portalApp) accessResponse(record projectAccess, rawPassword string) map
 		"allowFinancial":       effectiveAllowFinancial(record),
 		"allow_operational":    effectiveAllowOperational(record),
 		"allowOperational":     effectiveAllowOperational(record),
+		"allow_weaving":        effectiveAllowWeaving(record),
+		"allowWeaving":         effectiveAllowWeaving(record),
+		"weaving_tenant_id":    record.WeavingTenantID,
+		"weavingTenantId":      record.WeavingTenantID,
 		"module_access_label":  accessModuleLabel(record),
 		"moduleAccessLabel":    accessModuleLabel(record),
 		"expires_at":           expiresAt,
@@ -3579,6 +3875,7 @@ func (a *portalApp) signFinancialJWT(record projectAccess) (string, error) {
 		"can_manage_team":   effectiveCanManageTeam(record),
 		"allow_financial":   effectiveAllowFinancial(record),
 		"allow_operational": effectiveAllowOperational(record),
+		"allow_weaving":     effectiveAllowWeaving(record),
 		"iat":               time.Now().Unix(),
 		"exp":               minTime(record.ExpiresAt, time.Now().Add(15*time.Minute)).Unix(),
 	}
@@ -3672,8 +3969,21 @@ func (a *portalApp) customerTargetHint(record projectAccess) string {
 	case "cooler-store":
 		return a.coolerStoreURL + "/"
 	case "textile-erp":
-		if effectiveAllowFinancial(record) && effectiveAllowOperational(record) {
+		moduleCount := 0
+		if effectiveAllowFinancial(record) {
+			moduleCount++
+		}
+		if effectiveAllowOperational(record) {
+			moduleCount++
+		}
+		if effectiveAllowWeaving(record) {
+			moduleCount++
+		}
+		if moduleCount > 1 {
 			return a.publicBase + "/"
+		}
+		if effectiveAllowWeaving(record) {
+			return a.publicBase + "/module-login?module=weaving"
 		}
 		if effectiveAllowOperational(record) {
 			return a.publicBase + "/operational/"
@@ -3695,8 +4005,21 @@ func (a *portalApp) accessTarget(record projectAccess) string {
 		}
 	}
 	if record.ProjectKey == "textile-erp" {
-		if effectiveAllowFinancial(record) && effectiveAllowOperational(record) {
+		moduleCount := 0
+		if effectiveAllowFinancial(record) {
+			moduleCount++
+		}
+		if effectiveAllowOperational(record) {
+			moduleCount++
+		}
+		if effectiveAllowWeaving(record) {
+			moduleCount++
+		}
+		if moduleCount > 1 {
 			return "/"
+		}
+		if effectiveAllowWeaving(record) {
+			return "/module-login?module=weaving"
 		}
 		if effectiveAllowOperational(record) {
 			return "/operational/"
@@ -3831,6 +4154,8 @@ func readAccesses(path string) ([]projectAccess, error) {
 	if err := json.Unmarshal(payload, &items); err != nil {
 		return nil, err
 	}
+	var rawItems []map[string]json.RawMessage
+	_ = json.Unmarshal(payload, &rawItems)
 	for i := range items {
 		if items[i].ProjectKey == "textile-erp" {
 			if items[i].AccessRole == "" {
@@ -3838,7 +4163,16 @@ func readAccesses(path string) ([]projectAccess, error) {
 				items[i].Permissions = defaultPermissionsForRole("owner")
 				items[i].CanManageTeam = true
 			}
-			items[i].AllowFinancial, items[i].AllowOperational = normalizeModuleAccess(items[i].ProjectKey, items[i].AllowFinancial, items[i].AllowOperational)
+			if i < len(rawItems) {
+				_, hasFinancialFlag := rawItems[i]["allow_financial"]
+				_, hasOperationalFlag := rawItems[i]["allow_operational"]
+				_, hasWeavingFlag := rawItems[i]["allow_weaving"]
+				if !hasFinancialFlag && !hasOperationalFlag && !hasWeavingFlag {
+					items[i].AllowFinancial = true
+					items[i].AllowOperational = true
+				}
+			}
+			items[i].AllowFinancial, items[i].AllowOperational, items[i].AllowWeaving = normalizeModuleAccess(items[i].ProjectKey, items[i].AllowFinancial, items[i].AllowOperational, items[i].AllowWeaving)
 			if items[i].AllowFinancial && len(items[i].Permissions) == 0 {
 				items[i].Permissions = defaultPermissionsForRole(items[i].AccessRole)
 			}

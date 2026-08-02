@@ -22,6 +22,8 @@ func executiveTestAccess() projectAccess {
 		AccessRole:         "manager",
 		AllowFinancial:     true,
 		AllowOperational:   true,
+		AllowWeaving:       true,
+		WeavingTenantID:    "11111111-1111-4111-8111-111111111111",
 		ExpiresAt:          time.Now().Add(24 * time.Hour),
 		AccessToken:        "executive-access-token",
 		PasswordHash:       "$2a$10$abcdefghijklmnopqrstuv1234567890123456789012345678901",
@@ -43,7 +45,7 @@ func writeExecutiveTestAccess(t *testing.T, record projectAccess) string {
 	return file
 }
 
-func TestExecutiveAllowedRequiresManagerAndBothModules(t *testing.T) {
+func TestExecutiveAllowedRequiresManagerAndAnyPurchasedModule(t *testing.T) {
 	t.Parallel()
 
 	record := executiveTestAccess()
@@ -56,8 +58,13 @@ func TestExecutiveAllowedRequiresManagerAndBothModules(t *testing.T) {
 	}
 	record.AccessRole = "manager"
 	record.AllowOperational = false
+	record.AllowWeaving = false
+	if !executiveAllowed(record) {
+		t.Fatal("manager with a financial-only purchase should be allowed")
+	}
+	record.AllowFinancial = false
 	if executiveAllowed(record) {
-		t.Fatal("manager without operational access should not be allowed")
+		t.Fatal("manager without any purchased module should not be allowed")
 	}
 }
 
@@ -178,6 +185,10 @@ func TestExecutiveHallProxyKeepsServiceTokenPrivate(t *testing.T) {
 	monitor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+privateToken {
 			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if r.Header.Get("X-Viora-Tenant-Id") != "11111111-1111-4111-8111-111111111111" {
+			http.Error(w, "missing tenant", http.StatusForbidden)
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]any{

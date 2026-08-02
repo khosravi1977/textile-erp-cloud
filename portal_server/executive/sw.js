@@ -1,4 +1,4 @@
-const CACHE_NAME = "viora-executive-shell-v1";
+const CACHE_NAME = "viora-executive-shell-v2";
 const SHELL_ASSETS = [
   "/executive/styles.css",
   "/executive/app.js",

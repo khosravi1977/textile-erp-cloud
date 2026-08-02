@@ -31,8 +31,7 @@ func executiveAllowed(record projectAccess) bool {
 	role := normalizeAccessRole(effectiveAccessRole(record))
 	return record.ProjectKey == "textile-erp" &&
 		(role == "owner" || role == "manager") &&
-		effectiveAllowFinancial(record) &&
-		effectiveAllowOperational(record) &&
+		(effectiveAllowFinancial(record) || effectiveAllowOperational(record) || effectiveAllowWeaving(record)) &&
 		!record.MustChangePassword &&
 		!accessRequiresSetup(record)
 }
@@ -70,7 +69,7 @@ func (a *portalApp) executiveApp(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>عدم دسترسی</title><style>body{font-family:Tahoma;background:#071416;color:#f5f7f2;display:grid;place-items:center;min-height:100vh;margin:0;padding:24px}.box{max-width:620px;border:1px solid #31555a;border-radius:20px;background:#0d2529;padding:28px;line-height:2}a{color:#f4c96b}</style><main class="box"><h1>مرکز فرمان فقط برای مدیر فعال است</h1><p>این صفحه به دسترسی هم‌زمان مالی و عملیاتی و نقش مدیر یا مالک نیاز دارد.</p><a href="/">بازگشت به درگاه نساجی</a></main></html>`))
+		_, _ = w.Write([]byte(`<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>عدم دسترسی</title><style>body{font-family:Tahoma;background:#071416;color:#f5f7f2;display:grid;place-items:center;min-height:100vh;margin:0;padding:24px}.box{max-width:620px;border:1px solid #31555a;border-radius:20px;background:#0d2529;padding:28px;line-height:2}a{color:#f4c96b}</style><main class="box"><h1>مرکز فرمان فقط برای مدیر فعال است</h1><p>مدیر یا مالک شرکت با خرید حداقل یکی از بخش‌های مالی، عملیاتی یا راندمان سالن به این صفحه دسترسی دارد.</p><a href="/">بازگشت به درگاه نساجی</a></main></html>`))
 		return
 	}
 
@@ -145,25 +144,40 @@ func (a *portalApp) executiveSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	financialToken, financialErr := a.signFinancialJWT(record)
-	operationalData, operationalErr := a.createOperationalSessionForRecord(w, r, record)
+	allowFinancial := effectiveAllowFinancial(record)
+	allowOperational := effectiveAllowOperational(record)
+	allowWeaving := effectiveAllowWeaving(record)
+	var financialToken string
+	var financialErr error
+	if allowFinancial {
+		financialToken, financialErr = a.signFinancialJWT(record)
+	}
+	var operationalData map[string]any
+	var operationalErr error
+	if allowOperational {
+		operationalData, operationalErr = a.createOperationalSessionForRecord(w, r, record)
+	}
 	response := map[string]any{
 		"company":            record.CompanyName,
 		"displayName":        record.ContactName,
 		"username":           record.Username,
-		"financialReady":     financialErr == nil,
-		"operationalReady":   operationalErr == nil,
-		"hallMonitorReady":   strings.TrimSpace(a.weavingMonitorURL) != "",
+		"allowFinancial":     allowFinancial,
+		"allowOperational":   allowOperational,
+		"allowWeaving":       allowWeaving,
+		"financialReady":     allowFinancial && financialErr == nil,
+		"operationalReady":   allowOperational && operationalErr == nil,
+		"hallMonitorReady":   allowWeaving && strings.TrimSpace(record.WeavingTenantID) != "" && strings.TrimSpace(a.weavingMonitorURL) != "",
+		"weavingEntryURL":    "/module-login?module=weaving",
 		"financialToken":     financialToken,
 		"financialExpiresAt": minTime(record.ExpiresAt, time.Now().Add(15*time.Minute)).UTC().Format(time.RFC3339),
 		"refreshSeconds":     60,
 	}
-	if operationalErr == nil {
+	if allowOperational && operationalErr == nil {
 		response["operational"] = operationalData
-	} else {
+	} else if allowOperational {
 		response["operationalMessage"] = "ارتباط با داده‌های عملیاتی برقرار نشد."
 	}
-	if financialErr != nil {
+	if allowFinancial && financialErr != nil {
 		response["financialMessage"] = "ارتباط با داده‌های مالی برقرار نشد."
 	}
 	respondJSON(w, http.StatusOK, response)
@@ -185,6 +199,14 @@ func (a *portalApp) executiveHallSummary(w http.ResponseWriter, r *http.Request)
 		respondJSON(w, http.StatusForbidden, map[string]string{"error": "دسترسی مرکز فرمان برای این کاربر فعال نیست."})
 		return
 	}
+	if !effectiveAllowWeaving(record) {
+		respondJSON(w, http.StatusForbidden, map[string]string{"error": "بخش راندمان سالن در اشتراک این مشتری فعال نیست."})
+		return
+	}
+	if strings.TrimSpace(record.WeavingTenantID) == "" {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "فضای اختصاصی راندمان این مشتری هنوز آماده نشده است."})
+		return
+	}
 	endpoint := strings.TrimSpace(a.weavingMonitorURL)
 	if endpoint == "" {
 		respondJSON(w, http.StatusServiceUnavailable, map[string]string{
@@ -203,6 +225,7 @@ func (a *portalApp) executiveHallSummary(w http.ResponseWriter, r *http.Request)
 	if token := strings.TrimSpace(a.weavingMonitorToken); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	req.Header.Set("X-Viora-Tenant-Id", strings.TrimSpace(record.WeavingTenantID))
 	client := &http.Client{Timeout: 6 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
