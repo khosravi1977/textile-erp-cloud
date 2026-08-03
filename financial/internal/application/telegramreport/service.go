@@ -53,6 +53,7 @@ type Service struct {
 	ready      bool
 	offsetMu   sync.Mutex
 	nextOffset int64
+	startOnce  sync.Once
 }
 
 type Settings struct {
@@ -211,12 +212,36 @@ func (s *Service) Start(ctx context.Context) {
 		log.Printf("telegram daily reports disabled: configure TEXTILE_TELEGRAM_* secrets")
 		return
 	}
-	if err := s.bootstrap(ctx); err != nil {
-		log.Printf("telegram daily reports disabled: %v", err)
-		return
+	s.startOnce.Do(func() {
+		go s.startWithRetry(ctx)
+	})
+}
+
+func (s *Service) startWithRetry(ctx context.Context) {
+	retryDelay := 10 * time.Second
+	for {
+		if err := s.bootstrap(ctx); err == nil {
+			log.Printf("telegram daily reports enabled for bot @%s", s.cfg.BotUsername)
+			go s.pollLoop(ctx)
+			go s.scheduleLoop(ctx)
+			return
+		} else {
+			log.Printf("telegram daily reports temporarily unavailable; retrying: %v", err)
+		}
+		timer := time.NewTimer(retryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if retryDelay < time.Minute {
+			retryDelay *= 2
+			if retryDelay > time.Minute {
+				retryDelay = time.Minute
+			}
+		}
 	}
-	go s.pollLoop(ctx)
-	go s.scheduleLoop(ctx)
 }
 
 func (s *Service) bootstrap(ctx context.Context) error {

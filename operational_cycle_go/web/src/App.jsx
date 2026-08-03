@@ -1107,14 +1107,13 @@ function NakhSalon({ lookups, notify }) {
         if (selected) {
           set('machine', selected.machine || '');
           set('mosh_name', selected.mosh_name || form.mosh_name || '');
-          set('ham_nakh', selected.hambaft || form.ham_nakh || '');
         }
       };
       return <>
 
       <Input label="شماره ماشین" value={form.machine} onChange={v => set('machine', v)} hint="باید با ماشین چله فعال یکسان باشد." />
 
-      <Select label="همبافت نخ" value={form.ham_nakh} onChange={v => set('ham_nakh', v)} items={(lookups.hambaftYarn || []).map(x => ({ id: x, name: x }))} />
+      <Select label="هم‌بافت نخ پود" value={form.ham_nakh} onChange={v => set('ham_nakh', v)} items={(lookups.hambaftYarn || []).map(x => ({ id: x, name: x }))} />
 
       <Input label="وزن" type="number" value={form.weight} onChange={v => set('weight', Number(v))} />
 
@@ -1162,6 +1161,12 @@ function Salon({ lookups, notify }) {
   const [formulaConfigured, setFormulaConfigured] = useState(false);
 
   const [formulaSource, setFormulaSource] = useState('');
+
+  const [podOptions, setPodOptions] = useState([]);
+
+  const [saving, setSaving] = useState(false);
+
+  const [formError, setFormError] = useState('');
 
 
 
@@ -1251,7 +1256,15 @@ function Salon({ lookups, notify }) {
 
     set('machine', machine);
 
-    if (!machine) return setRecent([]);
+    setFormError('');
+
+    if (!machine) {
+
+      setPodOptions([]);
+
+      return setRecent([]);
+
+    }
 
     const [recentData, defaults] = await Promise.all([
 
@@ -1324,7 +1337,32 @@ function Salon({ lookups, notify }) {
     }
 
     const selectedKalaId = defaults.found && defaults.kala_id ? defaults.kala_id : form.kala_id;
-    const selectedHamPod = defaults.found ? (defaults.ham_pod || form.ham_pod) : form.ham_pod;
+
+    let selectedHamPod = '';
+
+    if (selectedChelleID) {
+
+      try {
+
+        const podData = await api(`/salon/pod-options/${encodeURIComponent(machine)}/${encodeURIComponent(selectedChelleID)}`);
+
+        const options = podData.items || [];
+
+        setPodOptions(options);
+
+        selectedHamPod = options.find(x => x.hambaft === form.ham_pod)?.hambaft || options[0]?.hambaft || '';
+
+      } catch {
+
+        setPodOptions([]);
+
+      }
+
+    } else {
+
+      setPodOptions([]);
+
+    }
 
     setForm(s => {
 
@@ -1336,7 +1374,7 @@ function Salon({ lookups, notify }) {
 
         kala_id: selectedKalaId || s.kala_id,
 
-        ham_pod: selectedHamPod || s.ham_pod,
+        ham_pod: selectedHamPod,
 
         ham_chelle: selectedHambaft || s.ham_chelle,
 
@@ -1376,19 +1414,43 @@ function Salon({ lookups, notify }) {
 
   const save = async () => {
 
-    const formulaTotal = Number(form.tar_percent || 0) + Number(form.pod_percent || 0);
+    if (saving) return;
 
-    if (Number(form.tar_percent) < 0 || Number(form.tar_percent) > 100 || Number(form.pod_percent) < 0 || Number(form.pod_percent) > 100 || Math.abs(formulaTotal - 100) > 0.001) {
+    setFormError('');
 
-      notify('هر درصد باید بین صفر تا صد باشد و جمع تار و پود دقیقاً ۱۰۰ شود');
+    const required = [
+
+      [form.machine, 'شماره ماشین'], [form.kala_id, 'نام کالا'], [Number(form.metr) > 0, 'متراژ'],
+
+      [Number(form.weight) > 0, 'وزن'], [form.chelle_id, 'شماره چله فعال'],
+
+      [form.ham_chelle, 'هم‌بافت تار'], [form.ham_pod, 'هم‌بافت نخ پود']
+
+    ];
+
+    const missing = required.filter(([value]) => !value).map(([, label]) => label);
+
+    if (missing.length) {
+
+      const message = `این موارد را کامل کنید: ${missing.join('، ')}`;
+
+      setFormError(message);
+
+      notify(message);
 
       return;
 
     }
 
-    if (!formulaConfigured) {
+    const formulaTotal = Number(form.tar_percent || 0) + Number(form.pod_percent || 0);
 
-      notify('هم‌بافت یا پارچه جدید است؛ ابتدا درصد مصرف تار و پود را تأیید کنید');
+    if (Number(form.tar_percent) < 0 || Number(form.tar_percent) > 100 || Number(form.pod_percent) < 0 || Number(form.pod_percent) > 100 || Math.abs(formulaTotal - 100) > 0.001) {
+
+      const message = 'هر درصد باید بین صفر تا صد باشد و جمع تار و پود دقیقاً ۱۰۰ شود';
+
+      setFormError(message);
+
+      notify(message);
 
       return;
 
@@ -1396,22 +1458,43 @@ function Salon({ lookups, notify }) {
 
     const savedLabel = labelData();
 
-    await api('/salon', { method: 'POST', body: { ...form, formula_confirmed: true } });
+    setSaving(true);
 
-    notify(editing ? 'طاقه ویرایش شد' : 'طاقه ثبت شد');
+    try {
 
-    if (!form.skip_print) printLabel(savedLabel);
+      await api('/salon', { method: 'POST', body: { ...form, formula_confirmed: true } });
 
-    setForm(salonEmpty());
+      notify(editing ? 'طاقه ویرایش شد' : 'طاقه ثبت شد');
 
-    setEditing(false);
+      if (!form.skip_print) printLabel(savedLabel);
 
-    setRecent([]);
+      setForm(salonEmpty());
 
-    setFormulaConfigured(false);
-    setFormulaSource('');
+      setEditing(false);
 
-    await load();
+      setRecent([]);
+
+      setPodOptions([]);
+
+      setFormulaConfigured(false);
+
+      setFormulaSource('');
+
+      await load();
+
+    } catch (err) {
+
+      const message = err?.message || 'ثبت طاقه انجام نشد؛ اطلاعات فرم را کنترل کنید.';
+
+      setFormError(message);
+
+      notify(message);
+
+    } finally {
+
+      setSaving(false);
+
+    }
 
   };
 
@@ -1520,7 +1603,11 @@ function Salon({ lookups, notify }) {
 
           }} hint="جمع درصد تار و پود باید ۱۰۰ باشد." />
 
-          <Input label="همبافت پود" value={form.ham_pod} onChange={() => {}} disabled hint="از آخرین ورود نخ سالن برای همین ماشین پر می‌شود و قابل ویرایش دستی نیست." />
+          <Select label="هم‌بافت نخ پود" value={form.ham_pod} onChange={v => {
+            set('ham_pod', v);
+            setFormulaConfigured(false);
+            setFormulaSource('');
+          }} items={uniqueOptions(podOptions.map(x => ({ id: x.hambaft, name: `${x.hambaft}${x.yarn ? ` - ${x.yarn}` : ''} - مانده ${fmt(x.balance)} کیلو` })), form.ham_pod)} hint="فقط از نخ پود تخصیص‌یافته به همین ماشین و همین چله انتخاب می‌شود." />
 
           <Select label="شماره چله فعال" value={form.chelle_id} onChange={async v => {
 
@@ -1539,9 +1626,35 @@ function Salon({ lookups, notify }) {
 
             }
 
+            let selectedHamPod = '';
+
+            if (row && form.machine) {
+
+              try {
+
+                const podData = await api(`/salon/pod-options/${encodeURIComponent(form.machine)}/${encodeURIComponent(chelleID)}`);
+
+                const options = podData.items || [];
+
+                setPodOptions(options);
+
+                selectedHamPod = options.find(x => x.hambaft === form.ham_pod)?.hambaft || options[0]?.hambaft || '';
+
+                set('ham_pod', selectedHamPod);
+
+              } catch {
+
+                setPodOptions([]);
+
+                set('ham_pod', '');
+
+              }
+
+            }
+
             if (row && form.machine && form.kala_id) {
 
-              try { await applyBeamFormula(form.machine, row.shom_chelle || '', form.kala_id, selectedHambaft, form.ham_pod); }
+              try { await applyBeamFormula(form.machine, row.shom_chelle || '', form.kala_id, selectedHambaft, selectedHamPod); }
 
               catch { setFormulaConfigured(false); setFormulaSource(''); }
 
@@ -1608,13 +1721,15 @@ function Salon({ lookups, notify }) {
 
       <div className="actions-row">
 
-        <button className="primary" onClick={save}>{editing ? 'ثبت ویرایش طاقه' : 'ثبت طاقه'}</button>
+        <button className="primary" onClick={save} disabled={saving || formulaLoading}>{saving ? 'در حال ثبت...' : editing ? 'ثبت ویرایش طاقه' : formulaConfigured ? 'ثبت طاقه' : 'تأیید درصد و ثبت طاقه'}</button>
 
         <button onClick={() => printLabel(labelData())}>چاپ لیبل و بارکد</button>
 
         {editing && <button className="ghost" onClick={() => { setEditing(false); setForm(salonEmpty()); setFormulaConfigured(false); setFormulaSource(''); }}>لغو ویرایش</button>}
 
       </div>
+
+      {formError && <div className="error-box" role="alert">{formError}</div>}
 
       <div className="hint">با وارد کردن شماره ماشین، آخرین کالا، همبافت پود، همبافت تار/چله و چله‌های آخر همان ماشین به صورت خودکار جایگذاری می‌شود.</div>
 
@@ -1624,7 +1739,7 @@ function Salon({ lookups, notify }) {
 
       <h2>لیست سالن تولید</h2>
 
-      <Filters filters={filterDefs} rows={items} values={filters} setValues={setFilters} onPrint={() => printReport('لیست سالن تولید', visible, [['tarikh','تاریخ'],['id','کد طاقه'],['machine','ماشین'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['shom_chelle','چله'],['tar_percent','درصد تار'],['pod_percent','درصد پود'],['ham_chelle','همبافت تار/چله'],['ham_pod','همبافت پود']])} />
+      <Filters filters={filterDefs} rows={items} values={filters} setValues={setFilters} onPrint={() => printReport('لیست سالن تولید', visible, [['tarikh','تاریخ'],['id','کد طاقه'],['machine','ماشین'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['shom_chelle','چله'],['tar_percent','درصد تار'],['pod_percent','درصد پود'],['ham_chelle','همبافت تار/چله'],['ham_pod','همبافت پود']])} onExcel={() => exportExcel('لیست سالن تولید', visible, [['tarikh','تاریخ'],['id','کد طاقه'],['machine','ماشین'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['shom_chelle','چله'],['tar_percent','درصد تار'],['pod_percent','درصد پود'],['ham_chelle','همبافت تار/چله'],['ham_pod','همبافت پود']])} />
 
       {loading ? <div className="empty">در حال بارگذاری...</div> : <Table rows={visible} columns={[['tarikh','تاریخ'],['id','کد طاقه'],['machine','ماشین'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['shom_chelle','چله'],['tar_percent','درصد تار'],['pod_percent','درصد پود'],['ham_chelle','همبافت تار/چله'],['ham_pod','همبافت پود']]} onEdit={edit} onDelete={del} />}
 
@@ -2010,7 +2125,7 @@ function OutInvoice({ lookups, notify }) {
 
       <h2>لیست فاکتورهای خروج</h2>
 
-      <Filters filters={[['invoice_no','شماره فاکتور'],['mosh','مشتری'],['kala','کالا'],['sanad','شماره سند']]} values={filters} setValues={setFilters} onPrint={() => printReport('لیست فاکتورهای خروج', visible, invoiceCols)} />
+      <Filters filters={[['invoice_no','شماره فاکتور'],['mosh','مشتری'],['kala','کالا'],['sanad','شماره سند']]} rows={rows} values={filters} setValues={setFilters} onPrint={() => printReport('لیست فاکتورهای خروج', visible, invoiceCols)} onExcel={() => exportExcel('لیست فاکتورهای خروج', visible, invoiceCols)} />
 
       <Table rows={visible} columns={invoiceCols} onEdit={edit} onDelete={del} />
 
@@ -2046,7 +2161,7 @@ function ReportsPro() {
 
       <h2>فیلتر مشترک گزارشات</h2>
 
-      <Filters filters={[['tarikh','تاریخ'],['mosh','مشتری'],['kala','کالا'],['hambaft','همبافت'],['onvan_hazine','هزینه']]} values={filters} setValues={setFilters} onPrint={() => printReport('گزارش ترکیبی عملیاتی', [...invoices, ...yarnOut, ...expenses], [['tarikh','تاریخ'],['invoice_no','فاکتور'],['mosh','مشتری'],['kala','کالا'],['hambaft','همبافت'],['weight','وزن'],['mablagh','مبلغ'],['onvan_hazine','عنوان هزینه']])} />
+      <Filters filters={[['tarikh','تاریخ'],['mosh','مشتری'],['kala','کالا'],['hambaft','همبافت'],['onvan_hazine','هزینه']]} rows={[...invoices, ...yarnOut, ...expenses]} values={filters} setValues={setFilters} onPrint={() => printReport('گزارش ترکیبی عملیاتی', [...invoices, ...yarnOut, ...expenses], [['tarikh','تاریخ'],['invoice_no','فاکتور'],['mosh','مشتری'],['kala','کالا'],['hambaft','همبافت'],['weight','وزن'],['mablagh','مبلغ'],['onvan_hazine','عنوان هزینه']])} onExcel={() => exportExcel('گزارش ترکیبی عملیاتی', [...invoices, ...yarnOut, ...expenses], [['tarikh','تاریخ'],['invoice_no','فاکتور'],['mosh','مشتری'],['kala','کالا'],['hambaft','همبافت'],['weight','وزن'],['mablagh','مبلغ'],['onvan_hazine','عنوان هزینه']])} />
 
     </section>
 
@@ -2332,9 +2447,21 @@ function LoadingMobilePage({ token, session, onLogout }) {
 
       const reader = new BrowserMultiFormatReader();
 
-      const controls = await reader.decodeFromVideoDevice(undefined, videoRef.current, (result, err) => {
+      const controls = await reader.decodeFromConstraints({
 
-        if (result && !scanLockRef.current) inspectCode(result.getText());
+        audio: false,
+
+        video: { facingMode: { ideal: 'environment' } }
+
+      }, videoRef.current, (result, err) => {
+
+        if (result && !scanLockRef.current) {
+
+          if (navigator.vibrate) navigator.vibrate(80);
+
+          inspectCode(result.getText());
+
+        }
 
       });
 
@@ -2347,38 +2474,6 @@ function LoadingMobilePage({ token, session, onLogout }) {
       setCameraOn(false);
 
       setError('دوربین باز نشد. اجازه Camera را فعال کنید یا کد را دستی وارد کنید.');
-
-    }
-
-  };
-
-  const scanCapturedImage = async event => {
-
-    const file = event.target.files?.[0];
-
-    event.target.value = '';
-
-    if (!file) return;
-
-    const objectUrl = URL.createObjectURL(file);
-
-    setBusy(true); setError('');
-
-    try {
-
-      const result = await new BrowserMultiFormatReader().decodeFromImageUrl(objectUrl);
-
-      await inspectCode(result.getText());
-
-    } catch (err) {
-
-      setError('بارکد در عکس خوانده نشد؛ عکس را نزدیک‌تر و با نور بهتر بگیرید.');
-
-    } finally {
-
-      URL.revokeObjectURL(objectUrl);
-
-      setBusy(false);
 
     }
 
@@ -2398,6 +2493,8 @@ function LoadingMobilePage({ token, session, onLogout }) {
 
       await loadState();
 
+      await startCamera();
+
     } catch (err) { setError(err.message); }
 
     finally { setBusy(false); }
@@ -2405,6 +2502,14 @@ function LoadingMobilePage({ token, session, onLogout }) {
   };
 
   const item = candidate || {};
+
+  const rejectCandidate = async () => {
+
+    setCandidate(null);
+
+    await startCamera();
+
+  };
 
   return <div className="loading-mobile-page" dir="rtl">
 
@@ -2438,11 +2543,9 @@ function LoadingMobilePage({ token, session, onLogout }) {
 
         <button className="primary" type="button" onClick={startCamera}>{cameraOn ? 'شروع مجدد دوربین' : 'باز کردن دوربین و اسکن بارکد'}</button>
 
-        <label className="capture-barcode-button">گرفتن عکس لیبل<input type="file" accept="image/*" capture="environment" onChange={scanCapturedImage} /></label>
-
       </div>
 
-      <small className="loading-camera-hint">اگر مرورگر روی شبکه محلی اجازه پخش زنده دوربین نداد، «گرفتن عکس لیبل» را بزنید؛ این روش بدون اینترنت هم کار می‌کند.</small>
+      <small className="loading-camera-hint">دوربین پشت گوشی به‌صورت زنده بارکد روی لیبل را می‌خواند. پس از تأیید یا رد هر طاقه، اسکن بعدی خودکار آغاز می‌شود.</small>
 
       <div className="loading-manual">
 
@@ -2476,7 +2579,7 @@ function LoadingMobilePage({ token, session, onLogout }) {
 
         <button className="primary" disabled={busy || item.matches === false} onClick={confirm}>{busy ? 'در حال ثبت...' : 'تأیید و افزودن به فاکتور'}</button>
 
-        <button className="ghost" onClick={() => setCandidate(null)}>رد کردن</button>
+        <button className="ghost" onClick={rejectCandidate}>رد کردن و اسکن بعدی</button>
 
       </div>
 
@@ -2858,9 +2961,15 @@ function OutInvoicePro({ lookups, notify }) {
 
         <button onClick={async () => printReport('موجودی طاقه‌های خروج‌نخورده', await api('/out-invoice/stock'), [['id','کد طاقه'],['tarikh','تاریخ'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['machine','ماشین'],['shom_chelle','چله']])}>گزارش موجودی انبار</button>
 
+        <button onClick={async () => exportExcel('موجودی طاقه‌های خروج‌نخورده', await api('/out-invoice/stock'), [['id','کد طاقه'],['tarikh','تاریخ'],['kala','کالا'],['metr','متراژ'],['weight','وزن'],['machine','ماشین'],['shom_chelle','چله']])}>اکسل موجودی انبار</button>
+
         <button className="printer-picker" title="پنجره چاپ ویندوز/مرورگر باز می‌شود و می‌توانید چاپگر A4 را انتخاب کنید" onClick={() => printInvoiceTaghes(form)}>انتخاب چاپگر و چاپ فاکتور</button>
 
+        <button onClick={() => exportExcel('لیست طاقه‌های فاکتور خروج', form.items.map((x, i) => ({ ...x, row: i + 1 })), [['row','ردیف'],['id','کد طاقه'],['metr','متراژ'],['weight','وزن'],['ham_chelle','همبافت تار'],['ham_pod','همبافت پود'],['shom_chelle','شماره چله'],['kala','کالا']])}>اکسل فاکتور</button>
+
         <button onClick={() => printReport('گزارش فاکتور خروج', visible, invoiceCols)}>گزارش فاکتورها</button>
+
+        <button onClick={() => exportExcel('گزارش فاکتور خروج', visible, invoiceCols)}>اکسل فاکتورها</button>
 
         <button className="primary" onClick={save}>اتمام فاکتور و ذخیره</button>
 
@@ -2874,7 +2983,7 @@ function OutInvoicePro({ lookups, notify }) {
 
       <h2>فاکتورهای ثبت شده قبلی</h2>
 
-      <Filters filters={[['invoice_no','شماره فاکتور'],['mosh','مشتری'],['kala','نام کالا'],['sanad','شماره سند']]} rows={rows} values={filters} setValues={setFilters} onPrint={() => printReport('فاکتورهای ثبت شده قبلی', visible, invoiceCols)} />
+      <Filters filters={[['invoice_no','شماره فاکتور'],['mosh','مشتری'],['kala','نام کالا'],['sanad','شماره سند']]} rows={rows} values={filters} setValues={setFilters} onPrint={() => printReport('فاکتورهای ثبت شده قبلی', visible, invoiceCols)} onExcel={() => exportExcel('فاکتورهای ثبت شده قبلی', visible, invoiceCols)} />
 
       <Table rows={visible} columns={invoiceCols} onEdit={edit} onDelete={del} />
 
@@ -2898,7 +3007,7 @@ function ReportTable({ title, rows = [], columns, filterKeys }) {
 
     <h2>{title}</h2>
 
-    <Filters filters={defs} rows={rows} values={values} setValues={setValues} onPrint={() => printReport(title, visible, columns)} />
+    <Filters filters={defs} rows={rows} values={values} setValues={setValues} onPrint={() => printReport(title, visible, columns)} onExcel={() => exportExcel(title, visible, columns)} />
 
     <Table rows={visible} columns={columns} hideActions />
 
@@ -3789,7 +3898,7 @@ function CrudPage({ title, endpoint, empty, renderForm, columns, notify, afterSa
 
       <h2>لیست {title}</h2>
 
-      <Filters filters={filters} rows={items} values={filterValues} setValues={setFilterValues} onPrint={() => printReport(`لیست ${title}`, visible, columns)} />
+      <Filters filters={filters} rows={items} values={filterValues} setValues={setFilterValues} onPrint={() => printReport(`لیست ${title}`, visible, columns)} onExcel={() => exportExcel(`لیست ${title}`, visible, columns)} />
 
       {loading ? <div className="empty">در حال بارگذاری...</div> : <Table rows={visible} columns={columns} onEdit={edit} onDelete={del} />}
 
@@ -3803,9 +3912,9 @@ function CrudPage({ title, endpoint, empty, renderForm, columns, notify, afterSa
 
 
 
-function Filters({ filters, values, setValues, onPrint, rows = [] }) {
+function Filters({ filters, values, setValues, onPrint, onExcel, rows = [] }) {
 
-  if (!filters?.length) return <div className="actions-row report-actions"><button onClick={onPrint}>چاپ گزارش</button></div>;
+  if (!filters?.length) return <div className="actions-row report-actions"><button onClick={onPrint}>چاپ گزارش</button>{onExcel && <button onClick={onExcel}>خروجی اکسل</button>}</div>;
 
   return <div className="filters">
 
@@ -3820,6 +3929,8 @@ function Filters({ filters, values, setValues, onPrint, rows = [] }) {
     <button onClick={() => setValues({})}>پاک کردن فیلتر</button>
 
     <button onClick={onPrint}>چاپ گزارش</button>
+
+    {onExcel && <button onClick={onExcel}>خروجی اکسل</button>}
 
   </div>;
 
@@ -3942,6 +4053,44 @@ function printReport(title, rows, columns) {
   win.document.close();
 
   setTimeout(() => win.print(), 300);
+
+}
+
+function exportExcel(title, rows = [], columns = []) {
+
+  const xmlText = value => String(value ?? '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+
+  const cell = value => {
+
+    const numeric = typeof value === 'number' && Number.isFinite(value);
+
+    return `<Cell><Data ss:Type="${numeric ? 'Number' : 'String'}">${xmlText(value)}</Data></Cell>`;
+
+  };
+
+  const header = `<Row>${columns.map(([, label]) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${xmlText(label)}</Data></Cell>`).join('')}</Row>`;
+
+  const body = rows.map(row => `<Row>${columns.map(([key]) => cell(row?.[key])).join('')}</Row>`).join('');
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Styles><Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Horizontal="Right"/><Font ss:FontName="Tahoma"/></Style><Style ss:ID="Header"><Font ss:FontName="Tahoma" ss:Bold="1"/><Interior ss:Color="#DDEBF7" ss:Pattern="Solid"/></Style></Styles><Worksheet ss:Name="${xmlText(String(title || 'گزارش').slice(0, 31))}"><Table>${header}${body}</Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><DisplayRightToLeft/></WorksheetOptions></Worksheet></Workbook>`;
+
+  const url = URL.createObjectURL(new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8' }));
+
+  const link = document.createElement('a');
+
+  link.href = url;
+
+  link.download = `${String(title || 'گزارش').replace(/[\\/:*?"<>|]/g, '-').trim() || 'گزارش'}.xls`;
+
+  document.body.appendChild(link);
+
+  link.click();
+
+  link.remove();
+
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 
 }
 
