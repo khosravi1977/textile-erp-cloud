@@ -99,6 +99,13 @@ func classifyMobileTransaction(explicit, direction, group, customer, counterAcco
 	return "other_income", nil
 }
 
+func setUnconfirmedCounterparty(row map[string]any, candidate string) {
+	row["payer"] = ""
+	row["customer"] = ""
+	row["counterpartyCandidate"] = strings.TrimSpace(candidate)
+	row["counterpartyConfirmed"] = false
+}
+
 // mobileAccountingDate accepts ISO dates and the yyyy/mm/dd Jalali dates sent by
 // the offline Android application. The original Jalali value is retained on the
 // workspace row; this conversion provides a valid Gregorian posting date.
@@ -446,17 +453,16 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 		if transactionType == "expense" || transactionType == "transfer" || transactionType == "other_income" {
 			customer = ""
 		}
-		counterparty := customer
-		if counterparty == "" {
-			counterparty = strings.TrimSpace(req.Group + " / " + req.Subgroup)
-		}
-		mobileRow := map[string]any{"id": "sms-" + req.ExternalID, "externalId": req.ExternalID, "title": req.Title, "amount": req.Amount, "direction": req.Direction, "transactionType": transactionType, "transactionTypeExplicit": strings.TrimSpace(req.TransactionType) != "", "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "counterAccount": req.CounterAccount, "group": req.Group, "subgroup": req.Subgroup, "customer": customer, "reportedCustomer": req.Customer, "counterparty": counterparty, "bank": accountName, "sender": req.Sender, "trackingNo": req.TrackingNo, "reportedBalance": req.ReportedBalance, "occurredAt": occurred, "occurredJalali": occurredJalali, "syncedAt": now}
+		counterparty := strings.Trim(strings.TrimSpace(req.Group+" / "+req.Subgroup), " /")
+		mobileRow := map[string]any{"id": "sms-" + req.ExternalID, "externalId": req.ExternalID, "title": req.Title, "amount": req.Amount, "direction": req.Direction, "transactionType": transactionType, "transactionTypeExplicit": strings.TrimSpace(req.TransactionType) != "", "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "counterAccount": req.CounterAccount, "group": req.Group, "subgroup": req.Subgroup, "reportedCustomer": req.Customer, "counterparty": counterparty, "bank": accountName, "sender": req.Sender, "trackingNo": req.TrackingNo, "reportedBalance": req.ReportedBalance, "occurredAt": occurred, "occurredJalali": occurredJalali, "syncedAt": now}
+		setUnconfirmedCounterparty(mobileRow, customer)
 		state["mobileTransactions"] = append([]any{mobileRow}, anyRows(state, "mobileTransactions")...)
 		trackingNo := strings.TrimSpace(req.TrackingNo)
 		if trackingNo == "" {
 			trackingNo = req.ExternalID
 		}
-		movement := map[string]any{"id": "mov-sms-" + req.ExternalID, "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "date": occurred, "occurredJalali": occurredJalali, "direction": req.Direction, "transactionType": transactionType, "amount": req.Amount, "payer": customer, "counterparty": counterparty, "trackingNo": trackingNo, "description": req.Description, "sourceMobileTransaction": req.ExternalID, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName, "group": req.Group, "subgroup": req.Subgroup}
+		movement := map[string]any{"id": "mov-sms-" + req.ExternalID, "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "date": occurred, "occurredJalali": occurredJalali, "direction": req.Direction, "transactionType": transactionType, "amount": req.Amount, "counterparty": counterparty, "trackingNo": trackingNo, "description": req.Description, "sourceMobileTransaction": req.ExternalID, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName, "group": req.Group, "subgroup": req.Subgroup}
+		setUnconfirmedCounterparty(movement, customer)
 		if transactionType == "expense" {
 			expenseID := "exp-sms-" + req.ExternalID
 			expense := map[string]any{"id": expenseID, "date": occurred, "occurredJalali": occurredJalali, "group": req.Group, "subgroup": req.Subgroup, "amount": req.Amount, "description": req.Description, "accountId": resolvedAccountID, "counterparty": counterparty, "reportedCustomer": req.Customer, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName}
