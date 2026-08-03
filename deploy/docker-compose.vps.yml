@@ -175,6 +175,7 @@ services:
       PORTAL_WEAVING_MONITOR_TOKEN: ${PORTAL_WEAVING_MONITOR_TOKEN:-}
       PORTAL_WEAVING_APP_URL: ${PORTAL_WEAVING_APP_URL:-https://weaving.vioraapps.com}
       ACCESS_DB_PATH: /data/portal-access.db
+      PORTAL_ORDERS_PATH: /data/portal-orders.json
     volumes:
       - textile_erp_portal_data:/data
     depends_on:

@@ -12,6 +12,7 @@ runtime/
 .tools/
 .android-sdk/
 .gradle/
+.gocache/
 dist/
 build/
 coverage/

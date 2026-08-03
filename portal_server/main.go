@@ -40,6 +40,8 @@ const (
 type portalApp struct {
 	accessFile                     string
 	mu                             sync.Mutex
+	ordersFile                     string
+	ordersMu                       sync.Mutex
 	launchTicketMu                 sync.Mutex
 	launchTickets                  map[string]launchTicket
 	publicBase                     string
@@ -379,6 +381,7 @@ func main() {
 	localCompanyID := envInt64("PORTAL_LOCAL_COMPANY_ID", 2)
 	localCompanyName := strings.TrimSpace(env("PORTAL_LOCAL_COMPANY_NAME", "پرگل"))
 	dbPath := strings.TrimSpace(env("ACCESS_DB_PATH", "/data/portal-access.db"))
+	ordersPath := strings.TrimSpace(env("PORTAL_ORDERS_PATH", filepath.Join(filepath.Dir(dbPath), "portal-orders.json")))
 	validatePortalProductionConfig(adminPassword, sessionSecret, financialJWTKey, operationalSessionSecret)
 	if err := validateExecutiveMonitorConfig(weavingMonitorURL, weavingMonitorToken); err != nil {
 		log.Printf("executive monitor configuration warning: %v", err)
@@ -387,9 +390,13 @@ func main() {
 	if err := ensureAccessStore(dbPath); err != nil {
 		log.Fatal(err)
 	}
+	if err := ensurePurchaseOrderStore(ordersPath); err != nil {
+		log.Fatal(err)
+	}
 
 	app := &portalApp{
 		accessFile:                     dbPath,
+		ordersFile:                     ordersPath,
 		launchTickets:                  make(map[string]launchTicket),
 		publicBase:                     strings.TrimRight(publicBase, "/"),
 		financialURL:                   *financial,
@@ -421,6 +428,9 @@ func main() {
 	mux.HandleFunc("/downloads/HesabYar.apk", app.downloadMobileApp)
 	mux.HandleFunc("/HesabYar.apk", app.downloadMobileApp)
 	mux.HandleFunc("/login", app.customerLogin)
+	mux.HandleFunc("/plans", app.purchasePlans)
+	mux.HandleFunc("/api/public/purchase-orders", app.publicPurchaseOrders)
+	mux.HandleFunc("/assets/plans-og.png", app.plansSocialImage)
 	mux.HandleFunc("/logout", app.customerLogout)
 	mux.HandleFunc("/module-login", app.moduleLogin)
 	mux.HandleFunc("/module-logout", app.moduleLogout)
@@ -429,6 +439,9 @@ func main() {
 	mux.HandleFunc("/admin/logout", app.adminLogout)
 	mux.HandleFunc("/admin/api/accesses", app.adminAccesses)
 	mux.HandleFunc("/admin/api/accesses/", app.adminAccessByID)
+	mux.HandleFunc("/admin/orders", app.adminOrdersPage)
+	mux.HandleFunc("/admin/api/orders", app.adminOrdersAPI)
+	mux.HandleFunc("/admin/api/orders/", app.adminOrderByID)
 	mux.HandleFunc("/admin/api/launch-ticket", app.adminLaunchTicket)
 	mux.HandleFunc("/admin/api/deprovision", app.adminDeprovision)
 	mux.HandleFunc("/admin", app.adminPanel)
@@ -453,7 +466,7 @@ func main() {
 	mux.HandleFunc("/", app.landing)
 
 	log.Printf("ERP portal started on %s", *addr)
-	log.Printf("portal_public_base=%s cooler_store=%s access_db=%s", app.publicBase, app.coolerStoreURL, dbPath)
+	log.Printf("portal_public_base=%s cooler_store=%s access_db=%s orders_db=%s", app.publicBase, app.coolerStoreURL, dbPath, ordersPath)
 	log.Printf("financial=%s operational=%s financial_api=%s operational_api=%s", *financial, *operational, *financialAPI, *operationalAPI)
 	log.Fatal(http.ListenAndServe(*addr, mux))
 }
@@ -569,6 +582,7 @@ func (a *portalApp) health(w http.ResponseWriter, r *http.Request) {
 		"coolerStore":    a.coolerStoreURL,
 		"weavingApp":     a.weavingAppURL,
 		"accessManager":  "ok",
+		"purchaseOrders": a.purchaseOrderStoreStatus(),
 	})
 }
 
@@ -604,12 +618,16 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
 		if effectiveCanManageTeam(record) {
 			cardParts = append(cardParts, `<a class="card accent" href="/team">مدیریت کاربران و دسترسی‌ها</a>`)
 		}
+		cardParts = append(cardParts, `<a class="card plans" href="/plans">خرید یا افزودن محصول</a>`)
 		statusParts = append(statusParts,
 			`<div class="pill">شرکت: `+html.EscapeString(record.CompanyName)+`</div>`,
 			`<div class="pill">کاربر فعلی: `+html.EscapeString(record.Username)+`</div>`,
 		)
 	} else {
-		cardParts = append(cardParts, `<a class="card" href="/login">ورود یکپارچه به Textile ERP</a>`)
+		cardParts = append(cardParts,
+			`<a class="card" href="/login">ورود یکپارچه به Textile ERP</a>`,
+			`<a class="card plans" href="/plans">مشاهده محصولات و ثبت سفارش</a>`,
+		)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -628,8 +646,9 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
     a.secondary{background:#44665a;border-color:#7ca28d}
     a.accent{background:#5c4334;border-color:#8c6a51}
     a.mobile{background:#176b5b;border-color:#2c927c}
-    a.executive{background:#0f4c5c;border-color:#2b8398}
+	    a.executive{background:#0f4c5c;border-color:#2b8398}
 	    a.weaving{background:#176b5b;border-color:#42a78f}
+	    a.plans{background:#7c3aed;border-color:#a78bfa}
     .empty{background:#f4e7d6;color:#5f4635;border-color:#ddc2a5}
     a:hover{filter:brightness(1.08)}
     .status{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:22px;color:#7a6355;font-size:12px}
@@ -683,6 +702,11 @@ func (a *portalApp) customerLogin(w http.ResponseWriter, r *http.Request) {
 	nextPath = safePortalNext(r.Form.Get("next"))
 	username := strings.TrimSpace(r.Form.Get("username"))
 	password := r.Form.Get("password")
+	if !a.localMode && username == a.adminUsername && password == a.adminPassword {
+		a.setAdminSessionCookie(w, r, time.Now().Add(12*time.Hour))
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
 	if a.localMode && strings.EqualFold(username, a.adminUsername) && password == a.adminPassword {
 		record, err := a.ensureLocalOwnerAccess()
 		if err != nil {
@@ -1056,7 +1080,7 @@ func (a *portalApp) renderCustomerLogin(w http.ResponseWriter, errMsg, nextPath 
   <style>
     *{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f7f1e8;color:#2a1a14;font-family:Tahoma,Arial;display:flex;align-items:center;justify-content:center;padding:24px}
     .panel{width:min(460px,96vw);background:#fffaf4;border:1px solid #dbc7ae;border-radius:20px;padding:28px;box-shadow:0 24px 80px rgba(75,43,24,.12)}
-    h1{margin:0 0 10px;font-size:28px}.lead,.muted{color:#6f574a;line-height:1.9}.muted{font-size:13px;margin-top:14px}
+    h1{margin:0 0 10px;font-size:28px}.lead,.muted{color:#6f574a;line-height:1.9}.muted{font-size:13px;margin-top:14px}.plans-link{display:block;text-align:center;margin-top:16px;color:#6d28d9;font-weight:bold;text-decoration:none}
     form{display:grid;gap:12px;margin-top:20px}input{width:100%;border:1px solid #c8ab8b;border-radius:12px;padding:13px 14px;background:#fff;color:#2a1a14}
     button{border:1px solid #8b5e3c;background:#8b5e3c;color:#fff;border-radius:12px;padding:13px 16px;cursor:pointer;font-weight:bold}
     .error{margin-top:14px;background:#fff0f0;color:#9f2333;border:1px solid #efb0b0;border-radius:12px;padding:10px 12px}
@@ -1073,6 +1097,7 @@ func (a *portalApp) renderCustomerLogin(w http.ResponseWriter, errMsg, nextPath 
     <button type="submit">ورود به برنامه</button>
   </form>
   <div class="muted">نام کاربری و رمز عبور اختصاصی خود را از مدیر مجموعه دریافت کنید.</div>
+  <a class="plans-link" href="/plans">هنوز حساب ندارید؟ محصولات را انتخاب و سفارش ثبت کنید</a>
 </main></body></html>`))
 }
 
@@ -1095,7 +1120,11 @@ func (a *portalApp) adminLogin(w http.ResponseWriter, r *http.Request) {
 		a.renderAdminLogin(w, "نام کاربری یا رمز عبور مدیریت اشتباه است.")
 		return
 	}
-	exp := time.Now().Add(12 * time.Hour)
+	a.setAdminSessionCookie(w, r, time.Now().Add(12*time.Hour))
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+func (a *portalApp) setAdminSessionCookie(w http.ResponseWriter, r *http.Request, exp time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     adminCookieName,
 		Value:    a.signAdminSession(exp),
@@ -1105,7 +1134,6 @@ func (a *portalApp) adminLogin(w http.ResponseWriter, r *http.Request) {
 		Secure:   isSecureRequest(r),
 		Expires:  exp,
 	})
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
 func (a *portalApp) adminLogout(w http.ResponseWriter, r *http.Request) {
@@ -1177,6 +1205,7 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
         <p>برای هر مشتری لینک تست بسازید، تاریخ انقضا تعیین کنید و او را به صفحه مناسب همان پروژه هدایت کنید.</p>
       </div>
       <div class="actions">
+	    <a class="btn" href="/admin/orders">سفارش‌های خرید</a>
         <a class="btn" href="/" target="_blank" rel="noopener">صفحه اصلی</a>
         <a class="btn" href="/admin/logout">خروج</a>
       </div>
