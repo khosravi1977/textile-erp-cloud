@@ -450,7 +450,7 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 		if counterparty == "" {
 			counterparty = strings.TrimSpace(req.Group + " / " + req.Subgroup)
 		}
-		mobileRow := map[string]any{"id": "sms-" + req.ExternalID, "externalId": req.ExternalID, "title": req.Title, "amount": req.Amount, "direction": req.Direction, "transactionType": transactionType, "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "counterAccount": req.CounterAccount, "group": req.Group, "subgroup": req.Subgroup, "customer": customer, "reportedCustomer": req.Customer, "counterparty": counterparty, "bank": accountName, "sender": req.Sender, "trackingNo": req.TrackingNo, "reportedBalance": req.ReportedBalance, "occurredAt": occurred, "occurredJalali": occurredJalali, "syncedAt": now}
+		mobileRow := map[string]any{"id": "sms-" + req.ExternalID, "externalId": req.ExternalID, "title": req.Title, "amount": req.Amount, "direction": req.Direction, "transactionType": transactionType, "transactionTypeExplicit": strings.TrimSpace(req.TransactionType) != "", "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "counterAccount": req.CounterAccount, "group": req.Group, "subgroup": req.Subgroup, "customer": customer, "reportedCustomer": req.Customer, "counterparty": counterparty, "bank": accountName, "sender": req.Sender, "trackingNo": req.TrackingNo, "reportedBalance": req.ReportedBalance, "occurredAt": occurred, "occurredJalali": occurredJalali, "syncedAt": now}
 		state["mobileTransactions"] = append([]any{mobileRow}, anyRows(state, "mobileTransactions")...)
 		trackingNo := strings.TrimSpace(req.TrackingNo)
 		if trackingNo == "" {

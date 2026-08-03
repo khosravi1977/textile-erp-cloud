@@ -184,6 +184,16 @@ func loadWorkspace(r *http.Request, companyID int64) (workspaceDocument, error) 
 			doc.State = json.RawMessage(`{}`)
 			return doc, nil
 		}
+		if err == nil {
+			normalized, checksum, changed, normalizeErr := normalizeLegacyMobileExpenseState(doc.State)
+			if normalizeErr != nil {
+				return workspaceDocument{}, normalizeErr
+			}
+			if changed {
+				doc.State = normalized
+				doc.Checksum = checksum
+			}
+		}
 		return doc, err
 	})
 }
