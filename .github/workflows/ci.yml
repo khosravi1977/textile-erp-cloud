@@ -30,6 +30,8 @@ jobs:
       DB_SSLMODE: disable
     steps:
       - uses: actions/checkout@v4
+      - name: Production smoke script syntax
+        run: bash -n deploy/production/smoke-production.sh
       - name: Production compose release paths
         run: bash deploy/production/validate-compose.sh
       - uses: actions/setup-go@v5
