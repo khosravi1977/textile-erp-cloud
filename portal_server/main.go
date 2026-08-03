@@ -264,6 +264,37 @@ func (a *portalApp) startFullTrialOnFirstUse(record projectAccess) (projectAcces
 	return started, nil
 }
 
+func (a *portalApp) startFullTrialsForExistingOwners() {
+	const maxAttempts = 5
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		items, err := a.listAccesses()
+		if err != nil {
+			log.Printf("automatic existing owner trial scan failed (attempt %d/%d): %v", attempt, maxAttempts, err)
+		} else {
+			eligible := 0
+			failed := 0
+			for _, record := range items {
+				if record.ProjectKey != "textile-erp" || effectiveAccessRole(record) != "owner" || !record.IsActive || accessRequiresSetup(record) || time.Now().After(record.ExpiresAt) || !record.TrialEndsAt.IsZero() {
+					continue
+				}
+				eligible++
+				if _, err := a.startFullTrialOnFirstUse(record); err != nil {
+					failed++
+					log.Printf("automatic existing owner trial failed for access %d (attempt %d/%d): %v", record.ID, attempt, maxAttempts, err)
+				} else {
+					log.Printf("automatic 30-day full trial started for existing access %d", record.ID)
+				}
+			}
+			if eligible == 0 || failed == 0 {
+				return
+			}
+		}
+		if attempt < maxAttempts {
+			time.Sleep(20 * time.Second)
+		}
+	}
+}
+
 func effectiveCanManageTeam(record projectAccess) bool {
 	if record.ProjectKey != "textile-erp" {
 		return false
@@ -505,6 +536,7 @@ func main() {
 	log.Printf("ERP portal started on %s", *addr)
 	log.Printf("portal_public_base=%s cooler_store=%s access_db=%s orders_db=%s", app.publicBase, app.coolerStoreURL, dbPath, ordersPath)
 	log.Printf("financial=%s operational=%s financial_api=%s operational_api=%s", *financial, *operational, *financialAPI, *operationalAPI)
+	go app.startFullTrialsForExistingOwners()
 	log.Fatal(http.ListenAndServe(*addr, mux))
 }
 

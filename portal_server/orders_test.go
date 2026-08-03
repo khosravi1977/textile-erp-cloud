@@ -461,6 +461,44 @@ func TestExpiredFullTrialDoesNotRestartAutomatically(t *testing.T) {
 	}
 }
 
+func TestStartupActivatesExistingOwnerWithoutAVisit(t *testing.T) {
+	app := newPurchaseOrderTestApp(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/portal/provision":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "company_id": 303})
+		case "/api/internal/provision":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tenantId": "66666666-6666-4666-8666-666666666666"})
+		case "/api/internal/users/sync":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app.operationalAPI = server.URL
+	app.operationalSessionSecret = "operational-startup-trial-secret"
+	app.weavingAppURL = server.URL
+	app.weavingMonitorToken = "weaving-startup-trial-secret-long-enough"
+
+	owner, _, err := app.createManagedAccess(
+		"textile-erp", "بافت موجود", "مدیر", "existing-owner", "Secure123!", 0,
+		time.Now().Add(24*time.Hour), time.Time{}, "", "owner", financialPermissionCatalog,
+		true, false, true, false, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.startFullTrialsForExistingOwners()
+	items, err := app.listAccesses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != owner.ID || !fullTrialActive(items[0]) || items[0].WeavingTenantID == "" {
+		t.Fatalf("startup did not activate the existing owner trial: %#v", items)
+	}
+}
+
 func TestGrantFullTrialPreservesPurchasedModules(t *testing.T) {
 	app := newPurchaseOrderTestApp(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
