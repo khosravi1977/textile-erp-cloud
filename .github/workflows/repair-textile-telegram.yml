@@ -80,6 +80,12 @@ jobs:
             elevate=()
           else
             echo 'The production access account cannot update the shared runtime environment.' >&2
+            echo '### SUDO POLICY' >&2
+            sudo -n -l >&2 || true
+            echo '### DEPLOY HELPER HELP' >&2
+            sudo -n /usr/local/sbin/viora-deploy --help >&2 || true
+            echo '### DEPLOY HELPER USAGE' >&2
+            sudo -n /usr/local/sbin/viora-deploy >&2 || true
             exit 77
           fi
 
