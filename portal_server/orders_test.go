@@ -397,6 +397,70 @@ func TestTrialLandingShowsWeavingAndCountdown(t *testing.T) {
 	}
 }
 
+func TestFirstOwnerLandingAutomaticallyStartsFullTrial(t *testing.T) {
+	app := newPurchaseOrderTestApp(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/portal/provision":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "company_id": 202})
+		case "/api/internal/provision":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tenantId": "55555555-5555-4555-8555-555555555555"})
+		case "/api/internal/users/sync":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app.operationalAPI = server.URL
+	app.operationalSessionSecret = "operational-auto-trial-secret"
+	app.weavingAppURL = server.URL
+	app.weavingMonitorToken = "weaving-auto-trial-secret-long-enough"
+
+	owner, _, err := app.createManagedAccess(
+		"textile-erp", "بافت ورود اول", "مدیر", "first-login-owner", "Secure123!", 0,
+		time.Now().Add(24*time.Hour), time.Time{}, "", "owner", financialPermissionCatalog,
+		true, false, true, false, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: accessCookieName, Value: owner.AccessToken})
+	rec := httptest.NewRecorder()
+	app.landing(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected landing status: %d", rec.Code)
+	}
+	for _, text := range []string{"ورود به بخش مالی", "ورود به بخش عملیاتی", "ورود به راندمان سالن بافت", "تست رایگان هر سه بخش"} {
+		if !strings.Contains(rec.Body.String(), text) {
+			t.Fatalf("automatic trial landing is missing %q", text)
+		}
+	}
+	items, err := app.listAccesses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || !fullTrialActive(items[0]) || items[0].WeavingTenantID == "" || items[0].ExpiresAt.Before(items[0].TrialEndsAt) {
+		t.Fatalf("first owner visit did not persist and provision the full trial: %#v", items)
+	}
+}
+
+func TestExpiredFullTrialDoesNotRestartAutomatically(t *testing.T) {
+	app := newPurchaseOrderTestApp(t)
+	expired := projectAccess{
+		ID: 9, ProjectKey: "textile-erp", AccessRole: "owner",
+		TrialEndsAt: time.Now().Add(-time.Hour),
+	}
+	got, err := app.startFullTrialOnFirstUse(expired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.TrialEndsAt.Equal(expired.TrialEndsAt) {
+		t.Fatalf("expired trial was restarted: before=%s after=%s", expired.TrialEndsAt, got.TrialEndsAt)
+	}
+}
+
 func TestGrantFullTrialPreservesPurchasedModules(t *testing.T) {
 	app := newPurchaseOrderTestApp(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
