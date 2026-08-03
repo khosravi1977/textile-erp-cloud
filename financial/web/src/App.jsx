@@ -3,6 +3,7 @@
 import { useRef } from 'react';
 import QRCode from 'qrcode';
 import { confirmMovementCounterparty, confirmedMovementCounterparty, movementNeedsCounterparty } from './counterparty.js';
+import { formatTableValue, toPersianDigits } from './localization.js';
 
 const FINANCIAL_DEV_ORIGIN = `${window.location.protocol}//${window.location.hostname}:5173`;
 const FINANCIAL_DEV_ORIGINS = new Set([
@@ -400,9 +401,13 @@ const columnLabels = {
 
   account: 'حساب',
 
+  code: 'کد حساب',
+
   amount: 'مبلغ',
 
   assigned_checks: 'چک واگذار شده',
+
+  balance: 'مانده',
 
   balance_weight: 'مانده',
 
@@ -412,13 +417,15 @@ const columnLabels = {
 
   count: 'تعداد',
 
-  credit: 'نسيه',
+  credit: 'بستانکار',
 
   customer: 'مشتري',
 
   customer_name: 'مشتري',
 
   date: 'تاريخ',
+
+  debit: 'بدهکار',
 
   debt: 'مانده',
 
@@ -448,6 +455,8 @@ const columnLabels = {
 
   name: 'نام',
 
+  nature: 'ماهیت',
+
   outgoing_weight: 'خروج',
 
   opening_type: 'نوع مانده',
@@ -465,6 +474,8 @@ const columnLabels = {
   paid: 'پرداخت شده',
 
   payer: 'پرداخت کننده',
+
+  party: 'طرف حساب',
 
   period: 'دوره',
 
@@ -489,6 +500,8 @@ const columnLabels = {
   vendor_name: 'فروشنده',
 
   variance: 'انحراف',
+
+  voucher: 'شماره سند',
 
   variance_percent: 'درصد انحراف',
 
@@ -1043,8 +1056,8 @@ function exportExcel(title, rows = [], columns = null, totals = null) {
   const safeRows = Array.isArray(rows) ? rows : [];
 
   const keys = columns?.length
-    ? columns.map(column => Array.isArray(column) ? column : [column, labelMap[column] || column])
-    : [...new Set(safeRows.flatMap(row => Object.keys(row || {})))].map(key => [key, labelMap[key] || key]);
+    ? columns.map(column => Array.isArray(column) ? column : [column, columnLabels[column] || column])
+    : [...new Set(safeRows.flatMap(row => Object.keys(row || {})))].map(key => [key, columnLabels[key] || key]);
 
   const cell = value => {
 
@@ -4772,11 +4785,11 @@ function AccountingPage({ finance, setFinance, revision }) {
   const s = report.summary || {};
   const profit = Number(s.income || 0) - Number(s.expense || 0);
   const balanced = Math.abs(Number(s.total_debit || 0) - Number(s.total_credit || 0)) <= 1;
-  const printTrial = () => printSection('تراز آزمایشی', `<table><thead><tr><th>کد</th><th>حساب</th><th>بدهکار</th><th>بستانکار</th><th>مانده</th></tr></thead><tbody>${(report.trialBalance || []).map(row => `<tr><td>${row.code}</td><td>${row.name}</td><td>${money(row.debit)}</td><td>${money(row.credit)}</td><td>${money(row.balance)}</td></tr>`).join('')}</tbody></table>`);
+  const printTrial = () => printSection('تراز آزمایشی', `<table><thead><tr><th>کد</th><th>حساب</th><th>بدهکار</th><th>بستانکار</th><th>مانده</th></tr></thead><tbody>${(report.trialBalance || []).map(row => `<tr><td>${toPersianDigits(row.code)}</td><td>${row.name}</td><td>${money(row.debit)}</td><td>${money(row.credit)}</td><td>${money(row.balance)}</td></tr>`).join('')}</tbody></table>`);
   return <div className="space-y-5">
     {error && <ErrorBox message={error} />}
     <div className="grid grid-cols-5 gap-4"><Field label="جمع بدهکار" value={money(s.total_debit) + ' تومان'} /><Field label="جمع بستانکار" value={money(s.total_credit) + ' تومان'} /><Field label="سود/زیان دوره" value={money(profit) + ' تومان'} tone={profit >= 0 ? 'text-emerald-300' : 'text-red-300'} /><Field label="دارایی خالص" value={money(s.assets) + ' تومان'} /><Field label="کنترل تراز" value={balanced ? 'تراز است' : 'عدم تراز'} tone={balanced ? 'text-emerald-300' : 'text-red-300'} /></div>
-    <Card><h3 className="mb-4 font-bold">ثبت سند دستی دوبل</h3><form className="grid grid-cols-6 gap-3" onSubmit={addManual}><DateInput value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /><SelectInput value={form.debitCode} onChange={e => setForm({ ...form, debitCode: e.target.value })}>{chart.map(row => <option key={row[0]} value={row[0]}>بدهکار: {row[0]} - {row[1]}</option>)}</SelectInput><SelectInput value={form.creditCode} onChange={e => setForm({ ...form, creditCode: e.target.value })}>{chart.map(row => <option key={row[0]} value={row[0]}>بستانکار: {row[0]} - {row[1]}</option>)}</SelectInput><TextInput type="number" min="1" placeholder="مبلغ" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} /><TextInput placeholder="طرف حساب (اختیاری)" value={form.party} onChange={e => setForm({ ...form, party: e.target.value })} /><PrimaryButton type="submit">ثبت سند</PrimaryButton><TextInput className="col-span-6" placeholder="شرح سند" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></form></Card>
+    <Card><h3 className="mb-4 font-bold">ثبت سند دستی دوبل</h3><form className="grid grid-cols-6 gap-3" onSubmit={addManual}><DateInput value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /><SelectInput value={form.debitCode} onChange={e => setForm({ ...form, debitCode: e.target.value })}>{chart.map(row => <option key={row[0]} value={row[0]}>بدهکار: {toPersianDigits(row[0])} - {row[1]}</option>)}</SelectInput><SelectInput value={form.creditCode} onChange={e => setForm({ ...form, creditCode: e.target.value })}>{chart.map(row => <option key={row[0]} value={row[0]}>بستانکار: {toPersianDigits(row[0])} - {row[1]}</option>)}</SelectInput><TextInput type="number" min="1" placeholder="مبلغ" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} /><TextInput placeholder="طرف حساب (اختیاری)" value={form.party} onChange={e => setForm({ ...form, party: e.target.value })} /><PrimaryButton type="submit">ثبت سند</PrimaryButton><TextInput className="col-span-6" placeholder="شرح سند" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></form></Card>
     <Card><h3 className="mb-4 font-bold">دوره مالی و قفل ثبت</h3><form className="grid grid-cols-4 gap-3" onSubmit={addPeriod}><TextInput placeholder="عنوان دوره" value={periodForm.title} onChange={e => setPeriodForm({ ...periodForm, title: e.target.value })} /><DateInput value={periodForm.startDate} onChange={e => setPeriodForm({ ...periodForm, startDate: e.target.value })} /><DateInput value={periodForm.endDate} onChange={e => setPeriodForm({ ...periodForm, endDate: e.target.value })} /><PrimaryButton type="submit">ایجاد دوره</PrimaryButton></form><div className="mt-4 space-y-2">{(report.periods || []).map(row => <div key={row.id} className="flex items-center justify-between rounded-md border border-slate-700 bg-slate-950 p-3 text-sm"><span>{row.title} | {toJalali(row.start_date)} تا {toJalali(row.end_date)}</span><GhostButton onClick={() => togglePeriod(row)}>{row.status === 'Closed' ? 'بازکردن دوره' : 'بستن دوره'}</GhostButton></div>)}</div></Card>
     <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">تراز آزمایشی دفتر کل</h3><div className="flex gap-2"><PrimaryButton onClick={load}>{loading ? 'در حال دریافت...' : 'بازخوانی'}</PrimaryButton><PrimaryButton onClick={printTrial}>چاپ تراز</PrimaryButton><PrimaryButton onClick={() => exportExcel('تراز آزمایشی دفتر کل', (report.trialBalance || []).map(row => ({ code: row.code, account: row.name, type: row.type, debit: row.debit, credit: row.credit, balance: row.balance })))}>خروجی اکسل</PrimaryButton></div></div><GenericTable rows={(report.trialBalance || []).map(row => ({ code: row.code, account: row.name, type: row.type, debit: row.debit, credit: row.credit, balance: row.balance }))} /></Card>
     <Card><h3 className="mb-4 font-bold">مانده تفصیلی اشخاص</h3><GenericTable rows={(report.partyBalances || []).map(row => ({ party: row.party, debit: row.debit, credit: row.credit, balance: row.balance, nature: Number(row.balance) >= 0 ? 'بدهکار' : 'بستانکار' }))} /></Card>
@@ -5424,7 +5437,7 @@ function GenericTable({ rows }) {
 
             <tr key={index} className="border-b border-slate-800">
 
-              {cols.map(col => <td key={col} className="p-3">{col === 'status' ? statusLabel(row[col]) : col.toLowerCase().includes('date') || col === 'تاريخ' ? toJalali(row[col]) : typeof row[col] === 'number' ? num(row[col]) : String(row[col] ?? '-')}</td>)}
+              {cols.map(col => <td key={col} className="p-3">{col === 'status' ? statusLabel(row[col]) : col.toLowerCase().includes('date') || col === 'تاريخ' ? toJalali(row[col]) : formatTableValue(col, row[col])}</td>)}
 
             </tr>
 
