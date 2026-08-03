@@ -60,6 +60,9 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8181:8081"
+    env_file:
+      - path: ${TEXTILE_TELEGRAM_ENV_FILE:-/var/tmp/textile-telegram.env}
+        required: false
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
@@ -88,9 +91,6 @@ services:
       VIORA_AI_BASE_URL: ${VIORA_AI_BASE_URL:-https://api.openai.com/v1}
       VIORA_AI_API_STYLE: ${VIORA_AI_API_STYLE:-responses}
       VIORA_AI_MONTHLY_REQUEST_LIMIT: ${VIORA_AI_MONTHLY_REQUEST_LIMIT:-100}
-      TEXTILE_TELEGRAM_ENABLED: ${TEXTILE_TELEGRAM_ENABLED:-false}
-      TEXTILE_TELEGRAM_BOT_TOKEN: ${TEXTILE_TELEGRAM_BOT_TOKEN:-}
-      TEXTILE_TELEGRAM_BOT_USERNAME: ${TEXTILE_TELEGRAM_BOT_USERNAME:-}
     depends_on:
       postgres:
         condition: service_healthy
