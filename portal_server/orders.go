@@ -38,6 +38,7 @@ type purchaseOrder struct {
 	MachineCount       int       `json:"machine_count"`
 	UnitCount          int       `json:"unit_count"`
 	BillingCycle       string    `json:"billing_cycle"`
+	IsTrial            bool      `json:"is_trial,omitempty"`
 	Notes              string    `json:"notes,omitempty"`
 	Status             string    `json:"status"`
 	AccessID           int64     `json:"access_id,omitempty"`
@@ -61,6 +62,7 @@ type purchaseOrderRequest struct {
 	MachineCount       int    `json:"machineCount"`
 	UnitCount          int    `json:"unitCount"`
 	BillingCycle       string `json:"billingCycle"`
+	IsTrial            bool   `json:"isTrial"`
 	Notes              string `json:"notes"`
 	Website            string `json:"website"`
 	RequesterAccessID  int64  `json:"-"`
@@ -140,6 +142,12 @@ func (a *portalApp) createPurchaseOrder(req purchaseOrderRequest) (purchaseOrder
 	req.Email = strings.TrimSpace(req.Email)
 	req.Notes = strings.TrimSpace(req.Notes)
 	req.BillingCycle = strings.ToLower(strings.TrimSpace(req.BillingCycle))
+	if req.IsTrial {
+		req.AllowFinancial = true
+		req.AllowOperational = true
+		req.AllowWeaving = true
+		req.BillingCycle = "trial"
+	}
 	if strings.TrimSpace(req.Website) != "" {
 		return purchaseOrder{}, fmt.Errorf("درخواست نامعتبر است")
 	}
@@ -170,7 +178,7 @@ func (a *portalApp) createPurchaseOrder(req purchaseOrderRequest) (purchaseOrder
 	if req.MachineCount < 0 || req.MachineCount > 20000 || (req.AllowWeaving && req.MachineCount < 1) {
 		return purchaseOrder{}, fmt.Errorf("برای راندمان سالن، تعداد ماشین‌های بافندگی را وارد کنید")
 	}
-	if req.BillingCycle != "monthly" && req.BillingCycle != "annual" {
+	if req.BillingCycle != "monthly" && req.BillingCycle != "annual" && req.BillingCycle != "trial" {
 		req.BillingCycle = "annual"
 	}
 	if len([]rune(req.Notes)) > 1000 {
@@ -194,6 +202,7 @@ func (a *portalApp) createPurchaseOrder(req purchaseOrderRequest) (purchaseOrder
 		MachineCount:       req.MachineCount,
 		UnitCount:          req.UnitCount,
 		BillingCycle:       req.BillingCycle,
+		IsTrial:            req.IsTrial,
 		Notes:              req.Notes,
 		Status:             purchaseOrderPending,
 		RequesterAccessID:  req.RequesterAccessID,
@@ -209,12 +218,18 @@ func (a *portalApp) createPurchaseOrder(req purchaseOrderRequest) (purchaseOrder
 		return purchaseOrder{}, err
 	}
 	for _, item := range items {
+		if order.RequesterAccessID == 0 && item.Status == purchaseOrderApproved && item.AccessID > 0 && samePurchaseCustomer(item, order) {
+			order.RequesterAccessID = item.AccessID
+			if order.FinancialCompanyID == 0 {
+				order.FinancialCompanyID = item.FinancialCompanyID
+			}
+		}
 		if item.Status != purchaseOrderPending || now.Sub(item.CreatedAt) > 10*time.Minute {
 			continue
 		}
 		if strings.EqualFold(item.CompanyName, order.CompanyName) && item.Mobile == order.Mobile &&
 			item.AllowFinancial == order.AllowFinancial && item.AllowOperational == order.AllowOperational && item.AllowWeaving == order.AllowWeaving &&
-			item.EmployeeCount == order.EmployeeCount && item.MachineCount == order.MachineCount && item.UnitCount == order.UnitCount {
+			item.EmployeeCount == order.EmployeeCount && item.MachineCount == order.MachineCount && item.UnitCount == order.UnitCount && item.IsTrial == order.IsTrial {
 			return item, nil
 		}
 	}
@@ -223,6 +238,15 @@ func (a *portalApp) createPurchaseOrder(req purchaseOrderRequest) (purchaseOrder
 		return purchaseOrder{}, err
 	}
 	return order, nil
+}
+
+func samePurchaseCustomer(existing, incoming purchaseOrder) bool {
+	if !strings.EqualFold(strings.TrimSpace(existing.CompanyName), strings.TrimSpace(incoming.CompanyName)) || strings.TrimSpace(existing.Mobile) != strings.TrimSpace(incoming.Mobile) {
+		return false
+	}
+	leftEmail := strings.TrimSpace(existing.Email)
+	rightEmail := strings.TrimSpace(incoming.Email)
+	return leftEmail == "" || rightEmail == "" || strings.EqualFold(leftEmail, rightEmail)
 }
 
 func validPurchaseMobile(value string) bool {
@@ -326,13 +350,24 @@ func (a *portalApp) approvePurchaseOrder(id, adminNote string) (purchaseOrder, p
 		}
 		return order, existing, a.portalAccessPassword(existing), nil
 	}
-	expiresAt := time.Now().Add(30 * 24 * time.Hour)
+	now := time.Now()
+	expiresAt := now.Add(30 * 24 * time.Hour)
+	trialEndsAt := time.Time{}
+	if order.IsTrial || order.BillingCycle == "trial" {
+		trialEndsAt = now.Add(fullTrialDays * 24 * time.Hour)
+		expiresAt = trialEndsAt
+	}
 	if order.BillingCycle == "annual" {
-		expiresAt = time.Now().Add(365 * 24 * time.Hour)
+		expiresAt = now.Add(365 * 24 * time.Hour)
+	}
+	order.IsTrial = order.IsTrial || order.BillingCycle == "trial"
+	orderTitle := "سفارش عمومی Textile ERP"
+	if order.IsTrial {
+		orderTitle = "تست رایگان ۳۰روزه Textile ERP"
 	}
 	notes := strings.Join([]string{
 		purchaseOrderMarker(order.ID),
-		"سفارش عمومی Textile ERP",
+		orderTitle,
 		"محصولات: " + purchaseOrderModules(order),
 		fmt.Sprintf("کارکنان: %d | ماشین‌ها: %d | واحدها: %d", order.EmployeeCount, order.MachineCount, order.UnitCount),
 		strings.TrimSpace(order.Notes),
@@ -349,6 +384,17 @@ func (a *portalApp) approvePurchaseOrder(id, adminNote string) (purchaseOrder, p
 			if existing.ExpiresAt.After(expiresAt) {
 				expiresAt = existing.ExpiresAt
 			}
+			if existing.TrialEndsAt.After(trialEndsAt) {
+				trialEndsAt = existing.TrialEndsAt
+			}
+			allowFinancial := existing.AllowFinancial
+			allowOperational := existing.AllowOperational
+			allowWeaving := existing.AllowWeaving
+			if !order.IsTrial {
+				allowFinancial = allowFinancial || order.AllowFinancial
+				allowOperational = allowOperational || order.AllowOperational
+				allowWeaving = allowWeaving || order.AllowWeaving
+			}
 			updatedNotes := strings.TrimSpace(existing.Notes + "\n" + notes)
 			updated, rawPassword, updateErr := a.updateManagedAccess(
 				existing.ID,
@@ -359,20 +405,22 @@ func (a *portalApp) approvePurchaseOrder(id, adminNote string) (purchaseOrder, p
 				"",
 				existing.FinancialCompanyID,
 				expiresAt,
+				trialEndsAt,
 				updatedNotes,
 				effectiveAccessRole(existing),
 				effectivePermissions(existing),
 				effectiveCanManageTeam(existing),
 				false,
-				effectiveAllowFinancial(existing) || order.AllowFinancial,
-				effectiveAllowOperational(existing) || order.AllowOperational,
-				effectiveAllowWeaving(existing) || order.AllowWeaving,
+				allowFinancial,
+				allowOperational,
+				allowWeaving,
 			)
 			if updateErr != nil {
 				return purchaseOrder{}, projectAccess{}, "", updateErr
 			}
 			order.Status = purchaseOrderApproved
 			order.AccessID = updated.ID
+			order.FinancialCompanyID = updated.FinancialCompanyID
 			order.AdminNote = strings.TrimSpace(adminNote)
 			if err := a.savePurchaseOrder(order); err != nil {
 				return purchaseOrder{}, projectAccess{}, "", err
@@ -381,6 +429,9 @@ func (a *portalApp) approvePurchaseOrder(id, adminNote string) (purchaseOrder, p
 		}
 		return purchaseOrder{}, projectAccess{}, "", fmt.Errorf("حساب مدیر درخواست‌کننده پیدا نشد")
 	}
+	allowFinancial := order.AllowFinancial && !order.IsTrial
+	allowOperational := order.AllowOperational && !order.IsTrial
+	allowWeaving := order.AllowWeaving && !order.IsTrial
 	access, rawPassword, err := a.createManagedAccess(
 		"textile-erp",
 		order.CompanyName,
@@ -389,20 +440,22 @@ func (a *portalApp) approvePurchaseOrder(id, adminNote string) (purchaseOrder, p
 		"",
 		0,
 		expiresAt,
+		trialEndsAt,
 		notes,
 		"owner",
 		financialPermissionCatalog,
 		true,
 		false,
-		order.AllowFinancial,
-		order.AllowOperational,
-		order.AllowWeaving,
+		allowFinancial,
+		allowOperational,
+		allowWeaving,
 	)
 	if err != nil {
 		return purchaseOrder{}, projectAccess{}, "", err
 	}
 	order.Status = purchaseOrderApproved
 	order.AccessID = access.ID
+	order.FinancialCompanyID = access.FinancialCompanyID
 	order.AdminNote = strings.TrimSpace(adminNote)
 	if err := a.savePurchaseOrder(order); err != nil {
 		return purchaseOrder{}, projectAccess{}, "", err
@@ -466,11 +519,15 @@ func (a *portalApp) publicPurchaseOrders(w http.ResponseWriter, r *http.Request)
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	message := "سفارش ثبت شد. پس از بررسی و تأیید، اطلاعات ورود برای مدیر شرکت صادر می‌شود."
+	if order.IsTrial {
+		message = "درخواست تست ۳۰روزه ثبت شد. پس از فعال‌سازی، هر سه بخش با یک نام کاربری و رمز در دسترس خواهند بود."
+	}
 	respondJSON(w, http.StatusCreated, map[string]any{
 		"id":      order.ID,
 		"status":  order.Status,
 		"modules": purchaseOrderModules(order),
-		"message": "سفارش ثبت شد. پس از بررسی و تأیید، اطلاعات ورود برای مدیر شرکت صادر می‌شود.",
+		"message": message,
 	})
 }
 
@@ -569,14 +626,17 @@ var purchasePlansHTML = `<!doctype html>
 <title>خرید محصولات Textile ERP</title><meta name="description" content="انتخاب و سفارش بخش مالی، عملیاتی و راندمان سالن بافت Textile ERP"><meta property="og:title" content="محصولات Textile ERP"><meta property="og:description" content="مالی، عملیاتی و راندمان سالن بافت؛ جداگانه یا با هم"><meta property="og:type" content="website"><meta property="og:image" content="__OG_IMAGE__"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="__OG_IMAGE__">
 <style>
 *{box-sizing:border-box}body{margin:0;background:#071619;color:#eef8f5;font-family:Tahoma,Arial;min-height:100vh}.nav{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:18px max(22px,calc((100vw - 1180px)/2));border-bottom:1px solid #1d4547;background:#0a2023}.brand{font-size:20px;font-weight:bold}.nav a{color:#bdebe1;text-decoration:none;border:1px solid #2e6161;border-radius:12px;padding:9px 13px}.wrap{max-width:1180px;margin:auto;padding:38px 22px 70px}.hero{display:grid;grid-template-columns:1.3fr .7fr;gap:28px;align-items:center;margin-bottom:32px}.hero h1{font-size:clamp(32px,5vw,58px);line-height:1.25;margin:0 0 16px}.hero p{color:#a9c9c3;line-height:2;font-size:16px}.free{border:1px solid #d1a84e;background:#302713;color:#ffe39b;border-radius:20px;padding:22px;line-height:2}.products{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:26px 0}.product{position:relative;border:1px solid #285257;background:#0c2529;border-radius:20px;padding:22px;cursor:pointer;min-height:230px;transition:.2s}.product:has(input:checked){border-color:#50d1b3;box-shadow:0 0 0 3px #50d1b326;transform:translateY(-2px)}.product input{position:absolute;top:18px;left:18px;width:22px;height:22px;accent-color:#45c6a8}.product h2{margin:0 0 12px;font-size:22px}.product p{color:#a9c9c3;line-height:1.9;font-size:14px}.tag{display:inline-block;margin-top:12px;border-radius:999px;background:#153e3c;color:#8df0da;padding:6px 10px;font-size:12px}.order{display:grid;grid-template-columns:1fr 1fr;gap:18px;background:#f7f4ec;color:#1b312e;border-radius:24px;padding:26px}.order h2,.full{grid-column:1/-1}.field{display:grid;gap:7px}.field label{font-size:13px;color:#526f69}.field input,.field select,.field textarea{width:100%;border:1px solid #b8c9c4;border-radius:12px;background:white;color:#122623;padding:13px 14px;font:inherit}.field textarea{min-height:95px;resize:vertical}.summary{grid-column:1/-1;border:1px solid #c8ded8;background:#eaf5f2;border-radius:14px;padding:14px;line-height:2}.submit{grid-column:1/-1;border:0;border-radius:14px;padding:15px;background:#0f7a67;color:white;font:inherit;font-weight:bold;cursor:pointer}.submit:disabled{opacity:.6;cursor:wait}.message{display:none;grid-column:1/-1;border-radius:14px;padding:15px;line-height:2}.message.ok{display:block;background:#dff6ea;color:#075d3c}.message.err{display:block;background:#fee8e8;color:#9f1d2e}.hp{position:absolute!important;left:-10000px!important;opacity:0!important}.note{color:#789b94;line-height:2;text-align:center;margin-top:18px;font-size:13px}@media(max-width:850px){.hero,.products,.order{grid-template-columns:1fr}.full,.order h2,.summary,.submit,.message{grid-column:1}.wrap{padding:25px 14px 50px}.nav{padding:14px}.hero h1{font-size:34px}}
+.hp{left:auto!important;width:1px!important;height:1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;clip-path:inset(50%)!important;white-space:nowrap!important}
 </style></head><body>
 <nav class="nav"><div class="brand">Textile ERP · Viora</div><a href="/login">ورود مشتریان</a></nav>
-<main class="wrap"><section class="hero"><div><h1>هر بخشی را که نیاز دارید انتخاب کنید</h1><p>سه محصول تخصصی نساجی را جداگانه یا با هم سفارش دهید. یک حساب مرکزی دریافت می‌کنید و فقط بخش‌های خریداری‌شده برای مدیر و کارکنان نمایش داده می‌شود.</p></div><aside class="free"><strong>مرکز فرمان مدیر نساجی رایگان است</strong><br>این داشبورد همراه هر سفارش فعال می‌شود و فقط اطلاعات محصولات خریداری‌شده را نمایش می‌دهد.</aside></section>
-<form id="order" class="order"><h2>۱. انتخاب محصولات</h2><div class="products full">
+<main class="wrap"><section class="hero"><div><h1>۳۰ روز هر سه بخش را رایگان آزمایش کنید</h1><p>با یک حساب مرکزی، بخش مالی، بخش عملیاتی و راندمان سالن بافت را کامل ببینید. پس از پایان تست، فقط محصولاتی را که لازم دارید با همان حساب خریداری کنید.</p></div><aside class="free"><strong>مرکز فرمان مدیر نساجی رایگان است و رایگان می‌ماند</strong><br>در دورهٔ تست هر سه محصول را نمایش می‌دهد و پس از خرید، فقط به بخش‌های خریداری‌شده متصل می‌ماند.</aside></section>
+<form id="order" class="order"><h2>۱. نوع درخواست</h2>
+<div class="field full"><label for="requestType">انتخاب مسیر</label><select id="requestType" name="requestType"><option value="trial">شروع تست رایگان ۳۰روزه هر سه بخش</option><option value="purchase">خرید یا دریافت پیش‌فاکتور</option></select></div>
+<h2>۲. انتخاب محصولات</h2><div class="products full">
 <label class="product"><input name="financial" type="checkbox" checked><h2>بخش مالی</h2><p>حسابداری، فاکتورها، انبار، هزینه‌ها، اسناد، بانک و گزارش‌های مدیریتی.</p><span class="tag">قابل خرید مستقل</span></label>
 <label class="product"><input name="operational" type="checkbox" checked><h2>بخش عملیاتی</h2><p>عملیات تولید، گردش مواد، بارگیری، کنترل فرایند و گزارش عملکرد واحدها.</p><span class="tag">قابل خرید مستقل</span></label>
 <label class="product"><input name="weaving" type="checkbox" checked><h2>راندمان سالن بافت</h2><p>ثبت تصویر مانیتور ماشین، استخراج داده، راندمان، توقف‌ها، بافنده و مرکز تحلیل سالن.</p><span class="tag">قابل خرید مستقل</span></label>
-</div><h2>۲. مشخصات سفارش</h2>
+</div><h2>۳. مشخصات شرکت</h2>
 <div class="field"><label for="company">نام شرکت</label><input id="company" name="company" maxlength="120" required></div>
 <div class="field"><label for="contact">نام مدیر یا مسئول خرید</label><input id="contact" name="contact" maxlength="100" required></div>
 <div class="field"><label for="mobile">شماره همراه</label><input id="mobile" name="mobile" inputmode="tel" dir="ltr" required></div>
@@ -587,14 +647,14 @@ var purchasePlansHTML = `<!doctype html>
 <div class="field"><label for="cycle">دوره اشتراک</label><select id="cycle" name="cycle"><option value="annual">سالانه</option><option value="monthly">ماهانه</option></select></div>
 <div class="field full"><label for="notes">توضیحات یا نیاز خاص</label><textarea id="notes" name="notes" maxlength="1000"></textarea></div>
 <div class="field hp" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div>
-<div id="summary" class="summary"></div><div id="message" class="message" role="status"></div><button id="submit" class="submit" type="submit">ثبت سفارش و دریافت پیش‌فاکتور</button></form>
-<p class="note">پس از بررسی سفارش، حساب مدیر با همان محصولات انتخاب‌شده صادر می‌شود. نام کاربری و رمز هر بخش جدا نیست.</p></main>
+<div id="summary" class="summary"></div><div id="message" class="message" role="status"></div><button id="submit" class="submit" type="submit">درخواست شروع تست رایگان</button></form>
+<p class="note">هر شرکت فقط یک حساب مدیر می‌گیرد. درخواست تست یا خرید بعدی روی همان حساب اعمال می‌شود و نام کاربری و رمز بخش‌ها جدا نیست.</p></main>
 <script>
 const form=document.getElementById('order'),summary=document.getElementById('summary'),message=document.getElementById('message'),submit=document.getElementById('submit');
 const labels=()=>[form.financial.checked?'مالی':'',form.operational.checked?'عملیاتی':'',form.weaving.checked?'راندمان سالن بافت':''].filter(Boolean);
-function update(){const selected=labels();summary.textContent=selected.length?'محصولات انتخابی: '+selected.join(' + ')+' · مرکز فرمان مدیر نساجی: رایگان':'حداقل یک محصول را انتخاب کنید.';form.machines.required=form.weaving.checked;}
+function update(){const isTrial=form.requestType.value==='trial';if(isTrial){form.financial.checked=true;form.operational.checked=true;form.weaving.checked=true;}[form.financial,form.operational,form.weaving].forEach(el=>el.disabled=isTrial);form.cycle.disabled=isTrial;const selected=labels();summary.textContent=isTrial?'تست رایگان ۳۰روزه: مالی + عملیاتی + راندمان سالن بافت · مرکز فرمان: رایگان':(selected.length?'محصولات انتخابی: '+selected.join(' + ')+' · مرکز فرمان مدیر نساجی: رایگان':'حداقل یک محصول را انتخاب کنید.');submit.textContent=isTrial?'درخواست شروع تست رایگان':'ثبت سفارش و دریافت پیش‌فاکتور';form.machines.required=form.weaving.checked;}
 form.addEventListener('change',update);update();
-form.addEventListener('submit',async e=>{e.preventDefault();message.className='message';if(!labels().length){message.textContent='حداقل یک محصول را انتخاب کنید.';message.className='message err';return;}submit.disabled=true;try{const payload={companyName:form.company.value.trim(),contactName:form.contact.value.trim(),mobile:form.mobile.value.trim(),email:form.email.value.trim(),allowFinancial:form.financial.checked,allowOperational:form.operational.checked,allowWeaving:form.weaving.checked,employeeCount:Number(form.employees.value),machineCount:Number(form.machines.value),unitCount:Number(form.units.value),billingCycle:form.cycle.value,notes:form.notes.value.trim(),website:form.website.value};const res=await fetch('/api/public/purchase-orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const data=await res.json();if(!res.ok)throw new Error(data.error||'ثبت سفارش انجام نشد.');message.innerHTML='<strong>سفارش با موفقیت ثبت شد.</strong><br>کد پیگیری: <b dir="ltr">'+data.id+'</b><br>'+data.message;message.className='message ok';form.querySelectorAll('input,select,textarea,button').forEach(el=>el.disabled=true);message.scrollIntoView({behavior:'smooth'});}catch(err){message.textContent=err.message;message.className='message err';submit.disabled=false;}});
+form.addEventListener('submit',async e=>{e.preventDefault();message.className='message';if(!labels().length){message.textContent='حداقل یک محصول را انتخاب کنید.';message.className='message err';return;}submit.disabled=true;try{const isTrial=form.requestType.value==='trial';const payload={companyName:form.company.value.trim(),contactName:form.contact.value.trim(),mobile:form.mobile.value.trim(),email:form.email.value.trim(),allowFinancial:form.financial.checked,allowOperational:form.operational.checked,allowWeaving:form.weaving.checked,employeeCount:Number(form.employees.value),machineCount:Number(form.machines.value),unitCount:Number(form.units.value),billingCycle:isTrial?'trial':form.cycle.value,isTrial,notes:form.notes.value.trim(),website:form.website.value};const res=await fetch('/api/public/purchase-orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const data=await res.json();if(!res.ok)throw new Error(data.error||'ثبت درخواست انجام نشد.');message.innerHTML='<strong>درخواست با موفقیت ثبت شد.</strong><br>کد پیگیری: <b dir="ltr">'+data.id+'</b><br>'+data.message;message.className='message ok';form.querySelectorAll('input,select,textarea,button').forEach(el=>el.disabled=true);message.scrollIntoView({behavior:'smooth'});}catch(err){message.textContent=err.message;message.className='message err';submit.disabled=false;}});
 </script></body></html>`
 
 var adminOrdersHTML = `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>سفارش‌های خرید Textile ERP</title><style>
@@ -602,7 +662,7 @@ var adminOrdersHTML = `<!doctype html><html lang="fa" dir="rtl"><head><meta char
 </style></head><body><header class="top"><h1>سفارش‌های خرید</h1><div><a href="/admin">مدیریت مشتریان</a> <a href="/plans" target="_blank">صفحه خرید</a></div></header><main class="wrap"><div id="result" class="result"></div><div class="toolbar"><div id="count"></div><div class="filters"><button class="btn active" data-filter="all">همه</button><button class="btn" data-filter="pending">در انتظار</button><button class="btn" data-filter="approved">تأییدشده</button><button class="btn" data-filter="rejected">ردشده</button></div></div><section id="orders"></section></main><script>
 const box=document.getElementById('orders'),count=document.getElementById('count'),result=document.getElementById('result');let rows=[],filter='all';const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const moduleText=o=>[o.allow_financial?'مالی':'',o.allow_operational?'عملیاتی':'',o.allow_weaving?'راندمان سالن':''].filter(Boolean).join(' + ');const statusText=s=>s==='approved'?'تأییدشده':s==='rejected'?'ردشده':'در انتظار';
 async function api(url,options={}){const res=await fetch(url,{headers:{'Content-Type':'application/json'},...options});const data=await res.json().catch(()=>({}));if(!res.ok)throw new Error(data.error||'خطا در ارتباط با سامانه');return data;}
-function render(){const list=rows.filter(r=>filter==='all'||r.status===filter);count.textContent=list.length+' سفارش';if(!list.length){box.innerHTML='<div class="empty">سفارشی در این وضعیت وجود ندارد.</div>';return;}box.innerHTML=list.map(o=>'<article class="order"><div class="head"><div><div class="id">'+esc(o.id)+'</div><h2>'+esc(o.company_name)+'</h2></div><span class="status '+esc(o.status)+'">'+statusText(o.status)+'</span></div><div class="meta">مدیر: '+esc(o.contact_name)+' · همراه: <span dir="ltr">'+esc(o.mobile)+'</span>'+(o.email?' · ایمیل: <span dir="ltr">'+esc(o.email)+'</span>':'')+'<br>کارکنان: '+o.employee_count+' · ماشین‌ها: '+o.machine_count+' · واحدها: '+o.unit_count+' · دوره: '+(o.billing_cycle==='annual'?'سالانه':'ماهانه')+'</div><div class="tags">'+moduleText(o).split(' + ').map(x=>'<span class="tag">'+esc(x)+'</span>').join('')+'</div>'+(o.notes?'<div class="meta">توضیحات: '+esc(o.notes)+'</div>':'')+(o.status==='pending'?'<div class="actions"><button class="btn approve" data-action="approve" data-id="'+esc(o.id)+'">تأیید و ساخت حساب</button><button class="btn reject" data-action="reject" data-id="'+esc(o.id)+'">رد سفارش</button></div>':'')+'</article>').join('');}
+function render(){const list=rows.filter(r=>filter==='all'||r.status===filter);count.textContent=list.length+' درخواست';if(!list.length){box.innerHTML='<div class="empty">درخواستی در این وضعیت وجود ندارد.</div>';return;}box.innerHTML=list.map(o=>'<article class="order"><div class="head"><div><div class="id">'+esc(o.id)+'</div><h2>'+esc(o.company_name)+'</h2></div><span class="status '+esc(o.status)+'">'+statusText(o.status)+'</span></div><div class="meta">نوع: '+(o.is_trial?'تست رایگان ۳۰روزه':'خرید')+' · مدیر: '+esc(o.contact_name)+' · همراه: <span dir="ltr">'+esc(o.mobile)+'</span>'+(o.email?' · ایمیل: <span dir="ltr">'+esc(o.email)+'</span>':'')+'<br>کارکنان: '+o.employee_count+' · ماشین‌ها: '+o.machine_count+' · واحدها: '+o.unit_count+' · دوره: '+(o.is_trial?'۳۰ روز رایگان':(o.billing_cycle==='annual'?'سالانه':'ماهانه'))+'</div><div class="tags">'+moduleText(o).split(' + ').map(x=>'<span class="tag">'+esc(x)+'</span>').join('')+'</div>'+(o.notes?'<div class="meta">توضیحات: '+esc(o.notes)+'</div>':'')+(o.status==='pending'?'<div class="actions"><button class="btn approve" data-action="approve" data-id="'+esc(o.id)+'">'+(o.is_trial?'فعال‌سازی تست روی همین حساب':'تأیید خرید و فعال‌سازی')+'</button><button class="btn reject" data-action="reject" data-id="'+esc(o.id)+'">رد درخواست</button></div>':'')+'</article>').join('');}
 async function load(){const data=await api('/admin/api/orders');rows=data.items||[];render();}
 document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{filter=b.dataset.filter;document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('active',x===b));render();});
 box.addEventListener('click',async e=>{const btn=e.target.closest('[data-action]');if(!btn)return;const action=btn.dataset.action,id=btn.dataset.id;if(!confirm(action==='approve'?'این سفارش تأیید و حساب مدیر ساخته شود؟':'این سفارش رد شود؟'))return;btn.disabled=true;try{const data=await api('/admin/api/orders/'+encodeURIComponent(id)+'/'+action,{method:'POST',body:'{}'});if(data.access){const a=data.access;result.innerHTML='<strong>حساب مشتری ساخته شد</strong><div class="cred">Username: '+esc(a.username)+'</div><div class="cred">Password: '+esc(a.password)+'</div><div class="cred">Login: https://textile.vioraapps.com/login</div><button class="btn" id="copy">کپی اطلاعات ورود</button>';result.className='result show';document.getElementById('copy').onclick=()=>navigator.clipboard.writeText('ورود: https://textile.vioraapps.com/login\nنام کاربری: '+a.username+'\nرمز عبور: '+a.password+'\nمحصولات: '+a.moduleAccessLabel);}await load();}catch(err){alert(err.message);btn.disabled=false;}});load().catch(err=>box.innerHTML='<div class="empty">'+esc(err.message)+'</div>');
