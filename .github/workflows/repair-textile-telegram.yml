@@ -1,0 +1,201 @@
+name: repair-textile-telegram
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repair-textile-telegram-production
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Configure production access
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY_B64: ${{ secrets.VPS_SSH_KEY_B64 }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 ~/.ssh
+          printf '%s' "$VPS_SSH_KEY_B64" | base64 --decode > ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+
+      - name: Validate Telegram bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TEXTILE_TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_USERNAME: ${{ secrets.TEXTILE_TELEGRAM_BOT_USERNAME }}
+        run: |
+          set -euo pipefail
+          test -n "$TELEGRAM_BOT_TOKEN"
+          test -n "$TELEGRAM_BOT_USERNAME"
+          configured="${TELEGRAM_BOT_USERNAME#@}"
+          [[ "$configured" =~ ^[A-Za-z][A-Za-z0-9_]{4,31}$ ]]
+          response="$(curl --fail --silent --show-error --max-time 30 \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe")"
+          actual="$(jq -er '.result | select(.is_bot == true) | .username' <<<"$response")"
+          test "${actual,,}" = "${configured,,}"
+
+      - name: Back up and restore Telegram configuration
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TEXTILE_TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_USERNAME: ${{ secrets.TEXTILE_TELEGRAM_BOT_USERNAME }}
+        run: |
+          set -euo pipefail
+          secret_file="$RUNNER_TEMP/textile-telegram.env"
+          remote_secret=".textile-telegram-${GITHUB_RUN_ID}.env"
+          printf 'TEXTILE_TELEGRAM_ENABLED=true\n' > "$secret_file"
+          printf 'TEXTILE_TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN" >> "$secret_file"
+          printf 'TEXTILE_TELEGRAM_BOT_USERNAME=%s\n' "${TELEGRAM_BOT_USERNAME#@}" >> "$secret_file"
+          chmod 0600 "$secret_file"
+          scp -o BatchMode=yes "$secret_file" "$VPS_USER@$VPS_HOST:$remote_secret"
+          ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "REMOTE_SECRET='$remote_secret' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+
+          target=/opt/apps/textile-erp/shared/.env
+          current=/opt/apps/textile-erp/current
+          secret="$HOME/$REMOTE_SECRET"
+          backup="${target}.before-telegram-$(date -u +%Y%m%dT%H%M%SZ)"
+
+          cleanup() {
+            rm -f -- "$secret"
+          }
+          trap cleanup EXIT
+
+          if [[ "$(id -u)" -eq 0 ]]; then
+            elevate=()
+          elif [[ -r "$target" && -w "$target" ]] && docker info >/dev/null 2>&1; then
+            elevate=()
+          else
+            echo 'The production access account cannot update the shared runtime environment.' >&2
+            exit 77
+          fi
+
+          test -s "$target"
+          test -s "$secret"
+          release="$(readlink -f "$current")"
+          test -f "$release/deploy/docker-compose.vps.yml"
+          test -f "$release/deploy/docker-compose.vps.public.yml"
+          test -f "$release/deploy/production/compose.images.yaml"
+          test -f "$release/.env.images"
+
+          cp -a -- "$target" "$backup"
+
+          rollback() {
+            status="$?"
+            trap - ERR
+            if [[ "$status" -eq 0 ]]; then
+              return
+            fi
+            echo 'Telegram configuration repair failed; restoring previous environment.' >&2
+            cp -a -- "$backup" "$target"
+            docker compose \
+              --project-directory "$release" \
+              --project-name textile-erp \
+              --env-file "$target" \
+              --env-file "$release/.env.images" \
+              --file "$release/deploy/docker-compose.vps.yml" \
+              --file "$release/deploy/docker-compose.vps.public.yml" \
+              --file "$release/deploy/production/compose.images.yaml" \
+              up -d --pull never --no-deps --force-recreate financial-api || true
+            exit "$status"
+          }
+          trap rollback ERR
+
+          python3 - "$target" "$secret" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          target = Path(sys.argv[1])
+          secret = Path(sys.argv[2])
+          updates = {}
+          for raw in secret.read_text(encoding="utf-8").splitlines():
+              key, value = raw.split("=", 1)
+              updates[key] = value
+
+          required = {
+              "TEXTILE_TELEGRAM_ENABLED",
+              "TEXTILE_TELEGRAM_BOT_TOKEN",
+              "TEXTILE_TELEGRAM_BOT_USERNAME",
+          }
+          if set(updates) != required:
+              raise SystemExit("invalid Telegram secret file")
+          if updates["TEXTILE_TELEGRAM_ENABLED"] != "true":
+              raise SystemExit("Telegram integration must be enabled")
+          if not re.fullmatch(r"\d{8,12}:[A-Za-z0-9_-]{30,}", updates["TEXTILE_TELEGRAM_BOT_TOKEN"]):
+              raise SystemExit("invalid Telegram bot token format")
+          if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", updates["TEXTILE_TELEGRAM_BOT_USERNAME"]):
+              raise SystemExit("invalid Telegram bot username")
+
+          lines = target.read_text(encoding="utf-8").splitlines()
+          result = []
+          seen = set()
+          for line in lines:
+              match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=", line)
+              if match and match.group(1) in updates:
+                  key = match.group(1)
+                  result.append(f"{key}={updates[key]}")
+                  seen.add(key)
+              else:
+                  result.append(line)
+          for key in sorted(required - seen):
+              result.append(f"{key}={updates[key]}")
+          replacement = target.with_name(target.name + ".telegram.tmp")
+          replacement.write_text("\n".join(result).rstrip() + "\n", encoding="utf-8")
+          replacement.chmod(0o600)
+          replacement.replace(target)
+          PY
+
+          docker compose \
+            --project-directory "$release" \
+            --project-name textile-erp \
+            --env-file "$target" \
+            --env-file "$release/.env.images" \
+            --file "$release/deploy/docker-compose.vps.yml" \
+            --file "$release/deploy/docker-compose.vps.public.yml" \
+            --file "$release/deploy/production/compose.images.yaml" \
+            up -d --pull never --no-deps --force-recreate financial-api
+
+          for _ in $(seq 1 60); do
+            if curl --fail --silent --show-error --max-time 5 \
+              http://127.0.0.1:8181/health >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail --silent --show-error --max-time 10 \
+            http://127.0.0.1:8181/health >/dev/null
+
+          docker exec textile-erp-financial-api sh -eu -c '
+            test "$TEXTILE_TELEGRAM_ENABLED" = true
+            test -n "$TEXTILE_TELEGRAM_BOT_TOKEN"
+            test -n "$TEXTILE_TELEGRAM_BOT_USERNAME"
+          '
+          if docker logs --since 5m textile-erp-financial-api 2>&1 \
+            | grep -q 'telegram daily reports disabled'; then
+            echo 'Telegram service did not become ready.' >&2
+            exit 78
+          fi
+
+          trap - ERR
+          printf 'Telegram configuration restored; backup=%s\n' "$backup"
+          REMOTE
+
+      - name: Verify public service
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 12 --retry-delay 5 \
+            --retry-all-errors https://textile.vioraapps.com/health >/dev/null
