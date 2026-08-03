@@ -113,6 +113,33 @@ func TestOwnedYarnSaleRecognizesCost(t *testing.T) {
 	}
 }
 
+func TestBouncedReceivableCheckReopensCustomerReceivable(t *testing.T) {
+	state := testWorkspace(t, `{
+		"receivableDocs":[{"id":"c1","checkNo":"42","customer":"مشتری الف","amount":750,"receivedAt":"2026-07-20","dueDate":"2026-08-01","bouncedAt":"2026-08-03","status":"bounced","assignedTo":"فروشنده قبلی"}]
+	}`)
+	entries, err := deriveWorkspaceLedger(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	returned := entries["check-received-returned:c1"]
+	if len(returned.Lines) != 2 || returned.Lines[0].AccountCode != canonicalGL["receivable"].Code || returned.Lines[0].Debit != 750 || returned.Lines[1].AccountCode != canonicalGL["checkReceivable"].Code || returned.Lines[1].Credit != 750 {
+		t.Fatalf("bounced check did not reopen the customer receivable: %#v", returned.Lines)
+	}
+	if _, exists := entries["receivable-check-assigned:c1"]; exists {
+		t.Fatal("a bounced check must not remain actively assigned")
+	}
+}
+
+func TestReturnedPayableCheckReopensSupplierPayable(t *testing.T) {
+	state := testWorkspace(t, `{
+		"payableDocs":[{"id":"p1","checkNo":"99","customer":"فروشنده","amount":420,"issuedAt":"2026-07-20","dueDate":"2026-08-01","returnedAt":"2026-08-03","status":"returned"}]
+	}`)
+	returned := mustLedgerEntry(t, state, "check-payable-returned:p1")
+	if len(returned.Lines) != 2 || returned.Lines[0].AccountCode != canonicalGL["checkPayable"].Code || returned.Lines[0].Debit != 420 || returned.Lines[1].AccountCode != canonicalGL["payable"].Code || returned.Lines[1].Credit != 420 {
+		t.Fatalf("returned payable check did not reopen supplier payable: %#v", returned.Lines)
+	}
+}
+
 func TestAccountingPeriodMutationRequiresAccountingPermission(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/accounting/periods", bytes.NewBufferString(`{}`))
 	req = req.WithContext(requestctx.WithAccess(req.Context(), []string{"reports"}, true))

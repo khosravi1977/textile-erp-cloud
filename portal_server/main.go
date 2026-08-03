@@ -1050,7 +1050,11 @@ func (a *portalApp) moduleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	nextPath := safePortalNext(r.URL.Query().Get("next"))
+	nextValue := r.URL.Query().Get("next")
+	if r.Method == http.MethodPost {
+		nextValue = r.Form.Get("next")
+	}
+	nextPath := safePortalNext(nextValue)
 	if nextPath == "" || !strings.HasPrefix(nextPath, moduleTarget(module)) {
 		nextPath = moduleTarget(module)
 	}

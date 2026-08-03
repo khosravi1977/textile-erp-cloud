@@ -1918,8 +1918,8 @@ func (a *app) nakhSalon(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "اطلاعات نخ سالن کامل نیست")
 			return
 		}
-		var shom, activeMachine, chelleOwner, chelleHambaft string
-		if err := a.queryRow(`SELECT shom_chelle,COALESCE(machin_chelle,''),COALESCE(mosh_chelle,''),COALESCE(hambaft_chelle,'') FROM chelle WHERE id_chelle=?`, p.ChelleID).Scan(&shom, &activeMachine, &chelleOwner, &chelleHambaft); err != nil {
+		var shom, activeMachine, chelleOwner string
+		if err := a.queryRow(`SELECT shom_chelle,COALESCE(machin_chelle,''),COALESCE(mosh_chelle,'') FROM chelle WHERE id_chelle=?`, p.ChelleID).Scan(&shom, &activeMachine, &chelleOwner); err != nil {
 			fail(w, 400, "چله معتبر نیست")
 			return
 		}
@@ -1931,10 +1931,8 @@ func (a *app) nakhSalon(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "مالک نخ با مالک چله فعال تطابق ندارد")
 			return
 		}
-		if !sameText(chelleHambaft, p.HamNakh) {
-			fail(w, 400, "هم‌بافت نخ با هم‌بافت چله فعال تطابق ندارد")
-			return
-		}
+		// Hall yarn is weft yarn. Its hambaft is an independent inventory
+		// dimension and must not be forced to match the warp/beam hambaft.
 		var ownerExists, yarnExists int64
 		_ = a.queryRow(`SELECT COUNT(*) FROM mosh_name WHERE name_mosh=?`, p.MoshName).Scan(&ownerExists)
 		_ = a.queryRow(`SELECT COUNT(*) FROM nakh_name WHERE name_nakh_name=?`, p.NakhName).Scan(&yarnExists)
@@ -4158,6 +4156,15 @@ func (a *app) salonByPath(w http.ResponseWriter, r *http.Request) {
 		a.salonDefaults(w, strings.TrimPrefix(path, "defaults/"))
 		return
 	}
+	if strings.HasPrefix(path, "pod-options/") {
+		rest := strings.TrimPrefix(path, "pod-options/")
+		parts := strings.Split(rest, "/")
+		if len(parts) >= 2 {
+			chelleID, _ := strconv.ParseInt(parts[1], 10, 64)
+			a.salonPodOptions(w, parts[0], chelleID)
+			return
+		}
+	}
 	if strings.HasPrefix(path, "pod-carryover-info/") {
 		rest := strings.TrimPrefix(path, "pod-carryover-info/")
 		parts := strings.Split(rest, "/")
@@ -4306,6 +4313,43 @@ func (a *app) salonDefaults(w http.ResponseWriter, machine string) {
 		"success": true, "found": true, "kala": kala, "kala_id": kalaID,
 		"ham_pod": hamPod, "ham_chelle": hamChelle, "shom_chelle": shom, "chelle_id": chelleID,
 	})
+}
+
+func (a *app) salonPodOptions(w http.ResponseWriter, machine string, chelleID int64) {
+	machine = strings.TrimSpace(machine)
+	if machine == "" || chelleID <= 0 {
+		fail(w, http.StatusBadRequest, "شماره ماشین و چله الزامی است")
+		return
+	}
+	var shom string
+	if err := a.queryRow(`SELECT shom_chelle FROM chelle WHERE id_chelle=? AND machin_chelle=?`, chelleID, machine).Scan(&shom); err != nil {
+		fail(w, http.StatusBadRequest, "چله انتخاب‌شده روی این ماشین فعال نیست")
+		return
+	}
+	rows, err := a.query(`SELECT TRIM(ham_nakh_salon), COALESCE(nakh_name_nakh_salon,''), COALESCE(mosh_name_nakh_salon,''), COALESCE(SUM(w_nakh_salon),0)
+		FROM nakh_salon
+		WHERE shom_machin_nakh_salon=?
+		  AND (chelle_id_nakh_salon=? OR (COALESCE(chelle_id_nakh_salon,0)=0 AND shom_chelle_nakh_salon=?))
+		  AND TRIM(COALESCE(ham_nakh_salon,''))<>''
+		GROUP BY TRIM(ham_nakh_salon), COALESCE(nakh_name_nakh_salon,''), COALESCE(mosh_name_nakh_salon,'')
+		HAVING COALESCE(SUM(w_nakh_salon),0)>0.001
+		ORDER BY MAX(id_nakh_salon) DESC`, machine, chelleID, shom)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+	items := []record{}
+	for rows.Next() {
+		var hambaft, yarn, owner string
+		var balance float64
+		if err := rows.Scan(&hambaft, &yarn, &owner, &balance); err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		items = append(items, record{"hambaft": hambaft, "yarn": yarn, "owner": owner, "balance": balance})
+	}
+	writeJSON(w, record{"success": true, "items": items})
 }
 
 func (a *app) recentChelles(w http.ResponseWriter, machine string) {

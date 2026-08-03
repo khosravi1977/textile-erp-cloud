@@ -495,7 +495,7 @@ func deriveWorkspaceLedger(state map[string]any) (map[string]ledgerEntry, error)
 			}
 		}
 		assignedTo := strings.TrimSpace(stringValue(row["assignedTo"]))
-		if assignedTo != "" && strings.TrimSpace(stringValue(row["assignedIncomingInvoice"])) == "" {
+		if stringValue(row["status"]) == "assigned" && assignedTo != "" && strings.TrimSpace(stringValue(row["assignedIncomingInvoice"])) == "" {
 			if err := add(ledgerEntry{Key: "receivable-check-assigned:" + id, Date: firstText(row, "assignedAt", "dueDate"), Description: "واگذاری چک " + stringValue(row["checkNo"]), SourceType: "CheckAssignment", Party: assignedTo, Lines: []ledgerLine{debitLine(canonicalGL["payable"], amount, assignedTo, "تسویه فروشنده با واگذاری چک"), creditLine(canonicalGL["checkReceivable"], amount, assignedTo, "واگذاری اسناد دریافتنی")}}); err != nil {
 				return nil, err
 			}
@@ -531,28 +531,54 @@ func deriveCheckLifecycleEntries(state map[string]any, accounts map[string]glAcc
 	defaultBank := canonicalGL["bank"]
 	for _, row := range rowsFrom(state, "receivableDocs") {
 		status, amount := stringValue(row["status"]), number(row["amount"])
-		if status != "cleared" || amount <= 0 {
+		if amount <= 0 {
+			continue
+		}
+		id, party := firstText(row, "id", "checkNo"), stringValue(row["customer"])
+		if status == "returned" || status == "bounced" {
+			label := "مرجوع کردن چک"
+			if status == "bounced" {
+				label = "برگشت چک"
+			}
+			if err := add(ledgerEntry{Key: "check-received-returned:" + id, Date: firstText(row, "bouncedAt", "returnedAt", "dueDate"), Description: label + " " + stringValue(row["checkNo"]), SourceType: "CheckReturn", Party: party, Lines: []ledgerLine{debitLine(canonicalGL["receivable"], amount, party, label+" و بازگشت طلب مشتری"), creditLine(canonicalGL["checkReceivable"], amount, party, "خروج از اسناد دریافتنی")}}); err != nil {
+				return err
+			}
+			continue
+		}
+		if status != "cleared" {
 			continue
 		}
 		bank := accounts[firstText(row, "clearingAccountId", "accountId")]
 		if bank.Code == "" {
 			bank = defaultBank
 		}
-		id, party := firstText(row, "id", "checkNo"), stringValue(row["customer"])
 		if err := add(ledgerEntry{Key: "check-received-cleared:" + id, Date: firstText(row, "clearedAt", "dueDate"), Description: "وصول چک " + stringValue(row["checkNo"]), SourceType: "CheckClearance", Party: party, Lines: []ledgerLine{debitLine(bank, amount, party, "وصول چک"), creditLine(canonicalGL["checkReceivable"], amount, party, "خروج از اسناد دریافتنی")}}); err != nil {
 			return err
 		}
 	}
 	for _, row := range rowsFrom(state, "payableDocs") {
 		status, amount := stringValue(row["status"]), number(row["amount"])
-		if status != "paid" || amount <= 0 {
+		if amount <= 0 {
+			continue
+		}
+		id, party := firstText(row, "id", "checkNo"), stringValue(row["customer"])
+		if status == "returned" || status == "bounced" {
+			label := "مرجوع کردن چک پرداختنی"
+			if status == "bounced" {
+				label = "برگشت چک پرداختنی"
+			}
+			if err := add(ledgerEntry{Key: "check-payable-returned:" + id, Date: firstText(row, "bouncedAt", "returnedAt", "dueDate"), Description: label + " " + stringValue(row["checkNo"]), SourceType: "CheckReturn", Party: party, Lines: []ledgerLine{debitLine(canonicalGL["checkPayable"], amount, party, "خروج از اسناد پرداختنی"), creditLine(canonicalGL["payable"], amount, party, "بازگشت بدهی فروشنده")}}); err != nil {
+				return err
+			}
+			continue
+		}
+		if status != "paid" {
 			continue
 		}
 		bank := accounts[firstText(row, "clearingAccountId", "accountId")]
 		if bank.Code == "" {
 			bank = defaultBank
 		}
-		id, party := firstText(row, "id", "checkNo"), stringValue(row["customer"])
 		if err := add(ledgerEntry{Key: "check-payable-paid:" + id, Date: firstText(row, "paidAt", "dueDate"), Description: "پرداخت چک " + stringValue(row["checkNo"]), SourceType: "CheckPayment", Party: party, Lines: []ledgerLine{debitLine(canonicalGL["checkPayable"], amount, party, "تسویه اسناد پرداختنی"), creditLine(bank, amount, party, "برداشت بانک")}}); err != nil {
 			return err
 		}

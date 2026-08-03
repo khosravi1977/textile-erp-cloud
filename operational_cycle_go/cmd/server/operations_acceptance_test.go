@@ -176,15 +176,16 @@ func TestAcceptanceOtherDestinationDoesNotIncreaseWarperBalance(t *testing.T) {
 func TestAcceptanceSalonYarnRequiresActiveChelleOnSameMachineAndLimitsReturns(t *testing.T) {
 	f := newOperationalFixture(t)
 	seedYarnInbound(t, f, f.yarnAID, 100)
+	requireStatus(t, callOperationalJSON(t, f.app.nakhVor, http.MethodPost, "/api/nakh-vor", map[string]any{
+		"hambaft": "HB-POD", "weight": 80, "mosh_id": f.ownerID, "nakh_id": f.yarnAID,
+	}), http.StatusOK)
 	seedWarperExit(t, f, "نخ A", 60)
 	chelleID := seedChelle(t, f, "CH-1", 50, f.beamID)
 	assignChelle(t, f, chelleID, "M-1")
 	payload := map[string]any{"machine": "M-2", "ham_nakh": "HB-1", "weight": 40, "chelle_id": chelleID, "mosh_name": "مالک الف", "nakh_name": "نخ A", "vor_khor": "vorud"}
 	requireStatus(t, callOperationalJSON(t, f.app.nakhSalon, http.MethodPost, "/api/nakh-salon", payload), http.StatusBadRequest)
 	payload["machine"] = "M-1"
-	payload["ham_nakh"] = "HB-نامعتبر"
-	requireStatus(t, callOperationalJSON(t, f.app.nakhSalon, http.MethodPost, "/api/nakh-salon", payload), http.StatusBadRequest)
-	payload["ham_nakh"] = "HB-1"
+	payload["ham_nakh"] = "HB-POD"
 	payload["mosh_name"] = "مالک نامعتبر"
 	requireStatus(t, callOperationalJSON(t, f.app.nakhSalon, http.MethodPost, "/api/nakh-salon", payload), http.StatusBadRequest)
 	payload["mosh_name"] = "مالک الف"
@@ -192,6 +193,19 @@ func TestAcceptanceSalonYarnRequiresActiveChelleOnSameMachineAndLimitsReturns(t 
 	requireStatus(t, callOperationalJSON(t, f.app.nakhSalon, http.MethodPost, "/api/nakh-salon", payload), http.StatusBadRequest)
 	payload["nakh_name"] = "نخ A"
 	requireStatus(t, callOperationalJSON(t, f.app.nakhSalon, http.MethodPost, "/api/nakh-salon", payload), http.StatusOK)
+	var savedHambaft string
+	if err := f.app.queryRow(`SELECT ham_nakh_salon FROM nakh_salon ORDER BY id_nakh_salon DESC LIMIT 1`).Scan(&savedHambaft); err != nil {
+		t.Fatal(err)
+	}
+	if savedHambaft != "HB-POD" {
+		t.Fatalf("weft hambaft was overwritten by the warp hambaft: %q", savedHambaft)
+	}
+	optionsResponse := httptest.NewRecorder()
+	f.app.salonPodOptions(optionsResponse, "M-1", chelleID)
+	requireStatus(t, optionsResponse, http.StatusOK)
+	if !bytes.Contains(optionsResponse.Body.Bytes(), []byte(`"hambaft":"HB-POD"`)) {
+		t.Fatalf("production pod options are not scoped to the selected chelle: %s", optionsResponse.Body.String())
+	}
 	payload["weight"] = 41
 	payload["vor_khor"] = "khoroj"
 	requireStatus(t, callOperationalJSON(t, f.app.nakhSalon, http.MethodPost, "/api/nakh-salon", payload), http.StatusBadRequest)

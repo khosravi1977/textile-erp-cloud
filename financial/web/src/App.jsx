@@ -509,7 +509,9 @@ function statusLabel(status) {
 
     paid: 'پرداخت شد',
 
-    returned: 'برگشتي',
+    returned: 'مرجوع شده',
+
+    bounced: 'برگشت‌خورده',
 
   }[status] || status || '-';
 
@@ -575,25 +577,25 @@ function SelectInput(props) {
 
 
 
-function PrimaryButton({ children, onClick, className = '', type = 'button' }) {
+function PrimaryButton({ children, onClick, className = '', type = 'button', disabled = false }) {
 
-  return <button type={type} className={`rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-500 ${className}`} onClick={onClick}>{children}</button>;
-
-}
-
-
-
-function GhostButton({ children, onClick }) {
-
-  return <button type="button" className="rounded-md border border-slate-600 px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-700" onClick={onClick}>{children}</button>;
+  return <button type={type} disabled={disabled} className={`rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50 ${className}`} onClick={onClick}>{children}</button>;
 
 }
 
 
 
-function DangerButton({ children, onClick }) {
+function GhostButton({ children, onClick, disabled = false }) {
 
-  return <button type="button" className="rounded-md bg-red-600 px-3 py-2 text-xs font-bold text-white hover:bg-red-500" onClick={onClick}>{children}</button>;
+  return <button type="button" disabled={disabled} className="rounded-md border border-slate-600 px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50" onClick={onClick}>{children}</button>;
+
+}
+
+
+
+function DangerButton({ children, onClick, disabled = false }) {
+
+  return <button type="button" disabled={disabled} className="rounded-md bg-red-600 px-3 py-2 text-xs font-bold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50" onClick={onClick}>{children}</button>;
 
 }
 
@@ -940,13 +942,17 @@ function customerFinance(finance, customer) {
 
   const invoiceDebtTotal = invoices.reduce((s, x) => s + invoiceDebt(x), 0);
 
-  const receivableBalance = Math.max(invoiceDebtTotal + yarnOutFinancialTotal + openingReceivable - manualCustomerReceipts, 0);
+  const bouncedChecks = finance.receivableDocs
+    .filter(x => x.customer === customer && (x.status === 'bounced' || x.status === 'returned'))
+    .reduce((s, x) => s + Number(x.amount || 0), 0);
+
+  const receivableBalance = Math.max(invoiceDebtTotal + yarnOutFinancialTotal + openingReceivable + bouncedChecks - manualCustomerReceipts, 0);
 
   const directAssignedChecks = finance.receivableDocs.filter(x => x.assignedTo === customer && !x.assignedIncomingInvoice).reduce((s, x) => s + Number(x.amount || 0), 0);
 
   const netBalance = receivableBalance - payableToCustomer - openingPayable + manualSupplierPayments + directAssignedChecks;
 
-  return { invoices, incomingInvoices, openingRows, openingReceivable, openingPayable, total, paid, cash, checks, barter, assignedChecks, assignedDebt: 0, incomingTotal, paidOut, payableToCustomer, nonFinancialInventoryValue, yarnOutFinancialTotal, invoiceDebt: invoiceDebtTotal, debt: receivableBalance, netBalance };
+  return { invoices, incomingInvoices, openingRows, openingReceivable, openingPayable, total, paid, cash, checks, barter, bouncedChecks, assignedChecks, assignedDebt: 0, incomingTotal, paidOut, payableToCustomer, nonFinancialInventoryValue, yarnOutFinancialTotal, invoiceDebt: invoiceDebtTotal, debt: receivableBalance, netBalance };
 
 }
 
@@ -1016,6 +1022,64 @@ function escapePrintText(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+
+}
+
+function excelXMLText(value) {
+
+  return String(value ?? '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+
+}
+
+function exportExcel(title, rows = [], columns = null, totals = null) {
+
+  const safeRows = Array.isArray(rows) ? rows : [];
+
+  const keys = columns?.length
+    ? columns.map(column => Array.isArray(column) ? column : [column, labelMap[column] || column])
+    : [...new Set(safeRows.flatMap(row => Object.keys(row || {})))].map(key => [key, labelMap[key] || key]);
+
+  const cell = value => {
+
+    const numeric = typeof value === 'number' && Number.isFinite(value);
+
+    const normalized = value && typeof value === 'object' ? JSON.stringify(value) : value;
+
+    return `<Cell><Data ss:Type="${numeric ? 'Number' : 'String'}">${excelXMLText(numeric ? value : normalized ?? '')}</Data></Cell>`;
+
+  };
+
+  const header = `<Row>${keys.map(([, label]) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${excelXMLText(label)}</Data></Cell>`).join('')}</Row>`;
+
+  const body = safeRows.map(row => `<Row>${keys.map(([key]) => cell(row?.[key])).join('')}</Row>`).join('');
+
+  const totalRow = totals ? `<Row>${keys.map(([key], index) => index === 0 ? cell(totals.label || 'جمع') : cell(totals[key] ?? '')).join('')}</Row>` : '';
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Styles><Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Horizontal="Right" ss:Vertical="Center"/><Font ss:FontName="Tahoma" ss:Size="11"/></Style><Style ss:ID="Header"><Font ss:FontName="Tahoma" ss:Size="11" ss:Bold="1"/><Interior ss:Color="#DDEBF7" ss:Pattern="Solid"/></Style></Styles><Worksheet ss:Name="${excelXMLText(String(title || 'گزارش').slice(0, 31))}"><Table>${header}${body}${totalRow}</Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><DisplayRightToLeft/></WorksheetOptions></Worksheet></Workbook>`;
+
+  const blob = new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8' });
+
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement('a');
+
+  link.href = url;
+
+  link.download = `${String(title || 'گزارش').replace(/[\\/:*?"<>|]/g, '-').trim() || 'گزارش'}.xls`;
+
+  document.body.appendChild(link);
+
+  link.click();
+
+  link.remove();
+
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 
 }
 
@@ -1421,7 +1485,15 @@ function TelegramReportsPage() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+
+    load();
+
+    const timer = window.setInterval(load, 15000);
+
+    return () => window.clearInterval(timer);
+
+  }, []);
 
   const createPairing = async () => {
     setBusy('pair'); setError(''); setMessage(''); setQrImage('');
@@ -1515,7 +1587,7 @@ function TelegramReportsPage() {
               {settings.connected ? `${settings.recipient_count || recipients.length} گیرنده متصل` : 'متصل نشده'}
             </span>
           </div>
-          {!settings.available && <div className="mt-4 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm leading-7 text-amber-100">توکن و نام بات باید فقط در Secrets سرور تنظیم شود؛ هیچ توکنی در این صفحه یا کد پروژه ذخیره نمی‌شود.</div>}
+          {!settings.available && <div className="mt-4 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm leading-7 text-amber-100">سرویس تلگرام در حال اتصال خودکار مجدد است. توکن فقط در رازهای سرور نگهداری می‌شود و پس از برقراری ارتباط، دکمه ساخت QR خودکار فعال خواهد شد.</div>}
           <div className="mt-5 grid gap-4 md:grid-cols-2">
             <label className="text-sm text-slate-300">زمان ارسال روزانه
               <TextInput type="time" className="mt-2 w-full" value={settings.daily_time || '20:00'} onChange={e => setSettings(current => ({ ...current, daily_time: e.target.value }))} />
@@ -1575,7 +1647,7 @@ function TelegramReportsPage() {
           <div className="mt-5 flex flex-wrap gap-3">
             <PrimaryButton onClick={save}>{busy === 'save' ? 'در حال ذخیره...' : 'ذخیره تنظیمات'}</PrimaryButton>
             <GhostButton onClick={sendTest}>{busy === 'test' ? 'در حال ارسال...' : 'ارسال گزارش آزمایشی'}</GhostButton>
-            <GhostButton disabled={recipients.length >= 5} onClick={createPairing}>{busy === 'pair' ? 'در حال ساخت...' : settings.connected ? 'افزودن گیرنده جدید' : 'ساخت کد اتصال'}</GhostButton>
+            <GhostButton disabled={!settings.available || recipients.length >= 5 || busy === 'pair'} onClick={createPairing}>{busy === 'pair' ? 'در حال ساخت...' : settings.connected ? 'افزودن گیرنده جدید با QR' : 'ساخت QR اتصال'}</GhostButton>
           </div>
           {message && <div className="mt-4 rounded-md border border-emerald-800 bg-emerald-950 p-3 text-sm text-emerald-100">{message}</div>}
           {error && <div className="mt-4"><ErrorBox message={error} /></div>}
@@ -3116,7 +3188,7 @@ function YarnOutInvoicePage({ finance, setFinance }) {
 
       </div>
 
-      <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">{L.list}</h3><PrimaryButton onClick={printYarnOut}>{L.print}</PrimaryButton></div><YarnOutInvoiceTable rows={rows} onEdit={edit} onDelete={remove} /></Card>
+      <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">{L.list}</h3><div className="flex gap-2"><PrimaryButton onClick={printYarnOut}>{L.print}</PrimaryButton><PrimaryButton onClick={() => exportExcel(L.list, rows, [['date','تاریخ'],['customer','شخص'],['itemName','نخ'],['quantity','مقدار'],['outModeLabel','نوع خروج'],['unitPrice','نرخ'],['amount','مبلغ']])}>خروجی اکسل</PrimaryButton></div></div><YarnOutInvoiceTable rows={rows} onEdit={edit} onDelete={remove} /></Card>
 
     </div>
 
@@ -3373,7 +3445,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
       </div>
 
-      <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">{onlySource === 'chelle' ? 'لیست فاکتورهای ورود چله ثبت شده' : 'ليست فاکتورهاي ورود ثبت شده'}</h3><PrimaryButton onClick={printIncoming}>چاپ گزارش</PrimaryButton></div><IncomingInvoiceTable rows={rows} onEdit={edit} onDelete={remove} /></Card>
+      <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">{onlySource === 'chelle' ? 'لیست فاکتورهای ورود چله ثبت شده' : 'ليست فاکتورهاي ورود ثبت شده'}</h3><div className="flex gap-2"><PrimaryButton onClick={printIncoming}>چاپ گزارش</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش فاکتور ورود', rows.map(row => ({ ...row, settlement: (row.payments || []).map(payment => payment.type).join('، ') })), [['date','تاریخ'],['customer','شخص'],['itemName','کالا یا قطعه'],['subtotal','قبل مالیات'],['taxAmount','مالیات'],['amount','جمع'],['settlement','تسویه']])}>خروجی اکسل</PrimaryButton></div></div><IncomingInvoiceTable rows={rows} onEdit={edit} onDelete={remove} /></Card>
 
     </div>
 
@@ -4019,7 +4091,7 @@ function InventoryPage({ finance }) {
 
       </div>
 
-      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گزارش انبار نخ، پارچه و قطعات</h3><div className="flex gap-2"><SelectInput value={kindFilter} onChange={e => { setKindFilter(e.target.value); setItemFilter('all'); }}><option value="summary">خلاصه نخ عملياتي</option><option value="incoming-yarn">ريز ورود نخ عملياتي</option><option value="outgoing-yarn">ريز خروج نخ عملياتي</option><option value="owned-yarn">نخ مالکي/تهاتر</option><option value="fabric">پارچه مالکي/تهاتر</option><option value="parts">قطعات</option></SelectInput><SelectInput value={itemFilter} onChange={e => setItemFilter(e.target.value)}><option value="all">همه اقلام</option>{itemOptions.map(x => <option key={x} value={x}>{x}</option>)}</SelectInput><PrimaryButton onClick={printInventory}>چاپ</PrimaryButton></div>{loading && <span className="text-sm text-slate-400">در حال دريافت...</span>}</div>{error ? <ErrorBox message={error} /> : <GenericTable rows={rows} />}</Card>
+      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گزارش انبار نخ، پارچه و قطعات</h3><div className="flex gap-2"><SelectInput value={kindFilter} onChange={e => { setKindFilter(e.target.value); setItemFilter('all'); }}><option value="summary">خلاصه نخ عملياتي</option><option value="incoming-yarn">ريز ورود نخ عملياتي</option><option value="outgoing-yarn">ريز خروج نخ عملياتي</option><option value="owned-yarn">نخ مالکي/تهاتر</option><option value="fabric">پارچه مالکي/تهاتر</option><option value="parts">قطعات</option></SelectInput><SelectInput value={itemFilter} onChange={e => setItemFilter(e.target.value)}><option value="all">همه اقلام</option>{itemOptions.map(x => <option key={x} value={x}>{x}</option>)}</SelectInput><PrimaryButton onClick={printInventory}>چاپ</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش انبار نخ، پارچه و قطعات', rows)}>خروجی اکسل</PrimaryButton></div>{loading && <span className="text-sm text-slate-400">در حال دريافت...</span>}</div>{error ? <ErrorBox message={error} /> : <GenericTable rows={rows} />}</Card>
 
       <Card><h3 className="mb-4 font-bold">آخرين ورود نخ عملياتي</h3><GenericTable rows={yarnIncomingRows.slice(0, 20)} /></Card>
 
@@ -4044,6 +4116,8 @@ function CostsPage({ finance, setFinance }) {
   const [accountFilter, setAccountFilter] = useState('all');
 
   const [editingId, setEditingId] = useState('');
+
+  const [formMessage, setFormMessage] = useState({ type: '', text: '' });
 
   const groups = finance.smsGroups?.length ? finance.smsGroups : defaultExpenseGroups;
   const emptyExpenseForm = () => ({ date: today(), operationalDate: '', group: groups[0]?.name || '', subgroup: groups[0]?.subgroups?.[0] || '', amount: '', description: '', accountId: finance.accounts[0]?.id || '', source_type: 'manual', sourceId: '' });
@@ -4076,7 +4150,7 @@ function CostsPage({ finance, setFinance }) {
 
     const html = `<p>گروه: ${categoryFilter === 'all' ? 'همه' : categoryFilter} | حساب: ${accountFilter === 'all' ? 'همه' : finance.accounts.find(a => a.id === accountFilter)?.name || '-'}</p><table><thead><tr><th>منبع</th><th>تاريخ شمسي</th><th>گروه</th><th>زيرگروه</th><th>مبلغ</th><th>شرح</th></tr></thead><tbody>${rows.map(x => `<tr><td>${x.source}</td><td>${toJalali(x.date) || ''}</td><td>${expenseGroup(x)}</td><td>${expenseSubgroup(x)}</td><td>${money(x.amount)}</td><td>${x.description || ''}</td></tr>`).join('')}</tbody></table>`;
 
-    printSection('گزارش هزينه ها', html);
+    printSection('گزارش هزينه ها', `<h2>جمع ستون مبلغ: ${money(total)} تومان</h2>${html}`);
 
   };
 
@@ -4086,7 +4160,27 @@ function CostsPage({ finance, setFinance }) {
 
     e.preventDefault();
 
-    if (!form.group || !form.subgroup || !Number(form.amount || 0)) return;
+    setFormMessage({ type: '', text: '' });
+
+    const missing = [];
+
+    if (!form.date) missing.push('تاریخ');
+
+    if (!form.group) missing.push('گروه');
+
+    if (!form.subgroup) missing.push('زیرگروه');
+
+    if (!Number(form.amount || 0) || Number(form.amount) <= 0) missing.push('مبلغ معتبر');
+
+    if (!form.accountId) missing.push('بانک یا صندوق پرداخت‌کننده');
+
+    if (missing.length) {
+
+      setFormMessage({ type: 'error', text: `این موارد را کامل کنید: ${missing.join('، ')}` });
+
+      return;
+
+    }
 
     setFinance(prev => {
 
@@ -4114,9 +4208,13 @@ function CostsPage({ finance, setFinance }) {
 
     });
 
+    const wasEditing = Boolean(editingId);
+
     setEditingId('');
 
     setForm(emptyExpenseForm());
+
+    setFormMessage({ type: 'success', text: wasEditing ? 'ویرایش هزینه ثبت و برای ذخیره در سرور ارسال شد.' : 'هزینه ثبت و برای ذخیره در سرور ارسال شد.' });
 
   };
 
@@ -4124,11 +4222,21 @@ function CostsPage({ finance, setFinance }) {
 
   const editExpense = row => {
 
-    if (!row.financialRecord) return;
+    if (!row.financialRecord) {
+
+      setFormMessage({ type: 'error', text: 'این ردیف عملیاتی هنوز مالی نشده است؛ ابتدا «ثبت در مالی» را بزنید.' });
+
+      return;
+
+    }
 
     setEditingId(row.id);
 
     setForm({ date: row.date, operationalDate: row.operationalDate || '', group: expenseGroup(row), subgroup: expenseSubgroup(row), amount: row.amount, description: row.description || '', accountId: row.accountId || finance.accounts[0]?.id || '', source_type: row.source_type || 'manual', sourceId: row.sourceId || '' });
+
+    setFormMessage({ type: 'success', text: 'اطلاعات هزینه برای ویرایش در فرم قرار گرفت.' });
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 
   };
 
@@ -4140,9 +4248,13 @@ function CostsPage({ finance, setFinance }) {
       description: `${row.description || 'هزینه ثبت‌شده در بخش عملیاتی'}${row.doc_no ? ` | سند ${row.doc_no}` : ''}`,
       accountId: finance.accounts[0]?.id || '', source_type: 'operational_expense', sourceId: row.id,
     });
+    setFormMessage({ type: 'success', text: 'اطلاعات هزینه عملیاتی در فرم قرار گرفت؛ حساب پرداخت‌کننده را انتخاب و ثبت را بزنید.' });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const deleteExpense = id => setFinance(prev => {
+  const deleteExpense = id => {
+    if (!window.confirm('این هزینه و گردش مالی وابسته به آن حذف شود؟')) return;
+    setFinance(prev => {
     const expense = prev.expenses.find(x => x.id === id);
     return {
       ...prev,
@@ -4153,7 +4265,9 @@ function CostsPage({ finance, setFinance }) {
         String(x.description || '').includes(expense.subgroup || expense.title || '')
       )),
     };
-  });
+    });
+    setFormMessage({ type: 'success', text: 'هزینه حذف و برای ذخیره در سرور ارسال شد.' });
+  };
 
 
 
@@ -4189,9 +4303,11 @@ function CostsPage({ finance, setFinance }) {
 
         </form>
 
+        {formMessage.text && <div role="status" className={`mt-4 rounded-md border p-3 text-sm ${formMessage.type === 'error' ? 'border-red-800 bg-red-950 text-red-100' : 'border-emerald-800 bg-emerald-950 text-emerald-100'}`}>{formMessage.text}</div>}
+
       </Card>
 
-      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ليست هزينه ها</h3><div className="flex flex-wrap gap-2"><SelectInput value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}><option value="all">همه گروه‌ها</option>{groups.map(row => <option key={row.name} value={row.name}>{row.name}</option>)}</SelectInput><SelectInput value={accountFilter} onChange={e => setAccountFilter(e.target.value)}><option value="all">همه بانک/صندوق</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><TextInput placeholder="جستجو در گروه و زيرگروه" value={term} onChange={e => setTerm(e.target.value)} /><PrimaryButton onClick={printCosts}>چاپ</PrimaryButton></div></div>{loading && <p className="text-sm text-slate-400">در حال دريافت...</p>}{error ? <ErrorBox message={error} /> : <ExpensesTable rows={rows} onEdit={editExpense} onDelete={deleteExpense} onImport={importOperationalExpense} />}</Card>
+      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ليست هزينه ها</h3><div className="flex flex-wrap gap-2"><SelectInput value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}><option value="all">همه گروه‌ها</option>{groups.map(row => <option key={row.name} value={row.name}>{row.name}</option>)}</SelectInput><SelectInput value={accountFilter} onChange={e => setAccountFilter(e.target.value)}><option value="all">همه بانک/صندوق</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><TextInput placeholder="جستجو در گروه و زيرگروه" value={term} onChange={e => setTerm(e.target.value)} /><PrimaryButton onClick={printCosts}>چاپ</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش هزینه‌ها', rows.map(row => ({ ...row, group_name: expenseGroup(row), subgroup_name: expenseSubgroup(row) })), [['source','منبع'],['date','تاریخ'],['group_name','گروه'],['subgroup_name','زیرگروه'],['amount','مبلغ'],['description','شرح']], { label: 'جمع کل', amount: total })}>خروجی اکسل</PrimaryButton></div></div>{loading && <p className="text-sm text-slate-400">در حال دريافت...</p>}{error ? <ErrorBox message={error} /> : <ExpensesTable rows={rows} onEdit={editExpense} onDelete={deleteExpense} onImport={importOperationalExpense} />}</Card>
 
     </div>
 
@@ -4209,7 +4325,13 @@ function DocsPage({ kind, finance, setFinance }) {
 
   const key = isReceivable ? 'receivableDocs' : 'payableDocs';
 
-  const [form, setForm] = useState({ customer: '', amount: '', checkNo: '', dueDate: today(), dueJalali: '', bank: '', status: 'open' });
+  const emptyDocForm = () => ({ customer: '', amount: '', checkNo: '', dueDate: today(), dueJalali: '', bank: '', status: 'open' });
+
+  const [form, setForm] = useState(emptyDocForm);
+
+  const [editingId, setEditingId] = useState('');
+
+  const [actionMessage, setActionMessage] = useState('');
 
   const [checkbook, setCheckbook] = useState({ bank: '', fromNo: '', toNo: '', title: '' });
 
@@ -4265,19 +4387,156 @@ function DocsPage({ kind, finance, setFinance }) {
 
     if (!String(form.checkNo || '').trim() || !form.dueDate || !String(form.bank || '').trim()) { window.alert('شماره چک، بانک و تاریخ سررسید الزامی است.'); return; }
 
-    if (!isReceivable && form.checkNo && !matchingCheckbook) { alert('شماره چک در محدوده دسته چک تعريف شده براي اين بانک نيست.'); return; }
+    if (!isReceivable && form.checkNo && !matchingCheckbook && !editingId) { alert('شماره چک در محدوده دسته چک تعريف شده براي اين بانک نيست.'); return; }
 
-    setFinance(prev => ({ ...prev, [key]: [{ id: uid(isReceivable ? 'rch' : 'pch'), ...form, receivedAt: isReceivable ? today() : '', issuedAt: isReceivable ? '' : today(), checkbookId: matchingCheckbook?.id || '', amount: Number(form.amount) }, ...(prev[key] || [])] }));
+    const duplicate = rows.some(row => row.id !== editingId && String(row.checkNo || '').trim() === String(form.checkNo || '').trim() && String(row.bank || '').trim() === String(form.bank || '').trim());
 
-    setForm({ customer: '', amount: '', checkNo: '', dueDate: today(), dueJalali: '', bank: '', status: 'open' });
+    if (duplicate && !window.confirm('چکی با همین شماره و بانک وجود دارد. از ثبت تکراری مطمئن هستید؟')) return;
+
+    const linkedDocument = editingId ? rows.find(row => row.id === editingId) : null;
+
+    if ((linkedDocument?.sourceInvoice || linkedDocument?.sourceIncomingInvoice) && Number(linkedDocument.amount || 0) !== Number(form.amount || 0)) {
+
+      window.alert('مبلغ این چک به فاکتور وابسته است. برای تغییر مبلغ، تسویه همان فاکتور را ویرایش کنید؛ شماره، بانک و سررسید را می‌توانید از اینجا اصلاح کنید.');
+
+      return;
+
+    }
+
+    setFinance(prev => {
+
+      const current = editingId ? (prev[key] || []).find(row => row.id === editingId) : null;
+
+      const saved = {
+
+        ...(current || {}), ...form, id: editingId || uid(isReceivable ? 'rch' : 'pch'),
+
+        receivedAt: current?.receivedAt || (isReceivable ? today() : ''),
+
+        issuedAt: current?.issuedAt || (isReceivable ? '' : today()),
+
+        checkbookId: matchingCheckbook?.id || current?.checkbookId || '', amount: Number(form.amount),
+
+        updatedAt: today(),
+
+      };
+
+      const documents = editingId ? (prev[key] || []).map(row => row.id === editingId ? saved : row) : [saved, ...(prev[key] || [])];
+
+      const updatePayment = payment => payment.type === 'check' && String(payment.checkNo || '') === String(current?.checkNo || '')
+
+        ? { ...payment, checkNo: form.checkNo, bankName: form.bank, dueDate: form.dueDate, dueJalali: form.dueJalali }
+
+        : payment;
+
+      const invoices = current?.sourceInvoice
+
+        ? (prev.invoices || []).map(invoice => String(invoice.number) === String(current.sourceInvoice) ? { ...invoice, payments: (invoice.payments || []).map(updatePayment) } : invoice)
+
+        : prev.invoices;
+
+      const incomingInvoices = current?.sourceIncomingInvoice
+
+        ? (prev.incomingInvoices || []).map(invoice => invoice.id === current.sourceIncomingInvoice ? { ...invoice, payments: (invoice.payments || []).map(updatePayment) } : invoice)
+
+        : prev.incomingInvoices;
+
+      return { ...prev, [key]: documents, invoices, incomingInvoices };
+
+    });
+
+    setActionMessage(editingId ? 'ویرایش چک ثبت شد.' : 'چک جدید ثبت شد.');
+
+    setEditingId('');
+
+    setForm(emptyDocForm());
 
   };
 
   const setStatus = (id, status) => {
+
     const isClosed = status === 'cleared' || status === 'paid';
+
     const clearingAccountId = finance.accounts.find(account => account.type === 'بانک')?.id || finance.accounts[0]?.id || '';
+
     if (isClosed && !clearingAccountId) { window.alert('ابتدا در بانک و صندوق یک حساب تعریف کنید.'); return; }
-    setFinance(prev => ({ ...prev, [key]: prev[key].map(x => x.id === id ? { ...x, status, clearingAccountId: isClosed ? clearingAccountId : x.clearingAccountId, ...(status === 'cleared' ? { clearedAt: today() } : {}), ...(status === 'paid' ? { paidAt: today() } : {}) } : x) }));
+
+    const selected = rows.find(row => row.id === id);
+
+    if (!selected) return;
+
+    const isReturn = status === 'returned' || status === 'bounced';
+
+    const label = status === 'returned' ? 'مرجوع' : status === 'bounced' ? 'برگشت‌خورده' : statusLabel(status);
+
+    if (!window.confirm(`وضعیت چک شماره ${selected.checkNo} به «${label}» تغییر کند؟`)) return;
+
+    const reason = isReturn ? window.prompt('علت عملیات را ثبت کنید:', selected.operationReason || '') : '';
+
+    if (isReturn && reason === null) return;
+
+    setFinance(prev => {
+
+      const sourceAssignment = selected.assignedIncomingInvoice || '';
+
+      const documents = (prev[key] || []).map(row => {
+
+        if (row.id !== id) return row;
+
+        return {
+
+          ...row, status, clearingAccountId: isClosed ? clearingAccountId : row.clearingAccountId,
+
+          ...(status === 'cleared' ? { clearedAt: today() } : {}),
+
+          ...(status === 'paid' ? { paidAt: today() } : {}),
+
+          ...(status === 'returned' ? { returnedAt: today() } : {}),
+
+          ...(status === 'bounced' ? { bouncedAt: today() } : {}),
+
+          ...(isReturn ? {
+
+            operationReason: reason || '', previousAssignedTo: row.assignedTo || '',
+
+            previousAssignedIncomingInvoice: row.assignedIncomingInvoice || '', assignedTo: '', assignedIncomingInvoice: '',
+
+          } : {}),
+
+          lastOperation: status, lastOperationAt: today(),
+
+        };
+
+      });
+
+      const incomingInvoices = isReturn && sourceAssignment
+
+        ? (prev.incomingInvoices || []).map(invoice => invoice.id === sourceAssignment
+
+          ? { ...invoice, payments: (invoice.payments || []).map(payment => payment.docId === id ? { ...payment, type: 'credit', docId: '', note: `چک ${label} شد` } : payment) }
+
+          : invoice)
+
+        : prev.incomingInvoices;
+
+      return { ...prev, [key]: documents, incomingInvoices };
+
+    });
+
+    setActionMessage(`عملیات «${label}» برای چک ثبت شد.`);
+
+  };
+
+  const editCheck = row => {
+
+    setEditingId(row.id);
+
+    setForm({ customer: row.customer || '', amount: row.amount || '', checkNo: row.checkNo || '', dueDate: row.dueDate || today(), dueJalali: row.dueJalali || '', bank: row.bank || '', status: row.status || 'open' });
+
+    setActionMessage('اطلاعات چک برای ویرایش در فرم بالا قرار گرفت.');
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
   };
 
   const remove = id => setFinance(prev => ({ ...prev, [key]: prev[key].filter(x => x.id !== id) }));
@@ -4320,11 +4579,11 @@ function DocsPage({ kind, finance, setFinance }) {
 
       {!isReceivable && <Card><h3 className="mb-4 font-bold">تعريف دسته چک</h3><form className="grid grid-cols-5 gap-3" onSubmit={addCheckbook}><TextInput placeholder="عنوان دسته چک" value={checkbook.title} onChange={e => setCheckbook({ ...checkbook, title: e.target.value })} /><TextInput placeholder="بانک" value={checkbook.bank} onChange={e => setCheckbook({ ...checkbook, bank: e.target.value })} /><TextInput type="number" placeholder="از شماره" value={checkbook.fromNo} onChange={e => setCheckbook({ ...checkbook, fromNo: e.target.value })} /><TextInput type="number" placeholder="تا شماره" value={checkbook.toNo} onChange={e => setCheckbook({ ...checkbook, toNo: e.target.value })} /><PrimaryButton type="submit">ثبت دسته چک</PrimaryButton></form><div className="mt-4"><GenericTable rows={(finance.checkbooks || []).map(x => ({ title: x.title, bank: x.bank, fromNo: x.fromNo, toNo: x.toNo }))} /></div></Card>}
 
-      <Card><h3 className="mb-4 font-bold">{isReceivable ? 'ثبت سند دريافتي' : 'ثبت سند پرداختي'}</h3><form className="grid grid-cols-7 gap-3" onSubmit={save}><SelectInput value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })}><option value="">{isReceivable ? 'دريافت از' : 'پرداخت به'}</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><TextInput type="number" placeholder="مبلغ" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} /><TextInput placeholder="شماره چک/سند" value={form.checkNo} onChange={e => setForm({ ...form, checkNo: e.target.value })} /><TextInput placeholder="سررسيد شمسي" value={form.dueJalali} onChange={e => setForm({ ...form, dueJalali: e.target.value })} /><label className="text-sm text-slate-300"><span className="mb-2 block">تاريخ کمکي</span><DateInput className="w-full" value={form.dueDate} onChange={e => setForm({ ...form, dueDate: e.target.value })} /></label>{isReceivable ? <TextInput placeholder="بانک" value={form.bank} onChange={e => setForm({ ...form, bank: e.target.value })} /> : <SelectInput value={form.bank} onChange={e => setForm({ ...form, bank: e.target.value })}><option value="">انتخاب بانک دسته چک</option>{[...new Set((finance.checkbooks || []).map(x => x.bank).filter(Boolean))].map(b => <option key={b} value={b}>{b}</option>)}</SelectInput>}<PrimaryButton type="submit">ثبت</PrimaryButton></form>{!isReceivable && form.checkNo && form.bank && <div className={`mt-3 rounded-md border p-3 text-xs ${matchingCheckbook ? 'border-emerald-700 bg-emerald-950 text-emerald-100' : 'border-red-700 bg-red-950 text-red-100'}`}>{matchingCheckbook ? `شماره چک در دسته چک ${matchingCheckbook.title || matchingCheckbook.bank} معتبر است.` : 'اين شماره چک در محدوده دسته چک هاي تعريف شده اين بانک نيست.'}</div>}</Card>
+      <Card><h3 className="mb-4 font-bold">{editingId ? 'ویرایش سند ثبت‌شده' : isReceivable ? 'ثبت سند دريافتي' : 'ثبت سند پرداختي'}</h3><form className="grid grid-cols-7 gap-3" onSubmit={save}><SelectInput value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })}><option value="">{isReceivable ? 'دريافت از' : 'پرداخت به'}</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><TextInput type="number" placeholder="مبلغ" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} /><TextInput placeholder="شماره چک/سند" value={form.checkNo} onChange={e => setForm({ ...form, checkNo: e.target.value })} /><TextInput placeholder="سررسيد شمسي" value={form.dueJalali} onChange={e => setForm({ ...form, dueJalali: e.target.value })} /><label className="text-sm text-slate-300"><span className="mb-2 block">تاريخ کمکي</span><DateInput className="w-full" value={form.dueDate} onChange={e => setForm({ ...form, dueDate: e.target.value })} /></label>{isReceivable ? <TextInput placeholder="بانک" value={form.bank} onChange={e => setForm({ ...form, bank: e.target.value })} /> : <SelectInput value={form.bank} onChange={e => setForm({ ...form, bank: e.target.value })}><option value="">انتخاب بانک دسته چک</option>{[...new Set((finance.checkbooks || []).map(x => x.bank).filter(Boolean))].map(b => <option key={b} value={b}>{b}</option>)}</SelectInput>}<PrimaryButton type="submit">{editingId ? 'ذخیره ویرایش' : 'ثبت'}</PrimaryButton>{editingId && <GhostButton onClick={() => { setEditingId(''); setForm(emptyDocForm()); }}>لغو ویرایش</GhostButton>}</form>{actionMessage && <div className="mt-3 rounded-md border border-emerald-800 bg-emerald-950 p-3 text-sm text-emerald-100">{actionMessage}</div>}{!isReceivable && form.checkNo && form.bank && <div className={`mt-3 rounded-md border p-3 text-xs ${matchingCheckbook || editingId ? 'border-emerald-700 bg-emerald-950 text-emerald-100' : 'border-red-700 bg-red-950 text-red-100'}`}>{matchingCheckbook ? `شماره چک در دسته چک ${matchingCheckbook.title || matchingCheckbook.bank} معتبر است.` : editingId ? 'شماره قبلی هنگام ویرایش حفظ می‌شود.' : 'اين شماره چک در محدوده دسته چک هاي تعريف شده اين بانک نيست.'}</div>}</Card>
 
       {isReceivable && <Card><h3 className="mb-4 font-bold">واگذاري سند دريافتي به شخص ثالث</h3><form className="grid grid-cols-4 gap-3" onSubmit={assignCheck}><TextInput placeholder="شماره چک" value={assignForm.checkNo} onChange={e => setAssignForm({ ...assignForm, checkNo: e.target.value, docId: '' })} /><SelectInput value={assignForm.assignedTo} onChange={e => setAssignForm({ ...assignForm, assignedTo: e.target.value })}><option value="">واگذاري به</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><PrimaryButton type="submit">ثبت واگذاري</PrimaryButton><div className="rounded-md bg-slate-900 px-3 py-2 text-xs text-slate-400">اگر شماره تکراري باشد، ابتدا چک صحيح را از ليست پايين انتخاب کنيد.</div></form>{matchingChecks.length > 0 && <div className="mt-4 rounded-md border border-slate-700 bg-slate-950 p-3"><h4 className="mb-3 text-sm font-bold">مشخصات چک هاي مطابق</h4><div className="space-y-2">{matchingChecks.map(doc => <button key={doc.id} type="button" className={`w-full rounded-md border p-3 text-right text-sm ${assignForm.docId === doc.id ? 'border-blue-500 bg-blue-950' : 'border-slate-700 bg-slate-900'}`} onClick={() => setAssignForm({ ...assignForm, docId: doc.id, checkNo: doc.checkNo })}><div className="grid grid-cols-5 gap-2"><span>از: {doc.customer}</span><span>مبلغ: {money(doc.amount)}</span><span>بانک: {doc.bank || '-'}</span><span>سررسيد: {doc.dueJalali || toJalali(doc.dueDate) || '-'}</span><span>وضعيت: {doc.status}</span></div></button>)}</div></div>}</Card>}
 
-      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ليست و گزارش اسناد</h3><div className="flex flex-wrap gap-2"><SelectInput value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })}><option value="all">همه وضعيت‌ها</option><option value="open">باز</option><option value="cleared">وصول شد</option><option value="assigned">واگذار شد</option><option value="paid">پرداخت شد</option></SelectInput><SelectInput value={filters.customer} onChange={e => setFilters({ ...filters, customer: e.target.value })}><option value="all">همه اشخاص</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput>{isReceivable && <SelectInput value={filters.assignedTo} onChange={e => setFilters({ ...filters, assignedTo: e.target.value })}><option value="all">همه واگذارگيرنده‌ها</option>{assignedCustomers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput>}<DateInput value={filters.fromDate} onChange={e => setFilters({ ...filters, fromDate: e.target.value })} /><DateInput value={filters.toDate} onChange={e => setFilters({ ...filters, toDate: e.target.value })} /><PrimaryButton onClick={printDocs}>چاپ گزارش</PrimaryButton></div></div><DocsTable rows={filteredRows} isReceivable={isReceivable} onStatus={setStatus} onDelete={remove} /></Card>
+      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ليست و گزارش اسناد</h3><div className="flex flex-wrap gap-2"><SelectInput value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })}><option value="all">همه وضعيت‌ها</option><option value="open">باز</option><option value="cleared">وصول شد</option><option value="assigned">واگذار شد</option><option value="paid">پرداخت شد</option><option value="returned">مرجوع شده</option><option value="bounced">برگشت‌خورده</option></SelectInput><SelectInput value={filters.customer} onChange={e => setFilters({ ...filters, customer: e.target.value })}><option value="all">همه اشخاص</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput>{isReceivable && <SelectInput value={filters.assignedTo} onChange={e => setFilters({ ...filters, assignedTo: e.target.value })}><option value="all">همه واگذارگيرنده‌ها</option>{assignedCustomers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput>}<DateInput value={filters.fromDate} onChange={e => setFilters({ ...filters, fromDate: e.target.value })} /><DateInput value={filters.toDate} onChange={e => setFilters({ ...filters, toDate: e.target.value })} /><PrimaryButton onClick={printDocs}>چاپ گزارش</PrimaryButton><PrimaryButton onClick={() => exportExcel(isReceivable ? 'اسناد دریافتنی' : 'اسناد پرداختنی', filteredRows.map(row => ({ ...row, status_text: statusLabel(row.status) })), [['customer','شخص'],['assignedTo','واگذار شده به'],['amount','مبلغ'],['checkNo','شماره'],['dueJalali','سررسید شمسی'],['bank','بانک'],['status_text','وضعیت']])}>خروجی اکسل</PrimaryButton></div></div><DocsTable rows={filteredRows} isReceivable={isReceivable} onStatus={setStatus} onEdit={editCheck} onDelete={remove} /></Card>
 
     </div>
 
@@ -4377,7 +4636,7 @@ function BankCashPage({ finance, setFinance }) {
 
       </div>
 
-      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گردش بانک و صندوق</h3><div className="flex flex-wrap gap-2"><SelectInput value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })}><option value="all">همه حساب ها</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><SelectInput value={filters.payer} onChange={e => setFilters({ ...filters, payer: e.target.value })}><option value="all">همه پرداخت کنندگان</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><SelectInput value={filters.direction} onChange={e => setFilters({ ...filters, direction: e.target.value })}><option value="all">همه گردش ها</option><option value="in">واريز</option><option value="out">برداشت</option></SelectInput><PrimaryButton onClick={printMovements}>چاپ گزارش</PrimaryButton></div></div><GenericTable rows={filteredRows.map(m => ({ date: m.date, account: m.account, payer: m.payer, direction: m.directionLabel, amount: m.amount, trackingNo: m.trackingNo, description: m.description }))} /></Card>
+      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گردش بانک و صندوق</h3><div className="flex flex-wrap gap-2"><SelectInput value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })}><option value="all">همه حساب ها</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><SelectInput value={filters.payer} onChange={e => setFilters({ ...filters, payer: e.target.value })}><option value="all">همه پرداخت کنندگان</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><SelectInput value={filters.direction} onChange={e => setFilters({ ...filters, direction: e.target.value })}><option value="all">همه گردش ها</option><option value="in">واريز</option><option value="out">برداشت</option></SelectInput><PrimaryButton onClick={printMovements}>چاپ گزارش</PrimaryButton><PrimaryButton onClick={() => exportExcel('گردش بانک و صندوق', filteredRows.map(m => ({ date: m.date, account: m.account, payer: m.payer, direction: m.directionLabel, amount: m.amount, trackingNo: m.trackingNo, description: m.description })))}>خروجی اکسل</PrimaryButton></div></div><GenericTable rows={filteredRows.map(m => ({ date: m.date, account: m.account, payer: m.payer, direction: m.directionLabel, amount: m.amount, trackingNo: m.trackingNo, description: m.description }))} /></Card>
 
     </div>
 
@@ -4431,7 +4690,7 @@ function ProfessionalBankCashPage({ finance, setFinance }) {
       <TextInput placeholder="شرح" value={movement.description} onChange={e => setMovement({ ...movement, description: e.target.value })} />
       <PrimaryButton type="submit">ثبت گردش</PrimaryButton>
     </form><div className="mt-3 rounded-md border border-blue-800 bg-blue-950 p-3 text-xs text-blue-100">هر گردش با ماهیت حسابداری مشخص ثبت می‌شود؛ دریافت مشتری مانده او را کاهش می‌دهد، پرداخت فروشنده بدهی را تسویه می‌کند و انتقال بین دو حساب روی سود و زیان اثر ندارد.</div></Card>
-    <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گردش و مغایرت‌گیری بانک و صندوق</h3><div className="flex gap-2"><SelectInput value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })}><option value="all">همه حساب‌ها</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><SelectInput value={filters.reconciled} onChange={e => setFilters({ ...filters, reconciled: e.target.value })}><option value="all">همه وضعیت‌ها</option><option value="false">تطبیق‌نشده</option><option value="true">تطبیق‌شده</option></SelectInput><PrimaryButton onClick={printMovements}>چاپ صورت حساب</PrimaryButton></div></div>
+    <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گردش و مغایرت‌گیری بانک و صندوق</h3><div className="flex gap-2"><SelectInput value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })}><option value="all">همه حساب‌ها</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><SelectInput value={filters.reconciled} onChange={e => setFilters({ ...filters, reconciled: e.target.value })}><option value="all">همه وضعیت‌ها</option><option value="false">تطبیق‌نشده</option><option value="true">تطبیق‌شده</option></SelectInput><PrimaryButton onClick={printMovements}>چاپ صورت حساب</PrimaryButton><PrimaryButton onClick={() => exportExcel('گردش بانک و صندوق', rows.map(row => ({ ...row, transaction_text: typeLabels[row.transactionType] || row.direction, reconciled_text: row.reconciled ? 'تطبیق شد' : 'باز' })), [['date','تاریخ'],['accountName','حساب'],['transaction_text','ماهیت'],['payer','طرف حساب'],['amount','مبلغ'],['trackingNo','رهگیری'],['reconciled_text','تطبیق']])}>خروجی اکسل</PrimaryButton></div></div>
       <div className="overflow-auto"><table className="w-full text-right text-sm"><thead><tr className="border-b border-slate-700 text-slate-300"><th className="p-3">تاریخ</th><th>حساب</th><th>ماهیت</th><th>طرف حساب</th><th>مبلغ</th><th>رهگیری</th><th>وضعیت تطبیق</th></tr></thead><tbody>{rows.map(row => <tr key={row.id} className="border-b border-slate-800"><td className="p-3">{toJalali(row.date)}</td><td>{row.accountName}{row.transactionType === 'transfer' ? ` ← ${row.counterAccountName}` : ''}</td><td>{typeLabels[row.transactionType] || row.direction}</td><td>{row.payer || '-'}</td><td>{money(row.amount)}</td><td>{row.trackingNo || '-'}</td><td><GhostButton onClick={() => setReconciled(row.id)}>{row.reconciled ? 'تطبیق شده' : 'علامت تطبیق'}</GhostButton></td></tr>)}</tbody></table></div>
     </Card>
   </div>;
@@ -4480,7 +4739,7 @@ function AccountingPage({ finance, setFinance, revision }) {
     <div className="grid grid-cols-5 gap-4"><Field label="جمع بدهکار" value={money(s.total_debit) + ' تومان'} /><Field label="جمع بستانکار" value={money(s.total_credit) + ' تومان'} /><Field label="سود/زیان دوره" value={money(profit) + ' تومان'} tone={profit >= 0 ? 'text-emerald-300' : 'text-red-300'} /><Field label="دارایی خالص" value={money(s.assets) + ' تومان'} /><Field label="کنترل تراز" value={balanced ? 'تراز است' : 'عدم تراز'} tone={balanced ? 'text-emerald-300' : 'text-red-300'} /></div>
     <Card><h3 className="mb-4 font-bold">ثبت سند دستی دوبل</h3><form className="grid grid-cols-6 gap-3" onSubmit={addManual}><DateInput value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /><SelectInput value={form.debitCode} onChange={e => setForm({ ...form, debitCode: e.target.value })}>{chart.map(row => <option key={row[0]} value={row[0]}>بدهکار: {row[0]} - {row[1]}</option>)}</SelectInput><SelectInput value={form.creditCode} onChange={e => setForm({ ...form, creditCode: e.target.value })}>{chart.map(row => <option key={row[0]} value={row[0]}>بستانکار: {row[0]} - {row[1]}</option>)}</SelectInput><TextInput type="number" min="1" placeholder="مبلغ" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} /><TextInput placeholder="طرف حساب (اختیاری)" value={form.party} onChange={e => setForm({ ...form, party: e.target.value })} /><PrimaryButton type="submit">ثبت سند</PrimaryButton><TextInput className="col-span-6" placeholder="شرح سند" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></form></Card>
     <Card><h3 className="mb-4 font-bold">دوره مالی و قفل ثبت</h3><form className="grid grid-cols-4 gap-3" onSubmit={addPeriod}><TextInput placeholder="عنوان دوره" value={periodForm.title} onChange={e => setPeriodForm({ ...periodForm, title: e.target.value })} /><DateInput value={periodForm.startDate} onChange={e => setPeriodForm({ ...periodForm, startDate: e.target.value })} /><DateInput value={periodForm.endDate} onChange={e => setPeriodForm({ ...periodForm, endDate: e.target.value })} /><PrimaryButton type="submit">ایجاد دوره</PrimaryButton></form><div className="mt-4 space-y-2">{(report.periods || []).map(row => <div key={row.id} className="flex items-center justify-between rounded-md border border-slate-700 bg-slate-950 p-3 text-sm"><span>{row.title} | {toJalali(row.start_date)} تا {toJalali(row.end_date)}</span><GhostButton onClick={() => togglePeriod(row)}>{row.status === 'Closed' ? 'بازکردن دوره' : 'بستن دوره'}</GhostButton></div>)}</div></Card>
-    <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">تراز آزمایشی دفتر کل</h3><div className="flex gap-2"><PrimaryButton onClick={load}>{loading ? 'در حال دریافت...' : 'بازخوانی'}</PrimaryButton><PrimaryButton onClick={printTrial}>چاپ تراز</PrimaryButton></div></div><GenericTable rows={(report.trialBalance || []).map(row => ({ code: row.code, account: row.name, type: row.type, debit: row.debit, credit: row.credit, balance: row.balance }))} /></Card>
+    <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">تراز آزمایشی دفتر کل</h3><div className="flex gap-2"><PrimaryButton onClick={load}>{loading ? 'در حال دریافت...' : 'بازخوانی'}</PrimaryButton><PrimaryButton onClick={printTrial}>چاپ تراز</PrimaryButton><PrimaryButton onClick={() => exportExcel('تراز آزمایشی دفتر کل', (report.trialBalance || []).map(row => ({ code: row.code, account: row.name, type: row.type, debit: row.debit, credit: row.credit, balance: row.balance })))}>خروجی اکسل</PrimaryButton></div></div><GenericTable rows={(report.trialBalance || []).map(row => ({ code: row.code, account: row.name, type: row.type, debit: row.debit, credit: row.credit, balance: row.balance }))} /></Card>
     <Card><h3 className="mb-4 font-bold">مانده تفصیلی اشخاص</h3><GenericTable rows={(report.partyBalances || []).map(row => ({ party: row.party, debit: row.debit, credit: row.credit, balance: row.balance, nature: Number(row.balance) >= 0 ? 'بدهکار' : 'بستانکار' }))} /></Card>
     <Card><h3 className="mb-4 font-bold">دفتر روزنامه (حداکثر ۱۰۰۰ آرتیکل اخیر)</h3><GenericTable rows={(report.vouchers || []).map(row => ({ voucher: row.voucher_no, date: row.voucher_date, source: row.source_doc_type, description: row.description, account: `${row.account_code} - ${row.account_name}`, party: row.party || '-', debit: row.debit, credit: row.credit }))} /></Card>
     <Card><h3 className="mb-3 font-bold">تنظیم مالیات</h3><div className="flex items-center gap-3"><label className="text-sm text-slate-300">نرخ پیش‌فرض پیشنهادی (درصد)</label><TextInput type="number" min="0" max="100" value={finance.accountingSettings?.defaultVatRate ?? 0} onChange={e => setFinance(prev => ({ ...prev, accountingSettings: { ...(prev.accountingSettings || {}), defaultVatRate: Number(e.target.value || 0) } }))} /><span className="text-xs text-amber-200">مالیات فقط برای اسنادی محاسبه می‌شود که هنگام ثبت، مشمول علامت خورده باشند؛ نرخ قانونی را حسابدار دوره کنترل کند.</span></div></Card>
@@ -4555,7 +4814,7 @@ function ReportsPage({ finance }) {
 
     <div className="space-y-5">
 
-      <Card><div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ريز گزارش مالي فاکتورها</h3><div className="flex flex-wrap gap-2"><SelectInput value={customer} onChange={e => setCustomer(e.target.value)}><option value="all">همه مشتريان</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><SelectInput value={typeFilter} onChange={e => setTypeFilter(e.target.value)}><option value="all">همه نوع ها</option>{[...new Set(allReportRows.map(x => x.type))].map(t => <option key={t} value={t}>{t}</option>)}</SelectInput><DateInput value={fromDate} onChange={e => setFromDate(e.target.value)} /><DateInput value={toDate} onChange={e => setToDate(e.target.value)} /><PrimaryButton onClick={printReport}>چاپ ريز گزارش</PrimaryButton></div></div></Card>
+      <Card><div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ريز گزارش مالي فاکتورها</h3><div className="flex flex-wrap gap-2"><SelectInput value={customer} onChange={e => setCustomer(e.target.value)}><option value="all">همه مشتريان</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><SelectInput value={typeFilter} onChange={e => setTypeFilter(e.target.value)}><option value="all">همه نوع ها</option>{[...new Set(allReportRows.map(x => x.type))].map(t => <option key={t} value={t}>{t}</option>)}</SelectInput><DateInput value={fromDate} onChange={e => setFromDate(e.target.value)} /><DateInput value={toDate} onChange={e => setToDate(e.target.value)} /><PrimaryButton onClick={printReport}>چاپ ريز گزارش</PrimaryButton><PrimaryButton onClick={() => exportExcel('ریز گزارش مالی', reportRows, [['type','نوع'],['invoice_no','شماره'],['date','تاریخ'],['customer','شخص'],['item','شرح'],['pricing_basis','مبنا یا وضعیت'],['quantity','مقدار'],['unit_price','نرخ واحد'],['total','مبلغ'],['paid','پرداخت'],['debt','مانده']])}>خروجی اکسل</PrimaryButton></div></div></Card>
 
       {customer !== 'all' && <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">قرار پرداخت شخص</h3><span className="text-sm text-blue-200">{customer}</span></div><div className="grid grid-cols-3 gap-4"><label className="text-sm text-slate-300"><span className="mb-2 block">درصد پرداخت نقدي</span><TextInput className="w-full" type="number" min="0" max="100" value={activePlan.cashPercent} onChange={e => savePlan({ cashPercent: Number(e.target.value || 0), checkPercent: Math.max(0, 100 - Number(e.target.value || 0)) })} /></label><label className="text-sm text-slate-300"><span className="mb-2 block">درصد پرداخت چکي</span><TextInput className="w-full" type="number" min="0" max="100" value={activePlan.checkPercent} onChange={e => savePlan({ checkPercent: Number(e.target.value || 0) })} /></label><label className="text-sm text-slate-300"><span className="mb-2 block">سررسيد چک چند ماهه</span><TextInput className="w-full" type="number" min="0" value={activePlan.checkMonths} onChange={e => savePlan({ checkMonths: Number(e.target.value || 0) })} /></label></div><div className="mt-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-xs text-slate-300">طبق اين قرار، براي فاکتورهاي خروج اين شخص مبلغ نقد مورد انتظار، مبلغ چک مورد انتظار و تاريخ سررسيد چک در جدول گزارش مالي محاسبه مي‌شود.</div></Card>}
 
@@ -4619,7 +4878,7 @@ function TaxReportPage({ finance }) {
 
   };
 
-  return <div className="space-y-5"><Card><div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گزارش مالیاتی ایران</h3><div className="flex flex-wrap gap-2"><DateInput value={fromDate} onChange={e => setFromDate(e.target.value)} /><DateInput value={toDate} onChange={e => setToDate(e.target.value)} /><PrimaryButton onClick={printTax}>چاپ گزارش مالیاتی</PrimaryButton></div></div></Card><div className="grid grid-cols-4 gap-4"><Field label="جمع فروش/درآمد" value={money(salesTotal) + ' تومان'} tone="text-emerald-300" /><Field label="جمع خرید/ورود" value={money(purchasesTotal) + ' تومان'} tone="text-blue-300" /><Field label="جمع هزینه" value={money(expensesTotal) + ' تومان'} tone="text-red-300" /><Field label="مالیات ارزش افزوده قابل پرداخت" value={money(payableVat) + ' تومان'} tone={payableVat >= 0 ? 'text-amber-300' : 'text-emerald-300'} /></div><Card><h3 className="mb-4 font-bold">ریز اقلام مالیاتی</h3><GenericTable rows={rows} /></Card><Card><h3 className="mb-4 font-bold">کنترل حسابدار</h3><div className="text-sm leading-7 text-slate-300">نرخ پیشنهادی فعلی {num(vatRate * 100)}٪ است. فقط اسنادی که هنگام ثبت «مشمول مالیات» شده‌اند در اعتبار و بدهی مالیاتی محاسبه می‌شوند. این خروجی گزارش کنترلی است؛ ارسال رسمی سامانه مؤدیان نیازمند شناسه کالا/خدمت، شماره اقتصادی، الگوی صورتحساب و امضای الکترونیکی معتبر است.</div></Card></div>;
+  return <div className="space-y-5"><Card><div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گزارش مالیاتی ایران</h3><div className="flex flex-wrap gap-2"><DateInput value={fromDate} onChange={e => setFromDate(e.target.value)} /><DateInput value={toDate} onChange={e => setToDate(e.target.value)} /><PrimaryButton onClick={printTax}>چاپ گزارش مالیاتی</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش مالیاتی', rows, [['type','نوع'],['invoice_no','شماره'],['date','تاریخ'],['party','طرف حساب'],['description','شرح'],['taxable_amount','مبلغ مشمول'],['vat','مالیات و عوارض'],['total','جمع']], { label: 'جمع', taxable_amount: salesTotal + purchasesTotal + expensesTotal, vat: payableVat })}>خروجی اکسل</PrimaryButton></div></div></Card><div className="grid grid-cols-4 gap-4"><Field label="جمع فروش/درآمد" value={money(salesTotal) + ' تومان'} tone="text-emerald-300" /><Field label="جمع خرید/ورود" value={money(purchasesTotal) + ' تومان'} tone="text-blue-300" /><Field label="جمع هزینه" value={money(expensesTotal) + ' تومان'} tone="text-red-300" /><Field label="مالیات ارزش افزوده قابل پرداخت" value={money(payableVat) + ' تومان'} tone={payableVat >= 0 ? 'text-amber-300' : 'text-emerald-300'} /></div><Card><h3 className="mb-4 font-bold">ریز اقلام مالیاتی</h3><GenericTable rows={rows} /></Card><Card><h3 className="mb-4 font-bold">کنترل حسابدار</h3><div className="text-sm leading-7 text-slate-300">نرخ پیشنهادی فعلی {num(vatRate * 100)}٪ است. فقط اسنادی که هنگام ثبت «مشمول مالیات» شده‌اند در اعتبار و بدهی مالیاتی محاسبه می‌شوند. این خروجی گزارش کنترلی است؛ ارسال رسمی سامانه مؤدیان نیازمند شناسه کالا/خدمت، شماره اقتصادی، الگوی صورتحساب و امضای الکترونیکی معتبر است.</div></Card></div>;
 
 }
 
@@ -4691,7 +4950,7 @@ function CreditPage({ finance }) {
 
     <div className="space-y-5">
 
-      <Card><div className="flex items-center justify-between gap-3"><h3 className="font-bold">اعتبارسنجي مشتري بر اساس داده عملياتي و مالي</h3><div className="flex gap-2"><SelectInput value={customer} onChange={e => setSelected(e.target.value)}>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><PrimaryButton onClick={printCredit}>چاپ دلايل اعتبار</PrimaryButton></div></div></Card>
+      <Card><div className="flex items-center justify-between gap-3"><h3 className="font-bold">اعتبارسنجي مشتري بر اساس داده عملياتي و مالي</h3><div className="flex gap-2"><SelectInput value={customer} onChange={e => setSelected(e.target.value)}>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><PrimaryButton onClick={printCredit}>چاپ دلايل اعتبار</PrimaryButton><PrimaryButton onClick={() => exportExcel(`اعتبارسنجی ${customer}`, reasons.map((reason, index) => ({ row: index + 1, customer, score, level, reason })), [['row','ردیف'],['customer','مشتری'],['score','امتیاز'],['level','وضعیت'],['reason','دلیل']])}>خروجی اکسل</PrimaryButton></div></div></Card>
 
       {loading && <p className="text-sm text-slate-400">در حال دريافت...</p>}
 
@@ -4914,7 +5173,7 @@ function AdvisorPage({ finance }) {
 
     <div className="space-y-5">
 
-      <Card><div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="text-xl font-extrabold text-white">تحلیل و مشاور هوشمند Textile ERP</h2><p className="mt-2 max-w-3xl text-sm leading-7 text-slate-300">فروش، مطالبات، نقدینگی، هزینه‌ها و داده‌های عملیاتی را کنار هم می‌گذارد و مهم‌ترین تصمیم‌های مدیریتی را به ترتیب اولویت نشان می‌دهد.</p><div className="mt-3 flex flex-wrap gap-2 text-xs"><span className="rounded-full border border-emerald-800 bg-emerald-950 px-3 py-1 text-emerald-200">محاسبه امن داخل سامانه</span><span className="rounded-full border border-blue-800 bg-blue-950 px-3 py-1 text-blue-200">بدون نمایش کلید یا اطلاعات فنی</span></div></div><div className="flex gap-2"><SelectInput value={months} onChange={e => setMonths(e.target.value)}><option value="1">۱ ماه</option><option value="2">۲ ماه</option><option value="3">۳ ماه</option><option value="6">۶ ماه</option></SelectInput><PrimaryButton onClick={printAdvisor}>چاپ گزارش مدیریتی</PrimaryButton></div></div></Card>
+      <Card><div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="text-xl font-extrabold text-white">تحلیل و مشاور هوشمند Textile ERP</h2><p className="mt-2 max-w-3xl text-sm leading-7 text-slate-300">فروش، مطالبات، نقدینگی، هزینه‌ها و داده‌های عملیاتی را کنار هم می‌گذارد و مهم‌ترین تصمیم‌های مدیریتی را به ترتیب اولویت نشان می‌دهد.</p><div className="mt-3 flex flex-wrap gap-2 text-xs"><span className="rounded-full border border-emerald-800 bg-emerald-950 px-3 py-1 text-emerald-200">محاسبه امن داخل سامانه</span><span className="rounded-full border border-blue-800 bg-blue-950 px-3 py-1 text-blue-200">بدون نمایش کلید یا اطلاعات فنی</span></div></div><div className="flex gap-2"><SelectInput value={months} onChange={e => setMonths(e.target.value)}><option value="1">۱ ماه</option><option value="2">۲ ماه</option><option value="3">۳ ماه</option><option value="6">۶ ماه</option></SelectInput><PrimaryButton onClick={printAdvisor}>چاپ گزارش مدیریتی</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش مشاور هوشمند', [...priorities.map(item => ({ type: 'اقدام اولویت‌دار', title: item.title, level: item.level, detail: item.detail, action: item.action })), ...advices.map((advice, index) => ({ type: 'توصیه', title: `توصیه ${index + 1}`, level: '', detail: advice, action: '' }))])}>خروجی اکسل</PrimaryButton></div></div></Card>
 
       <Card>
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -4974,11 +5233,11 @@ function IncomingInvoiceTable({ rows, onEdit, onDelete }) {
 
 
 
-function DocsTable({ rows, isReceivable, onStatus, onDelete }) {
+function DocsTable({ rows, isReceivable, onStatus, onEdit, onDelete }) {
 
   if (!rows.length) return <EmptyState />;
 
-  return <div className="overflow-auto"><table className="w-full border-collapse text-sm"><thead><tr className="border-b border-slate-700 text-slate-400"><th className="p-3 text-right">شخص</th><th className="p-3 text-right">واگذار شده به</th><th className="p-3 text-right">مبلغ</th><th className="p-3 text-right">شماره</th><th className="p-3 text-right">سررسيد شمسي</th><th className="p-3 text-right">بانک</th><th className="p-3 text-right">وضعيت</th><th className="p-3 text-right">عمليات</th></tr></thead><tbody>{rows.map(row => <tr key={row.id} className="border-b border-slate-800"><td className="p-3">{row.customer}</td><td className="p-3">{row.assignedTo || '-'}</td><td className="p-3">{money(row.amount)}</td><td className="p-3">{row.checkNo}</td><td className="p-3">{row.dueJalali || toJalali(row.dueDate)}</td><td className="p-3">{row.bank}</td><td className="p-3">{statusLabel(row.status)}</td><td className="p-3"><div className="flex gap-2">{row.status === 'assigned' ? <span className="rounded-md border border-violet-700 px-3 py-2 text-xs text-violet-200">واگذار شد</span> : <GhostButton onClick={() => onStatus(row.id, isReceivable ? 'cleared' : 'paid')}>{isReceivable ? 'وصول شد' : 'پرداخت شد'}</GhostButton>}<DangerButton onClick={() => onDelete(row.id)}>حذف</DangerButton></div></td></tr>)}</tbody></table></div>;
+  return <div className="overflow-auto"><table className="w-full border-collapse text-sm"><thead><tr className="border-b border-slate-700 text-slate-400"><th className="p-3 text-right">شخص</th><th className="p-3 text-right">واگذار شده به</th><th className="p-3 text-right">مبلغ</th><th className="p-3 text-right">شماره</th><th className="p-3 text-right">سررسيد شمسي</th><th className="p-3 text-right">بانک</th><th className="p-3 text-right">وضعيت</th><th className="p-3 text-right">عمليات</th></tr></thead><tbody>{rows.map(row => <tr key={row.id} className="border-b border-slate-800"><td className="p-3">{row.customer}</td><td className="p-3">{row.assignedTo || row.previousAssignedTo || '-'}</td><td className="p-3">{money(row.amount)}</td><td className="p-3">{row.checkNo}</td><td className="p-3">{row.dueJalali || toJalali(row.dueDate)}</td><td className="p-3">{row.bank}</td><td className="p-3"><div>{statusLabel(row.status)}</div>{row.operationReason && <small className="text-slate-400">{row.operationReason}</small>}</td><td className="p-3"><div className="flex flex-wrap gap-2"><GhostButton onClick={() => onEdit(row)}>ویرایش</GhostButton>{row.status === 'assigned' ? <span className="rounded-md border border-violet-700 px-3 py-2 text-xs text-violet-200">واگذار شد</span> : !['cleared', 'paid'].includes(row.status) && <GhostButton onClick={() => onStatus(row.id, isReceivable ? 'cleared' : 'paid')}>{isReceivable ? 'وصول شد' : 'پرداخت شد'}</GhostButton>}{row.status !== 'returned' && <GhostButton onClick={() => onStatus(row.id, 'returned')}>مرجوع</GhostButton>}{row.status !== 'bounced' && <DangerButton onClick={() => onStatus(row.id, 'bounced')}>برگشت</DangerButton>}<DangerButton onClick={() => onDelete(row.id)}>حذف</DangerButton></div></td></tr>)}</tbody></table></div>;
 
 }
 

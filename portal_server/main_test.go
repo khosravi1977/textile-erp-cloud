@@ -304,6 +304,80 @@ func TestModuleLoginCreatesOnlyRequestedModuleSession(t *testing.T) {
 	}
 }
 
+func TestOperationalModuleLoginPreservesLoadingNextFromForm(t *testing.T) {
+	t.Parallel()
+
+	accessFile := filepath.Join(t.TempDir(), "portal-access.db")
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("Operational123!"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	access := projectAccess{
+		ID: 1, ProjectKey: "textile-erp", CompanyName: "Test Company",
+		ContactName: "Operator", Username: "operational_user",
+		AccessRole: "operator", AllowOperational: true,
+		ExpiresAt: time.Now().Add(48 * time.Hour), AccessToken: "operational-user-token",
+		PasswordHash: string(passwordHash), IsActive: true, CreatedAt: time.Now(),
+	}
+	payload, _ := json.Marshal([]projectAccess{access})
+	if err := os.WriteFile(accessFile, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &portalApp{accessFile: accessFile, sessionSecret: "operational-next-secret", publicBase: "http://127.0.0.1:28080"}
+
+	form := url.Values{
+		"module":   {"operational"},
+		"next":     {"/operational/loading/test-token"},
+		"username": {"operational_user"},
+		"password": {"Operational123!"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/module-login?module=operational", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	app.moduleLogin(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if location := rec.Header().Get("Location"); location != "/operational/loading/test-token" {
+		t.Fatalf("loading next was lost: got %q", location)
+	}
+	if cookies := rec.Result().Cookies(); len(cookies) == 0 {
+		t.Fatal("expected operational session cookies")
+	}
+}
+
+func TestOperationalModuleLoginRejectsUnsafeNextFromForm(t *testing.T) {
+	t.Parallel()
+
+	accessFile := filepath.Join(t.TempDir(), "portal-access.db")
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("Operational123!"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal([]projectAccess{{
+		ID: 1, ProjectKey: "textile-erp", Username: "operational_user",
+		AllowOperational: true, ExpiresAt: time.Now().Add(time.Hour),
+		AccessToken: "operational-user-token", PasswordHash: string(passwordHash), IsActive: true,
+	}})
+	if err := os.WriteFile(accessFile, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &portalApp{accessFile: accessFile, sessionSecret: "operational-next-secret"}
+	form := url.Values{
+		"module": {"operational"}, "next": {"https://evil.example/steal"},
+		"username": {"operational_user"}, "password": {"Operational123!"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/module-login?module=operational", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	app.moduleLogin(rec, req)
+
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/operational/" {
+		t.Fatalf("unsafe next must fall back to module root: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
 func TestModuleLoginRejectsUserWithoutModulePermission(t *testing.T) {
 	t.Parallel()
 

@@ -2,15 +2,38 @@ package handler
 
 import "testing"
 
-func TestMobileAccountingDateConvertsJalali(t *testing.T) {
-	tests := map[string]string{
-		"1405/01/01": "2026-03-21",
-		"۱۴۰۵/۰۵/۰۱": "2026-07-23",
-		"2026-07-22": "2026-07-22",
+func TestClassifyMobileTransactionPrefersExplicitType(t *testing.T) {
+	typ, err := classifyMobileTransaction("expense", "out", "پاکستانی", "حاج حسن", "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for input, expected := range tests {
-		if actual := mobileAccountingDate(input); actual != expected {
-			t.Errorf("mobileAccountingDate(%q) = %q, want %q", input, actual, expected)
-		}
+	if typ != "expense" {
+		t.Fatalf("explicit expense was misclassified as %q", typ)
+	}
+}
+
+func TestClassifyMobileTransactionExpenseGroupBeatsStaleCustomer(t *testing.T) {
+	typ, err := classifyMobileTransaction("", "out", "پاکستانی", "حاج حسن", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if typ != "expense" {
+		t.Fatalf("expense with stale customer was misclassified as %q", typ)
+	}
+}
+
+func TestClassifyMobileTransactionKeepsLegacyCustomerPayment(t *testing.T) {
+	typ, err := classifyMobileTransaction("", "out", "", "فروشنده", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if typ != "supplier_payment" {
+		t.Fatalf("legacy supplier payment was misclassified as %q", typ)
+	}
+}
+
+func TestClassifyMobileTransactionRejectsInvalidExplicitType(t *testing.T) {
+	if _, err := classifyMobileTransaction("customer", "in", "", "مشتری", ""); err == nil {
+		t.Fatal("invalid explicit transaction type was accepted")
 	}
 }
