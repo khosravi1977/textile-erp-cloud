@@ -48,6 +48,8 @@ case "$admin_status" in
 esac
 grep -Eiq '^location:[[:space:]]*/admin/login([?[:space:]]|$)' "$work_dir/admin.headers"
 
-curl "${curl_retry[@]}" "$weaving_base/health" -o "$work_dir/weaving-health.json"
+curl "${curl_retry[@]}" "$weaving_base/api/health" -o "$work_dir/weaving-health.json"
+grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' "$work_dir/weaving-health.json"
+grep -Eq '"service"[[:space:]]*:[[:space:]]*"textie-weaving-efficiency"' "$work_dir/weaving-health.json"
 
 echo "Production smoke checks passed for Textile ERP and weaving."
