@@ -2,6 +2,7 @@
 
 import { useRef } from 'react';
 import QRCode from 'qrcode';
+import { confirmMovementCounterparty, confirmedMovementCounterparty, movementNeedsCounterparty } from './counterparty.js';
 
 const FINANCIAL_DEV_ORIGIN = `${window.location.protocol}//${window.location.hostname}:5173`;
 const FINANCIAL_DEV_ORIGINS = new Set([
@@ -936,9 +937,9 @@ function customerFinance(finance, customer) {
 
   const payableToCustomer = financialIncomingInvoices.reduce((s, x) => s + Math.max(Number(x.amount || 0) - (x.payments || []).filter(p => p.type !== 'credit').reduce((sum, p) => sum + Number(p.amount || 0), 0), 0), 0);
 
-  const manualCustomerReceipts = (finance.movements || []).filter(x => x.transactionType === 'customer_receipt' && (x.payer === customer || x.customer === customer)).reduce((s, x) => s + Number(x.amount || 0), 0);
+  const manualCustomerReceipts = (finance.movements || []).filter(x => x.transactionType === 'customer_receipt' && !x.sourceInvoice && !x.sourceIncomingInvoice && confirmedMovementCounterparty(x) === customer).reduce((s, x) => s + Number(x.amount || 0), 0);
 
-  const manualSupplierPayments = (finance.movements || []).filter(x => x.transactionType === 'supplier_payment' && (x.payer === customer || x.customer === customer)).reduce((s, x) => s + Number(x.amount || 0), 0);
+  const manualSupplierPayments = (finance.movements || []).filter(x => x.transactionType === 'supplier_payment' && !x.sourceInvoice && !x.sourceIncomingInvoice && confirmedMovementCounterparty(x) === customer).reduce((s, x) => s + Number(x.amount || 0), 0);
 
   const invoiceDebtTotal = invoices.reduce((s, x) => s + invoiceDebt(x), 0);
 
@@ -3371,7 +3372,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
       cleanPayments.forEach(p => {
 
-        if (p.type === 'cash') movements.unshift({ id: uid('mov'), accountId: p.accountId, date: form.date || today(), direction: 'out', amount: p.amount, trackingNo: p.trackingNo, sourceIncomingInvoice: sourceId, payer: invoice.customer, customer: invoice.customer, description: 'پرداخت نقدي فاکتور ورود ' + sourceId });
+        if (p.type === 'cash') movements.unshift({ id: uid('mov'), accountId: p.accountId, date: form.date || today(), direction: 'out', transactionType: 'supplier_payment', amount: p.amount, trackingNo: p.trackingNo, sourceIncomingInvoice: sourceId, payer: invoice.customer, customer: invoice.customer, counterpartyConfirmed: true, counterpartySource: 'incoming_invoice', description: 'پرداخت نقدي فاکتور ورود ' + sourceId });
 
         if (p.type === 'check') payableDocs.unshift({ id: uid('pch'), customer: invoice.customer, amount: p.amount, checkNo: p.checkNo, bank: p.bankName, dueDate: p.dueDate, dueJalali: p.dueJalali, status: 'open', sourceIncomingInvoice: sourceId });
 
@@ -3653,7 +3654,7 @@ function InvoicePage({ finance, setFinance }) {
 
         if (p.type === 'cash') {
 
-          movements.unshift({ id: uid('mov'), accountId: p.accountId, date: today(), direction: 'in', amount: p.amount, trackingNo: p.trackingNo, sourceInvoice: invoice.number, description: `دريافت نقدي فاکتور ${invoice.number}`, customer: invoice.customer });
+          movements.unshift({ id: uid('mov'), accountId: p.accountId, date: today(), direction: 'in', transactionType: 'customer_receipt', amount: p.amount, trackingNo: p.trackingNo, sourceInvoice: invoice.number, description: `دريافت نقدي فاکتور ${invoice.number}`, payer: invoice.customer, customer: invoice.customer, counterpartyConfirmed: true, counterpartySource: 'sales_invoice' });
 
         }
 
@@ -4120,7 +4121,15 @@ function CostsPage({ finance, setFinance }) {
   const [formMessage, setFormMessage] = useState({ type: '', text: '' });
 
   const groups = finance.smsGroups?.length ? finance.smsGroups : defaultExpenseGroups;
-  const emptyExpenseForm = () => ({ date: today(), operationalDate: '', group: groups[0]?.name || '', subgroup: groups[0]?.subgroups?.[0] || '', amount: '', description: '', accountId: finance.accounts[0]?.id || '', source_type: 'manual', sourceId: '' });
+  const counterparties = [...new Set([
+    ...data.customers.map(x => x.name),
+    ...finance.invoices.map(x => x.customer),
+    ...finance.incomingInvoices.map(x => x.customer),
+    ...(finance.yarnOutInvoices || []).map(x => x.customer),
+    ...(finance.openingBalances || []).map(x => x.customer),
+    ...finance.movements.flatMap(x => [confirmedMovementCounterparty(x), x.counterpartyCandidate]),
+  ].filter(Boolean))];
+  const emptyExpenseForm = () => ({ date: today(), operationalDate: '', group: groups[0]?.name || '', subgroup: groups[0]?.subgroups?.[0] || '', amount: '', description: '', accountId: finance.accounts[0]?.id || '', payer: '', source_type: 'manual', sourceId: '' });
 
   const [form, setForm] = useState(emptyExpenseForm);
 
@@ -4174,6 +4183,8 @@ function CostsPage({ finance, setFinance }) {
 
     if (!form.accountId) missing.push('بانک یا صندوق پرداخت‌کننده');
 
+    if (!form.payer) missing.push('طرف حساب تأییدشده');
+
     if (missing.length) {
 
       setFormMessage({ type: 'error', text: `این موارد را کامل کنید: ${missing.join('، ')}` });
@@ -4186,11 +4197,11 @@ function CostsPage({ finance, setFinance }) {
 
       const previousExpense = editingId ? prev.expenses.find(x => x.id === editingId) : null;
 
-      const expense = { id: editingId || uid('exp'), ...form, amount: Number(form.amount), source: 'مالی' };
+      const expense = { id: editingId || uid('exp'), ...form, amount: Number(form.amount), counterpartyConfirmed: true, counterpartySource: 'expense_form', source: 'مالی' };
 
       const expenses = editingId ? prev.expenses.map(x => x.id === editingId ? expense : x) : [expense, ...prev.expenses];
 
-      const movement = { id: uid('mov'), accountId: form.accountId, date: form.date, direction: 'out', amount: Number(form.amount), description: `هزینه: ${form.group} / ${form.subgroup}`, group: form.group, subgroup: form.subgroup, sourceExpense: expense.id };
+      const movement = confirmMovementCounterparty({ id: uid('mov'), accountId: form.accountId, date: form.date, direction: 'out', transactionType: 'expense', amount: Number(form.amount), description: `هزینه: ${form.group} / ${form.subgroup}`, group: form.group, subgroup: form.subgroup, sourceExpense: expense.id }, form.payer, 'expense_form');
 
       const isExpenseMovement = x => x.sourceExpense === editingId || (
         previousExpense && !x.sourceExpense && x.direction === 'out' && x.accountId === previousExpense.accountId &&
@@ -4232,7 +4243,8 @@ function CostsPage({ finance, setFinance }) {
 
     setEditingId(row.id);
 
-    setForm({ date: row.date, operationalDate: row.operationalDate || '', group: expenseGroup(row), subgroup: expenseSubgroup(row), amount: row.amount, description: row.description || '', accountId: row.accountId || finance.accounts[0]?.id || '', source_type: row.source_type || 'manual', sourceId: row.sourceId || '' });
+    const linkedMovement = finance.movements.find(movement => movement.sourceExpense === row.id);
+    setForm({ date: row.date, operationalDate: row.operationalDate || '', group: expenseGroup(row), subgroup: expenseSubgroup(row), amount: row.amount, description: row.description || '', accountId: row.accountId || finance.accounts[0]?.id || '', payer: confirmedMovementCounterparty(linkedMovement || row), source_type: row.source_type || 'manual', sourceId: row.sourceId || '' });
 
     setFormMessage({ type: 'success', text: 'اطلاعات هزینه برای ویرایش در فرم قرار گرفت.' });
 
@@ -4246,7 +4258,7 @@ function CostsPage({ finance, setFinance }) {
     setForm({
       date: row.date || today(), operationalDate: row.date || '', group: 'عملیاتی', subgroup: row.title || 'سایر', amount: Number(row.amount || 0),
       description: `${row.description || 'هزینه ثبت‌شده در بخش عملیاتی'}${row.doc_no ? ` | سند ${row.doc_no}` : ''}`,
-      accountId: finance.accounts[0]?.id || '', source_type: 'operational_expense', sourceId: row.id,
+      accountId: finance.accounts[0]?.id || '', payer: '', source_type: 'operational_expense', sourceId: row.id,
     });
     setFormMessage({ type: 'success', text: 'اطلاعات هزینه عملیاتی در فرم قرار گرفت؛ حساب پرداخت‌کننده را انتخاب و ثبت را بزنید.' });
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -4292,6 +4304,8 @@ function CostsPage({ finance, setFinance }) {
           <TextInput type="number" placeholder="مبلغ" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} />
 
           <SelectInput value={form.accountId} onChange={e => setForm({ ...form, accountId: e.target.value })}>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput>
+
+          <SelectInput value={form.payer} onChange={e => setForm({ ...form, payer: e.target.value })}><option value="">انتخاب طرف حساب (الزامی)</option>{counterparties.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput>
 
           <PrimaryButton type="submit">{editingId ? 'ذخيره ويرايش' : 'ثبت هزينه'}</PrimaryButton>
 
@@ -4605,7 +4619,7 @@ function BankCashPage({ finance, setFinance }) {
 
   const customers = [...new Set([...data.customers.map(x => x.name), ...finance.invoices.map(x => x.customer), ...finance.incomingInvoices.map(x => x.customer), ...(finance.yarnOutInvoices || []).map(x => x.customer), ...finance.receivableDocs.map(x => x.customer), ...finance.receivableDocs.map(x => x.assignedTo), ...finance.payableDocs.map(x => x.customer), ...(finance.openingBalances || []).map(x => x.customer)].filter(Boolean))];
 
-  const movementRows = finance.movements.map(m => ({ ...m, account: finance.accounts.find(a => a.id === m.accountId)?.name || '-', payer: m.payer || m.customer || '-', directionLabel: m.direction === 'in' ? 'واريز' : 'برداشت' }));
+  const movementRows = finance.movements.map(m => ({ ...m, account: finance.accounts.find(a => a.id === m.accountId)?.name || '-', payer: confirmedMovementCounterparty(m) || (m.transactionType === 'transfer' ? '-' : 'تأیید نشده'), directionLabel: m.direction === 'in' ? 'واريز' : 'برداشت' }));
 
   const filteredRows = movementRows.filter(m => (filters.accountId === 'all' || m.accountId === filters.accountId) && (filters.payer === 'all' || m.payer === filters.payer) && (filters.direction === 'all' || m.direction === filters.direction));
 
@@ -4614,9 +4628,11 @@ function BankCashPage({ finance, setFinance }) {
   const addMovement = e => {
     e.preventDefault();
     if (!movement.accountId || !Number(movement.amount || 0)) return;
-    if ((movement.transactionType === 'customer_receipt' || movement.transactionType === 'supplier_payment') && !movement.payer) { window.alert('طرف حساب را انتخاب کنید.'); return; }
+    if (movementNeedsCounterparty(movement) && !movement.payer) { window.alert('انتخاب و تأیید طرف حساب برای ثبت گردش الزامی است.'); return; }
     if (movement.transactionType === 'transfer' && (!movement.counterAccountId || movement.counterAccountId === movement.accountId)) { window.alert('برای انتقال، حساب مقصد متفاوت را انتخاب کنید.'); return; }
-    setFinance(prev => ({ ...prev, movements: [{ id: uid('mov'), ...movement, amount: Number(movement.amount) }, ...prev.movements] }));
+    const base = { id: uid('mov'), ...movement, amount: Number(movement.amount) };
+    const next = movementNeedsCounterparty(base) ? confirmMovementCounterparty(base, movement.payer, 'bank_form') : base;
+    setFinance(prev => ({ ...prev, movements: [next, ...prev.movements] }));
     setMovement({ ...movement, amount: '', payer: '', trackingNo: '', description: '' });
   };
 
@@ -4651,7 +4667,15 @@ function ProfessionalBankCashPage({ finance, setFinance }) {
   const [account, setAccount] = useState({ name: '', type: 'بانک', opening: 0 });
   const [movement, setMovement] = useState({ accountId: finance.accounts[0]?.id || '', counterAccountId: '', date: today(), direction: 'in', transactionType: 'customer_receipt', amount: '', payer: '', trackingNo: '', description: '' });
   const [filters, setFilters] = useState({ accountId: 'all', reconciled: 'all' });
-  const customers = [...new Set([...data.customers.map(x => x.name), ...finance.invoices.map(x => x.customer), ...finance.incomingInvoices.map(x => x.customer), ...(finance.yarnOutInvoices || []).map(x => x.customer), ...(finance.openingBalances || []).map(x => x.customer)].filter(Boolean))];
+  const [pendingCounterparties, setPendingCounterparties] = useState({});
+  const customers = [...new Set([
+    ...data.customers.map(x => x.name),
+    ...finance.invoices.map(x => x.customer),
+    ...finance.incomingInvoices.map(x => x.customer),
+    ...(finance.yarnOutInvoices || []).map(x => x.customer),
+    ...(finance.openingBalances || []).map(x => x.customer),
+    ...finance.movements.flatMap(x => [confirmedMovementCounterparty(x), x.counterpartyCandidate, x.payer, x.customer]),
+  ].filter(Boolean))];
 
   const addAccount = e => {
     e.preventDefault();
@@ -4663,19 +4687,34 @@ function ProfessionalBankCashPage({ finance, setFinance }) {
   const addMovement = e => {
     e.preventDefault();
     if (!movement.accountId || !Number(movement.amount || 0)) return;
-    if (['customer_receipt', 'supplier_payment'].includes(movement.transactionType) && !movement.payer) { window.alert('طرف حساب را انتخاب کنید.'); return; }
+    if (movementNeedsCounterparty(movement) && !movement.payer) { window.alert('انتخاب و تأیید طرف حساب برای ثبت گردش الزامی است.'); return; }
     if (movement.transactionType === 'transfer' && (!movement.counterAccountId || movement.counterAccountId === movement.accountId)) { window.alert('حساب مقصد انتقال باید انتخاب و با حساب مبدأ متفاوت باشد.'); return; }
-    setFinance(prev => ({ ...prev, movements: [{ id: uid('mov'), ...movement, amount: Number(movement.amount), reconciled: false }, ...prev.movements] }));
+    const base = { id: uid('mov'), ...movement, amount: Number(movement.amount), reconciled: false };
+    const next = movementNeedsCounterparty(base)
+      ? { ...confirmMovementCounterparty(base, movement.payer, 'bank_form'), counterpartyConfirmedAt: today() }
+      : base;
+    setFinance(prev => ({ ...prev, movements: [next, ...prev.movements] }));
     setMovement(prev => ({ ...prev, amount: '', payer: '', trackingNo: '', description: '', counterAccountId: '' }));
   };
 
-  const setReconciled = id => setFinance(prev => ({ ...prev, movements: prev.movements.map(row => row.id === id ? { ...row, reconciled: !row.reconciled, reconciledAt: !row.reconciled ? today() : '' } : row) }));
+  const confirmCounterparty = id => {
+    const selected = String(pendingCounterparties[id] || '').trim();
+    if (!selected) { window.alert('ابتدا طرف حساب را انتخاب کنید.'); return; }
+    setFinance(prev => ({ ...prev, movements: prev.movements.map(row => row.id === id ? { ...confirmMovementCounterparty(row, selected), counterpartyConfirmedAt: today() } : row) }));
+    setPendingCounterparties(prev => { const next = { ...prev }; delete next[id]; return next; });
+  };
+  const reopenCounterparty = id => setFinance(prev => ({ ...prev, movements: prev.movements.map(row => row.id === id ? { ...row, counterpartyCandidate: confirmedMovementCounterparty(row), payer: '', customer: '', counterpartyConfirmed: false, counterpartyConfirmedAt: '', reconciled: false, reconciledAt: '' } : row) }));
+  const setReconciled = id => {
+    const target = finance.movements.find(row => row.id === id);
+    if (target && movementNeedsCounterparty(target) && !confirmedMovementCounterparty(target)) { window.alert('قبل از تطبیق، طرف حساب را انتخاب و تأیید کنید.'); return; }
+    setFinance(prev => ({ ...prev, movements: prev.movements.map(row => row.id === id ? { ...row, reconciled: !row.reconciled, reconciledAt: !row.reconciled ? today() : '' } : row) }));
+  };
   const rows = finance.movements
-    .map(row => ({ ...row, accountName: finance.accounts.find(a => a.id === row.accountId)?.name || '-', counterAccountName: finance.accounts.find(a => a.id === row.counterAccountId)?.name || '-' }))
+    .map(row => ({ ...row, confirmedCounterparty: confirmedMovementCounterparty(row), accountName: finance.accounts.find(a => a.id === row.accountId)?.name || '-', counterAccountName: finance.accounts.find(a => a.id === row.counterAccountId)?.name || '-' }))
     .filter(row => (filters.accountId === 'all' || row.accountId === filters.accountId) && (filters.reconciled === 'all' || String(Boolean(row.reconciled)) === filters.reconciled));
   const typeLabels = { customer_receipt: 'دریافت از مشتری', supplier_payment: 'پرداخت به فروشنده', transfer: 'انتقال بین حساب‌ها', expense: 'پرداخت هزینه', other_income: 'سایر درآمد', capital: 'آورده/برداشت سرمایه' };
   const changeType = transactionType => setMovement(prev => ({ ...prev, transactionType, direction: ['supplier_payment', 'expense'].includes(transactionType) ? 'out' : 'in', payer: '', counterAccountId: '' }));
-  const printMovements = () => printSection('صورت گردش بانک و صندوق', `<table><thead><tr><th>تاریخ</th><th>حساب</th><th>ماهیت</th><th>طرف حساب</th><th>مبلغ</th><th>رهگیری</th><th>تطبیق</th></tr></thead><tbody>${rows.map(row => `<tr><td>${toJalali(row.date)}</td><td>${row.accountName}</td><td>${typeLabels[row.transactionType] || row.direction}</td><td>${row.payer || '-'}</td><td>${money(row.amount)}</td><td>${row.trackingNo || '-'}</td><td>${row.reconciled ? 'تطبیق شد' : 'باز'}</td></tr>`).join('')}</tbody></table>`);
+  const printMovements = () => printSection('صورت گردش بانک و صندوق', `<table><thead><tr><th>تاریخ</th><th>حساب</th><th>ماهیت</th><th>طرف حساب</th><th>مبلغ</th><th>رهگیری</th><th>تطبیق</th></tr></thead><tbody>${rows.map(row => `<tr><td>${toJalali(row.date)}</td><td>${row.accountName}</td><td>${typeLabels[row.transactionType] || row.direction}</td><td>${row.transactionType === 'transfer' ? '-' : row.confirmedCounterparty || 'تأیید نشده'}</td><td>${money(row.amount)}</td><td>${row.trackingNo || '-'}</td><td>${row.reconciled ? 'تطبیق شد' : 'باز'}</td></tr>`).join('')}</tbody></table>`);
 
   return <div className="space-y-5">
     <div className="grid grid-cols-4 gap-4">{finance.accounts.map(a => <Field key={a.id} label={`${a.type}: ${a.name}`} value={`${money(accountBalance(a, finance.movements))} تومان`} tone={accountBalance(a, finance.movements) >= 0 ? 'text-emerald-300' : 'text-red-300'} />)}</div>
@@ -4683,15 +4722,15 @@ function ProfessionalBankCashPage({ finance, setFinance }) {
     <Card><h3 className="mb-4 font-bold">ثبت دریافت، پرداخت یا انتقال</h3><form className="grid grid-cols-4 gap-3" onSubmit={addMovement}>
       <SelectInput value={movement.transactionType} onChange={e => changeType(e.target.value)}><option value="customer_receipt">دریافت از مشتری</option><option value="supplier_payment">پرداخت به فروشنده</option><option value="transfer">انتقال بین حساب‌ها</option><option value="expense">پرداخت مستقیم هزینه</option><option value="other_income">سایر درآمد</option><option value="capital">آورده/برداشت سرمایه</option></SelectInput>
       <SelectInput value={movement.accountId} onChange={e => setMovement({ ...movement, accountId: e.target.value })}><option value="">حساب مبدأ/مقصد</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput>
-      {movement.transactionType === 'transfer' ? <SelectInput value={movement.counterAccountId} onChange={e => setMovement({ ...movement, counterAccountId: e.target.value })}><option value="">حساب مقصد انتقال</option>{finance.accounts.filter(a => a.id !== movement.accountId).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput> : <SelectInput value={movement.payer} onChange={e => setMovement({ ...movement, payer: e.target.value })}><option value="">طرف حساب (در صورت نیاز)</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput>}
+      {movement.transactionType === 'transfer' ? <SelectInput value={movement.counterAccountId} onChange={e => setMovement({ ...movement, counterAccountId: e.target.value })}><option value="">حساب مقصد انتقال</option>{finance.accounts.filter(a => a.id !== movement.accountId).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput> : <SelectInput value={movement.payer} onChange={e => setMovement({ ...movement, payer: e.target.value })}><option value="">طرف حساب (الزامی)</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput>}
       <DateInput value={movement.date} onChange={e => setMovement({ ...movement, date: e.target.value })} />
       <TextInput type="number" min="1" placeholder="مبلغ" value={movement.amount} onChange={e => setMovement({ ...movement, amount: e.target.value })} />
       <TextInput placeholder="شماره رهگیری" value={movement.trackingNo} onChange={e => setMovement({ ...movement, trackingNo: e.target.value })} />
       <TextInput placeholder="شرح" value={movement.description} onChange={e => setMovement({ ...movement, description: e.target.value })} />
       <PrimaryButton type="submit">ثبت گردش</PrimaryButton>
-    </form><div className="mt-3 rounded-md border border-blue-800 bg-blue-950 p-3 text-xs text-blue-100">هر گردش با ماهیت حسابداری مشخص ثبت می‌شود؛ دریافت مشتری مانده او را کاهش می‌دهد، پرداخت فروشنده بدهی را تسویه می‌کند و انتقال بین دو حساب روی سود و زیان اثر ندارد.</div></Card>
-    <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گردش و مغایرت‌گیری بانک و صندوق</h3><div className="flex gap-2"><SelectInput value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })}><option value="all">همه حساب‌ها</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><SelectInput value={filters.reconciled} onChange={e => setFilters({ ...filters, reconciled: e.target.value })}><option value="all">همه وضعیت‌ها</option><option value="false">تطبیق‌نشده</option><option value="true">تطبیق‌شده</option></SelectInput><PrimaryButton onClick={printMovements}>چاپ صورت حساب</PrimaryButton><PrimaryButton onClick={() => exportExcel('گردش بانک و صندوق', rows.map(row => ({ ...row, transaction_text: typeLabels[row.transactionType] || row.direction, reconciled_text: row.reconciled ? 'تطبیق شد' : 'باز' })), [['date','تاریخ'],['accountName','حساب'],['transaction_text','ماهیت'],['payer','طرف حساب'],['amount','مبلغ'],['trackingNo','رهگیری'],['reconciled_text','تطبیق']])}>خروجی اکسل</PrimaryButton></div></div>
-      <div className="overflow-auto"><table className="w-full text-right text-sm"><thead><tr className="border-b border-slate-700 text-slate-300"><th className="p-3">تاریخ</th><th>حساب</th><th>ماهیت</th><th>طرف حساب</th><th>مبلغ</th><th>رهگیری</th><th>وضعیت تطبیق</th></tr></thead><tbody>{rows.map(row => <tr key={row.id} className="border-b border-slate-800"><td className="p-3">{toJalali(row.date)}</td><td>{row.accountName}{row.transactionType === 'transfer' ? ` ← ${row.counterAccountName}` : ''}</td><td>{typeLabels[row.transactionType] || row.direction}</td><td>{row.payer || '-'}</td><td>{money(row.amount)}</td><td>{row.trackingNo || '-'}</td><td><GhostButton onClick={() => setReconciled(row.id)}>{row.reconciled ? 'تطبیق شده' : 'علامت تطبیق'}</GhostButton></td></tr>)}</tbody></table></div>
+    </form><div className="mt-3 rounded-md border border-blue-800 bg-blue-950 p-3 text-xs text-blue-100">هر گردش غیرانتقالی فقط پس از انتخاب صریح طرف حساب ثبت می‌شود. نام‌های قدیمی یا دریافتی از حسابیار تا زمان تأیید کاربر در گزارش و مانده اشخاص اعمال نمی‌شوند.</div></Card>
+    <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گردش و مغایرت‌گیری بانک و صندوق</h3><div className="flex gap-2"><SelectInput value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })}><option value="all">همه حساب‌ها</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><SelectInput value={filters.reconciled} onChange={e => setFilters({ ...filters, reconciled: e.target.value })}><option value="all">همه وضعیت‌ها</option><option value="false">تطبیق‌نشده</option><option value="true">تطبیق‌شده</option></SelectInput><PrimaryButton onClick={printMovements}>چاپ صورت حساب</PrimaryButton><PrimaryButton onClick={() => exportExcel('گردش بانک و صندوق', rows.map(row => ({ ...row, counterparty_text: row.transactionType === 'transfer' ? '-' : row.confirmedCounterparty || 'تأیید نشده', transaction_text: typeLabels[row.transactionType] || row.direction, reconciled_text: row.reconciled ? 'تطبیق شد' : 'باز' })), [['date','تاریخ'],['accountName','حساب'],['transaction_text','ماهیت'],['counterparty_text','طرف حساب'],['amount','مبلغ'],['trackingNo','رهگیری'],['reconciled_text','تطبیق']])}>خروجی اکسل</PrimaryButton></div></div>
+      <div className="overflow-auto"><table className="w-full text-right text-sm"><thead><tr className="border-b border-slate-700 text-slate-300"><th className="p-3">تاریخ</th><th>حساب</th><th>ماهیت</th><th>طرف حساب</th><th>مبلغ</th><th>رهگیری</th><th>وضعیت تطبیق</th></tr></thead><tbody>{rows.map(row => <tr key={row.id} className="border-b border-slate-800"><td className="p-3">{toJalali(row.date)}</td><td>{row.accountName}{row.transactionType === 'transfer' ? ` ← ${row.counterAccountName}` : ''}</td><td>{typeLabels[row.transactionType] || row.direction}</td><td className="min-w-[280px]">{row.transactionType === 'transfer' ? '-' : row.confirmedCounterparty ? <div className="flex items-center gap-2"><span>{row.confirmedCounterparty}</span><GhostButton onClick={() => reopenCounterparty(row.id)}>اصلاح</GhostButton></div> : <div className="flex flex-wrap items-center gap-2"><span className="text-amber-300">تأیید نشده</span><SelectInput value={pendingCounterparties[row.id] || ''} onChange={e => setPendingCounterparties(prev => ({ ...prev, [row.id]: e.target.value }))}><option value="">انتخاب طرف حساب</option>{customers.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><PrimaryButton disabled={!pendingCounterparties[row.id]} onClick={() => confirmCounterparty(row.id)}>تأیید</PrimaryButton></div>}</td><td>{money(row.amount)}</td><td>{row.trackingNo || '-'}</td><td><GhostButton onClick={() => setReconciled(row.id)} disabled={movementNeedsCounterparty(row) && !row.confirmedCounterparty}>{row.reconciled ? 'تطبیق شده' : 'علامت تطبیق'}</GhostButton></td></tr>)}</tbody></table></div>
     </Card>
   </div>;
 }
@@ -4778,7 +4817,7 @@ function ReportsPage({ finance }) {
 
     ...finance.incomingInvoices.map(row => ({ type: row.nonFinancial ? 'فاکتور ورود اماني' : 'فاکتور ورود', invoice_no: row.id, date: row.date, customer: row.customer, item: row.itemName, pricing_basis: row.inventoryType === 'yarn' ? 'نخ' : row.inventoryType === 'fabric' ? 'پارچه' : 'ساير', quantity: row.quantity, unit_price: row.unitPrice, total: row.nonFinancial ? 0 : row.amount, paid: row.nonFinancial ? 0 : (row.payments || []).filter(p => p.type !== 'credit').reduce((s, p) => s + Number(p.amount || 0), 0), debt: row.nonFinancial ? 0 : -(row.payments || []).filter(p => p.type === 'credit').reduce((s, p) => s + Number(p.amount || 0), 0), inventory_value: row.nonFinancial ? row.amount : '' })),
 
-    ...finance.movements.map(row => ({ type: 'گردش بانک/صندوق', invoice_no: row.sourceIncomingInvoice || row.sourceInvoice || row.id, date: row.date, customer: row.payer || row.customer || '-', item: row.description || '-', pricing_basis: row.direction === 'in' ? 'واريز' : 'برداشت', quantity: '', unit_price: '', total: row.direction === 'in' ? Number(row.amount || 0) : -Number(row.amount || 0), paid: Number(row.amount || 0), debt: 0 })),
+    ...finance.movements.map(row => ({ type: 'گردش بانک/صندوق', invoice_no: row.sourceIncomingInvoice || row.sourceInvoice || row.id, date: row.date, customer: confirmedMovementCounterparty(row) || (row.transactionType === 'transfer' ? '-' : 'تأیید نشده'), item: row.description || '-', pricing_basis: row.direction === 'in' ? 'واريز' : 'برداشت', quantity: '', unit_price: '', total: row.direction === 'in' ? Number(row.amount || 0) : -Number(row.amount || 0), paid: Number(row.amount || 0), debt: 0 })),
 
     ...finance.receivableDocs.map(row => ({ type: row.assignedTo ? 'واگذاري چک دريافتي' : 'چک دريافتي', invoice_no: row.checkNo || row.id, date: row.assignedAt || row.dueDate || '', customer: row.assignedTo || row.customer || '-', item: row.customer ? 'از ' + row.customer : '-', pricing_basis: statusLabel(row.status), quantity: '', unit_price: '', total: Number(row.amount || 0), paid: row.status === 'cleared' ? Number(row.amount || 0) : 0, debt: row.assignedTo ? Number(row.amount || 0) : 0 })),
 
@@ -4888,7 +4927,7 @@ function CreditPage({ finance }) {
 
   const { data, loading, error } = useOperationalData();
 
-  const customers = [...new Set([...data.invoices.map(x => x.mosh_f_khor), ...finance.invoices.map(x => x.customer), ...finance.incomingInvoices.map(x => x.customer), ...(finance.yarnOutInvoices || []).map(x => x.customer), ...finance.receivableDocs.map(x => x.customer), ...finance.receivableDocs.map(x => x.assignedTo), ...finance.payableDocs.map(x => x.customer), ...finance.movements.map(x => x.payer || x.customer), ...(finance.openingBalances || []).map(x => x.customer)].filter(Boolean))];
+  const customers = [...new Set([...data.invoices.map(x => x.mosh_f_khor), ...finance.invoices.map(x => x.customer), ...finance.incomingInvoices.map(x => x.customer), ...(finance.yarnOutInvoices || []).map(x => x.customer), ...finance.receivableDocs.map(x => x.customer), ...finance.receivableDocs.map(x => x.assignedTo), ...finance.payableDocs.map(x => x.customer), ...finance.movements.map(confirmedMovementCounterparty), ...(finance.openingBalances || []).map(x => x.customer)].filter(Boolean))];
 
   const [selected, setSelected] = useState('');
 
