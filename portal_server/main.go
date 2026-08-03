@@ -253,6 +253,17 @@ func fullTrialDaysRemaining(record projectAccess, now time.Time) int {
 	return days
 }
 
+func (a *portalApp) startFullTrialOnFirstUse(record projectAccess) (projectAccess, error) {
+	if record.ProjectKey != "textile-erp" || effectiveAccessRole(record) != "owner" || !record.TrialEndsAt.IsZero() {
+		return record, nil
+	}
+	started, _, err := a.grantFullTrial(record.ID, 30)
+	if err != nil {
+		return record, err
+	}
+	return started, nil
+}
+
 func effectiveCanManageTeam(record projectAccess) bool {
 	if record.ProjectKey != "textile-erp" {
 		return false
@@ -619,6 +630,13 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := a.accessRecordFromRequest(r)
 	hasAccess := err == nil && record.ProjectKey == "textile-erp"
+	if hasAccess {
+		if started, startErr := a.startFullTrialOnFirstUse(record); startErr != nil {
+			log.Printf("automatic full trial activation failed for access %d: %v", record.ID, startErr)
+		} else {
+			record = started
+		}
+	}
 	cardParts := make([]string, 0, 6)
 	statusParts := []string{
 		`<div class="pill">یک نام کاربری و رمز برای همه بخش‌های مجاز</div>`,
@@ -748,6 +766,9 @@ func (a *portalApp) customerLogin(w http.ResponseWriter, r *http.Request) {
 			a.renderCustomerLogin(w, "حساب مدیر محلی آماده نشد. چند لحظه بعد دوباره تلاش کنید.", nextPath)
 			return
 		}
+		if record, err = a.startFullTrialOnFirstUse(record); err != nil {
+			log.Printf("automatic local owner trial activation failed: %v", err)
+		}
 		a.setPortalAccessCookie(w, r, record.AccessToken, record.ExpiresAt)
 		_ = a.markAccessUsed(record.ID)
 		if nextPath != "" {
@@ -778,6 +799,9 @@ func (a *portalApp) customerLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		if record.MustChangePassword {
 			record, _ = a.setAccessMustChangePassword(record.ID, false)
+		}
+		if record, err = a.startFullTrialOnFirstUse(record); err != nil {
+			log.Printf("automatic full trial activation failed for access %d: %v", record.ID, err)
 		}
 		a.setPortalAccessCookie(w, r, record.AccessToken, record.ExpiresAt)
 		_ = a.markAccessUsed(record.ID)
