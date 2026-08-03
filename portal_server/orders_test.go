@@ -189,7 +189,7 @@ func TestApproveAddOnOrderUpgradesExistingCustomerWithoutDuplicate(t *testing.T)
 
 	existing, _, err := app.createManagedAccess(
 		"textile-erp", "پرگل", "مدیر پرگل", "paregol-manager", "Secure123!", 0,
-		time.Now().Add(60*24*time.Hour), "مشتری موجود", "owner", financialPermissionCatalog,
+		time.Now().Add(60*24*time.Hour), time.Time{}, "مشتری موجود", "owner", financialPermissionCatalog,
 		true, false, true, true, false,
 	)
 	if err != nil {
@@ -266,7 +266,7 @@ func TestPurchasePlansExposeThreeIndependentProducts(t *testing.T) {
 	rec := httptest.NewRecorder()
 	(&portalApp{publicBase: "https://textile.example.test"}).purchasePlans(rec, req)
 	body := rec.Body.String()
-	for _, text := range []string{"بخش مالی", "بخش عملیاتی", "راندمان سالن بافت", "مرکز فرمان مدیر نساجی رایگان است"} {
+	for _, text := range []string{"بخش مالی", "بخش عملیاتی", "راندمان سالن بافت", "مرکز فرمان مدیر نساجی رایگان است", "۳۰ روز هر سه بخش را رایگان آزمایش کنید", "شروع تست رایگان ۳۰روزه هر سه بخش"} {
 		if !strings.Contains(body, text) {
 			t.Fatalf("plans page is missing %q", text)
 		}
@@ -282,6 +282,157 @@ func TestPurchasePlansExposeThreeIndependentProducts(t *testing.T) {
 	(&portalApp{}).plansSocialImage(imageRec, imageReq)
 	if imageRec.Code != http.StatusOK || imageRec.Header().Get("Content-Type") != "image/png" || imageRec.Body.Len() < 100000 {
 		t.Fatalf("social image was not served correctly: status=%d bytes=%d", imageRec.Code, imageRec.Body.Len())
+	}
+}
+
+func TestFullTrialTemporarilyEnablesAllThreeProducts(t *testing.T) {
+	now := time.Now()
+	record := projectAccess{
+		ProjectKey:  "textile-erp",
+		TrialEndsAt: now.Add(30 * 24 * time.Hour),
+	}
+	if !effectiveAllowFinancial(record) || !effectiveAllowOperational(record) || !effectiveAllowWeaving(record) {
+		t.Fatalf("active full trial did not enable all products: %#v", record)
+	}
+	if days := fullTrialDaysRemaining(record, now); days != 30 {
+		t.Fatalf("expected 30 trial days remaining, got %d", days)
+	}
+	record.TrialEndsAt = now.Add(-time.Minute)
+	if effectiveAllowFinancial(record) || effectiveAllowOperational(record) || effectiveAllowWeaving(record) {
+		t.Fatal("expired trial still grants product access")
+	}
+}
+
+func TestTrialThenPurchaseUpgradesSameAccountWithoutMakingTrialProductsPermanent(t *testing.T) {
+	app := newPurchaseOrderTestApp(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/portal/provision":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "company_id": 99})
+		case "/api/internal/provision":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tenantId": "33333333-3333-4333-8333-333333333333"})
+		case "/api/internal/users/sync":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app.operationalAPI = server.URL
+	app.operationalSessionSecret = "operational-trial-secret"
+	app.weavingAppURL = server.URL
+	app.weavingMonitorToken = "weaving-trial-secret-that-is-long-enough"
+
+	trialOrder, err := app.createPurchaseOrder(purchaseOrderRequest{
+		CompanyName: "بافت آزمایشی", ContactName: "مدیر آزمایشی", Mobile: "09120000000",
+		Email: "trial@example.com", IsTrial: true, EmployeeCount: 3, MachineCount: 12, UnitCount: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !trialOrder.IsTrial || trialOrder.BillingCycle != "trial" || !trialOrder.AllowFinancial || !trialOrder.AllowOperational || !trialOrder.AllowWeaving {
+		t.Fatalf("trial request was not normalized to all products: %#v", trialOrder)
+	}
+	_, trialAccess, _, err := app.approvePurchaseOrder(trialOrder.ID, "فعال‌سازی تست")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trialAccess.AllowFinancial || trialAccess.AllowOperational || trialAccess.AllowWeaving {
+		t.Fatalf("trial products were incorrectly stored as purchased: %#v", trialAccess)
+	}
+	if !fullTrialActive(trialAccess) || !effectiveAllowFinancial(trialAccess) || !effectiveAllowOperational(trialAccess) || !effectiveAllowWeaving(trialAccess) {
+		t.Fatalf("approved trial does not effectively expose all products: %#v", trialAccess)
+	}
+
+	purchaseOrder, err := app.createPurchaseOrder(purchaseOrderRequest{
+		CompanyName: "بافت آزمایشی", ContactName: "مدیر آزمایشی", Mobile: "09120000000",
+		Email: "trial@example.com", AllowWeaving: true, EmployeeCount: 3, MachineCount: 12, UnitCount: 1,
+		BillingCycle: "annual",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if purchaseOrder.RequesterAccessID != trialAccess.ID {
+		t.Fatalf("purchase was not linked to the existing trial account: %#v", purchaseOrder)
+	}
+	_, upgraded, _, err := app.approvePurchaseOrder(purchaseOrder.ID, "خرید راندمان سالن")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upgraded.ID != trialAccess.ID || upgraded.AllowFinancial || upgraded.AllowOperational || !upgraded.AllowWeaving {
+		t.Fatalf("purchase did not preserve one account and only the paid product: %#v", upgraded)
+	}
+	upgraded.TrialEndsAt = time.Now().Add(-time.Minute)
+	if effectiveAllowFinancial(upgraded) || effectiveAllowOperational(upgraded) || !effectiveAllowWeaving(upgraded) {
+		t.Fatalf("trial products remained permanent after trial expiry: %#v", upgraded)
+	}
+	items, err := app.listAccesses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("trial-to-purchase flow created duplicate accounts: %#v", items)
+	}
+}
+
+func TestTrialLandingShowsWeavingAndCountdown(t *testing.T) {
+	app := newPurchaseOrderTestApp(t)
+	record := projectAccess{
+		ID: 1, ProjectKey: "textile-erp", CompanyName: "بافت آزمایشی", ContactName: "مدیر",
+		Username: "trial-manager", AccessToken: "trial-landing-token", IsActive: true,
+		TrialEndsAt: time.Now().Add(30 * 24 * time.Hour), ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
+	}
+	if err := writeAccesses(app.accessFile, []projectAccess{record}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: accessCookieName, Value: record.AccessToken})
+	rec := httptest.NewRecorder()
+	app.landing(rec, req)
+	body := rec.Body.String()
+	for _, text := range []string{"ورود به بخش مالی", "ورود به بخش عملیاتی", "ورود به راندمان سالن بافت", "تست رایگان هر سه بخش", "روز باقی‌مانده"} {
+		if !strings.Contains(body, text) {
+			t.Fatalf("trial landing is missing %q", text)
+		}
+	}
+}
+
+func TestGrantFullTrialPreservesPurchasedModules(t *testing.T) {
+	app := newPurchaseOrderTestApp(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/portal/provision":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "company_id": 101})
+		case "/api/internal/provision":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tenantId": "44444444-4444-4444-8444-444444444444"})
+		case "/api/internal/users/sync":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app.operationalAPI = server.URL
+	app.operationalSessionSecret = "operational-admin-trial-secret"
+	app.weavingAppURL = server.URL
+	app.weavingMonitorToken = "weaving-admin-trial-secret-long-enough"
+	owner, _, err := app.createManagedAccess(
+		"textile-erp", "بافت مدیر", "مدیر", "owner-trial", "Secure123!", 0,
+		time.Now().Add(365*24*time.Hour), time.Time{}, "خرید مالی", "owner", financialPermissionCatalog,
+		true, false, true, false, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	granted, _, err := app.grantFullTrial(owner.ID, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !granted.AllowFinancial || granted.AllowOperational || granted.AllowWeaving {
+		t.Fatalf("granting a trial changed paid entitlements: %#v", granted)
+	}
+	if !fullTrialActive(granted) || !effectiveAllowOperational(granted) || !effectiveAllowWeaving(granted) || granted.WeavingTenantID == "" {
+		t.Fatalf("granting a trial did not provision all temporary products: %#v", granted)
 	}
 }
 

@@ -35,6 +35,7 @@ const (
 	financialAccessCookieName   = "erp_financial_access"
 	operationalAccessCookieName = "erp_operational_access"
 	timeLayout                  = "2006-01-02 15:04"
+	fullTrialDays               = 30
 )
 
 type portalApp struct {
@@ -90,10 +91,12 @@ type projectAccess struct {
 	CanManageTeam      bool      `json:"can_manage_team,omitempty"`
 	RequiresSetup      bool      `json:"requires_setup,omitempty"`
 	MustChangePassword bool      `json:"must_change_password,omitempty"`
+	ModuleAccessSet    bool      `json:"module_access_set,omitempty"`
 	AllowFinancial     bool      `json:"allow_financial,omitempty"`
 	AllowOperational   bool      `json:"allow_operational,omitempty"`
 	AllowWeaving       bool      `json:"allow_weaving,omitempty"`
 	WeavingTenantID    string    `json:"weaving_tenant_id,omitempty"`
+	TrialEndsAt        time.Time `json:"trial_ends_at,omitempty"`
 	ExpiresAt          time.Time `json:"expires_at"`
 	AccessToken        string    `json:"access_token"`
 	PasswordHash       string    `json:"password_hash,omitempty"`
@@ -213,18 +216,41 @@ func effectiveAllowFinancial(record projectAccess) bool {
 	if record.ProjectKey != "textile-erp" {
 		return false
 	}
-	return record.AllowFinancial
+	return record.AllowFinancial || fullTrialActive(record)
 }
 
 func effectiveAllowOperational(record projectAccess) bool {
 	if record.ProjectKey != "textile-erp" {
 		return false
 	}
-	return record.AllowOperational
+	return record.AllowOperational || fullTrialActive(record)
 }
 
 func effectiveAllowWeaving(record projectAccess) bool {
-	return record.ProjectKey == "textile-erp" && record.AllowWeaving
+	return record.ProjectKey == "textile-erp" && (record.AllowWeaving || fullTrialActive(record))
+}
+
+func fullTrialActive(record projectAccess) bool {
+	return fullTrialActiveAt(record, time.Now())
+}
+
+func fullTrialActiveAt(record projectAccess, now time.Time) bool {
+	return record.ProjectKey == "textile-erp" && !record.TrialEndsAt.IsZero() && now.Before(record.TrialEndsAt)
+}
+
+func fullTrialDaysRemaining(record projectAccess, now time.Time) int {
+	if !fullTrialActiveAt(record, now) {
+		return 0
+	}
+	remaining := record.TrialEndsAt.Sub(now)
+	days := int(remaining / (24 * time.Hour))
+	if remaining%(24*time.Hour) != 0 {
+		days++
+	}
+	if days < 1 {
+		return 1
+	}
+	return days
 }
 
 func effectiveCanManageTeam(record projectAccess) bool {
@@ -596,12 +622,19 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
 	cardParts := make([]string, 0, 6)
 	statusParts := []string{
 		`<div class="pill">یک نام کاربری و رمز برای همه بخش‌های مجاز</div>`,
-		`<div class="pill">نمایش فقط بخش‌های خریداری‌شده</div>`,
+		`<div class="pill">خرید مستقل هر بخش پس از تست رایگان</div>`,
 	}
 	title := "درگاه دسترسی ERP نساجی"
 	hint := "یک‌بار وارد شوید؛ سپس بخش‌های مجاز بدون درخواست دوبارهٔ رمز باز می‌شوند."
 	foot := "مدیر شرکت می‌تواند برای هر کارمند، از میان بخش‌های خریداری‌شده دسترسی مناسب تعیین کند."
 	if hasAccess {
+		if fullTrialActive(record) {
+			days := fullTrialDaysRemaining(record, time.Now())
+			statusParts = append(statusParts,
+				`<div class="pill trial-pill">تست رایگان هر سه بخش · `+strconv.Itoa(days)+` روز باقی‌مانده</div>`,
+				`<div class="pill">پایان تست: `+html.EscapeString(record.TrialEndsAt.Local().Format(timeLayout))+`</div>`,
+			)
+		}
 		if effectiveAllowFinancial(record) {
 			cardParts = append(cardParts, `<a class="card" href="/module-login?module=financial">ورود به بخش مالی</a>`, `<a class="card mobile" href="/HesabYar.apk?v=1.0.2-production-20260802">دانلود اپ حسابیار</a>`)
 		}
@@ -653,6 +686,7 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
     a:hover{filter:brightness(1.08)}
     .status{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:22px;color:#7a6355;font-size:12px}
     .pill{border:1px solid #ddc2a5;background:#f4e7d6;border-radius:999px;padding:9px 12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+	.trial-pill{background:#ecfdf5;border-color:#6ee7b7;color:#065f46;font-weight:bold}
     .foot{margin-top:20px;color:#7a6355;font-size:13px;line-height:1.9}
     @media(max-width:860px){.grid,.status{grid-template-columns:1fr}h1{font-size:24px}}
   </style>
@@ -1400,6 +1434,9 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
 	        allow_weaving: typeof row.allow_weaving === 'boolean' ? row.allow_weaving : !!row.allowWeaving,
 	        module_access_label: row.module_access_label || row.moduleAccessLabel || '',
         requires_setup: typeof row.requires_setup === 'boolean' ? row.requires_setup : !!row.requiresSetup,
+		trial_active: typeof row.trial_active === 'boolean' ? row.trial_active : !!row.trialActive,
+		trial_ends_at: row.trial_ends_at || row.trialEndsAt || '',
+		trial_days_remaining: Number(row.trial_days_remaining || row.trialDaysRemaining || 0),
         expires_at: row.expires_at || row.expiresAt || '',
         access_link: row.access_link || row.accessLink || '',
         access_token: row.access_token || row.accessToken || '',
@@ -1481,7 +1518,7 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
         return '<tr>'
           + '<td>' + row.project_label + '</td>'
           + '<td><strong>' + row.company_name + '</strong><div class="muted">' + (row.contact_name || '-') + '</div></td>'
-	          + '<td>' + row.username + '<div class="muted">' + row.module_access_label + '</div></td>'
+	          + '<td>' + row.username + '<div class="muted">' + row.module_access_label + '</div>' + (row.trial_active ? '<span class="badge active">تست کامل · '+row.trial_days_remaining+' روز</span>' : '') + '</td>'
           + '<td>' + formatDate(row.expires_at) + '</td>'
           + '<td>' + badge(row.is_active, row.is_expired) + '</td>'
           + '<td><div class="table-actions">'
@@ -1490,6 +1527,7 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
           + '</div></td>'
           + '<td><div class="table-actions">'
           + '<button type="button" data-edit="' + row.id + '">ویرایش</button>'
+		  + (row.project_key === 'textile-erp' && row.access_role === 'owner' ? '<button class="warn" type="button" data-trial="' + row.id + '">' + (row.trial_active ? 'تمدید تست ۳۰روزه' : 'فعال‌سازی تست ۳۰روزه') + '</button>' : '')
           + '<button type="button" data-toggle="' + row.id + '">' + (row.is_active ? 'غیرفعال‌کردن' : 'فعال‌کردن') + '</button>'
           + '<button class="danger" type="button" data-delete="' + row.id + '">حذف</button>'
           + '</div></td>'
@@ -1643,6 +1681,14 @@ func (a *portalApp) adminPanel(w http.ResponseWriter, r *http.Request) {
         await loadRows();
         return;
       }
+	  const trial = event.target.closest('[data-trial]');
+	  if (trial) {
+		if (!confirm('تست رایگان هر سه بخش برای ۳۰ روز کامل روی همین حساب فعال شود؟')) return;
+		const data = await api('/admin/api/accesses/' + trial.dataset.trial + '/trial', { method: 'POST', body: JSON.stringify({ days: 30 }) });
+		showResult(data);
+		await loadRows();
+		return;
+	  }
       const del = event.target.closest('[data-delete]');
       if (del && confirm('این دسترسی حذف شود؟')) {
         await api('/admin/api/accesses/' + del.dataset.delete, { method: 'DELETE' });
@@ -1978,7 +2024,7 @@ func (a *portalApp) adminAccesses(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		access, rawPassword, err := a.createManagedAccess(req.ProjectKey, req.CompanyName, req.ContactName, req.Username, req.Password, req.FinancialCompanyID, expiresAt, req.Notes, accessRole, req.Permissions, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving)
+		access, rawPassword, err := a.createManagedAccess(req.ProjectKey, req.CompanyName, req.ContactName, req.Username, req.Password, req.FinancialCompanyID, expiresAt, time.Time{}, req.Notes, accessRole, req.Permissions, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving)
 		if err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -2051,7 +2097,7 @@ func (a *portalApp) adminAccessByID(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		access, rawPassword, err := a.updateManagedAccess(id, req.ProjectKey, req.CompanyName, req.ContactName, req.Username, req.Password, req.FinancialCompanyID, expiresAt, req.Notes, accessRole, req.Permissions, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving)
+		access, rawPassword, err := a.updateManagedAccess(id, req.ProjectKey, req.CompanyName, req.ContactName, req.Username, req.Password, req.FinancialCompanyID, expiresAt, time.Time{}, req.Notes, accessRole, req.Permissions, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving)
 		if err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -2072,6 +2118,22 @@ func (a *portalApp) adminAccessByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	if len(parts) == 2 && parts[1] == "trial" && r.Method == http.MethodPost {
+		var body struct {
+			Days int `json:"days"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&body)
+		if body.Days == 0 {
+			body.Days = fullTrialDays
+		}
+		access, rawPassword, err := a.grantFullTrial(id, body.Days)
+		if err != nil {
+			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		respondJSON(w, http.StatusOK, a.accessResponse(access, rawPassword))
 		return
 	}
 	http.NotFound(w, r)
@@ -2458,7 +2520,7 @@ func (a *portalApp) portalTeam(w http.ResponseWriter, r *http.Request) {
 			}
 			expiresAt = minTime(customExpiry, record.ExpiresAt)
 		}
-		access, rawPassword, err := a.createManagedAccess(record.ProjectKey, record.CompanyName, req.ContactName, req.Username, req.Password, record.FinancialCompanyID, expiresAt, req.Notes, role, req.Permissions, canManage, false, allowFinancial, allowOperational, allowWeaving)
+		access, rawPassword, err := a.createManagedAccess(record.ProjectKey, record.CompanyName, req.ContactName, req.Username, req.Password, record.FinancialCompanyID, expiresAt, record.TrialEndsAt, req.Notes, role, req.Permissions, canManage, false, allowFinancial, allowOperational, allowWeaving)
 		if err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -2547,7 +2609,7 @@ func (a *portalApp) portalTeamByID(w http.ResponseWriter, r *http.Request) {
 			}
 			expiresAt = minTime(customExpiry, record.ExpiresAt)
 		}
-		access, rawPassword, err := a.updateManagedAccess(id, target.ProjectKey, target.CompanyName, req.ContactName, req.Username, req.Password, target.FinancialCompanyID, expiresAt, req.Notes, role, req.Permissions, canManage, false, allowFinancial, allowOperational, allowWeaving)
+		access, rawPassword, err := a.updateManagedAccess(id, target.ProjectKey, target.CompanyName, req.ContactName, req.Username, req.Password, target.FinancialCompanyID, expiresAt, target.TrialEndsAt, req.Notes, role, req.Permissions, canManage, false, allowFinancial, allowOperational, allowWeaving)
 		if err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -2914,7 +2976,7 @@ func (a *portalApp) ensureLocalOwnerAccess() (projectAccess, error) {
 		if item.ProjectKey != "textile-erp" || item.FinancialCompanyID != a.localCompanyID || !strings.EqualFold(strings.TrimSpace(item.Username), a.adminUsername) {
 			continue
 		}
-		updated, _, err := a.updateManagedAccess(item.ID, "textile-erp", a.localCompanyName, "مدیر محلی", a.adminUsername, a.adminPassword, a.localCompanyID, expiresAt, "حساب مدیر نسخه آفلاین", "owner", financialPermissionCatalog, true, false, true, true, false)
+		updated, _, err := a.updateManagedAccess(item.ID, "textile-erp", a.localCompanyName, "مدیر محلی", a.adminUsername, a.adminPassword, a.localCompanyID, expiresAt, time.Time{}, "حساب مدیر نسخه آفلاین", "owner", financialPermissionCatalog, true, false, true, true, false)
 		if err != nil {
 			return projectAccess{}, err
 		}
@@ -2928,7 +2990,7 @@ func (a *portalApp) ensureLocalOwnerAccess() (projectAccess, error) {
 		}
 		return a.setAccessMustChangePassword(updated.ID, false)
 	}
-	created, _, err := a.createManagedAccess("textile-erp", a.localCompanyName, "مدیر محلی", a.adminUsername, a.adminPassword, a.localCompanyID, expiresAt, "حساب مدیر نسخه آفلاین", "owner", financialPermissionCatalog, true, false, true, true, false)
+	created, _, err := a.createManagedAccess("textile-erp", a.localCompanyName, "مدیر محلی", a.adminUsername, a.adminPassword, a.localCompanyID, expiresAt, time.Time{}, "حساب مدیر نسخه آفلاین", "owner", financialPermissionCatalog, true, false, true, true, false)
 	if err != nil {
 		return projectAccess{}, err
 	}
@@ -3122,7 +3184,7 @@ func (a *portalApp) redirectToWeavingSSO(w http.ResponseWriter, r *http.Request,
 	http.Redirect(w, r, strings.TrimRight(a.weavingAppURL, "/")+"/api/auth/portal-sso?token="+url.QueryEscape(token), http.StatusSeeOther)
 }
 
-func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, username, password string, financialCompanyID int64, expiresAt time.Time, notes, accessRole string, permissions []string, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving bool) (projectAccess, string, error) {
+func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, username, password string, financialCompanyID int64, expiresAt, trialEndsAt time.Time, notes, accessRole string, permissions []string, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving bool) (projectAccess, string, error) {
 	if !validProject(projectKey) {
 		return projectAccess{}, "", fmt.Errorf("invalid project key")
 	}
@@ -3151,10 +3213,11 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 		allowWeaving = false
 	} else {
 		allowFinancial, allowOperational, allowWeaving = normalizeModuleAccess(projectKey, allowFinancial, allowOperational, allowWeaving)
-		if !allowFinancial && !allowOperational && !allowWeaving {
+		trialActive := !trialEndsAt.IsZero() && trialEndsAt.After(time.Now())
+		if !allowFinancial && !allowOperational && !allowWeaving && !trialActive {
 			return projectAccess{}, "", fmt.Errorf("حداقل یکی از بخش‌های مالی، عملیاتی یا راندمان سالن باید فعال باشد")
 		}
-		if requiresSetup && allowWeaving {
+		if requiresSetup && (allowWeaving || trialActive) {
 			return projectAccess{}, "", fmt.Errorf("برای فعال‌سازی راندمان سالن، نام کاربری و رمز مدیر را همین حالا تعیین کنید")
 		}
 		if !allowFinancial {
@@ -3222,7 +3285,8 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 		return projectAccess{}, "", fmt.Errorf("financial company id is required for textile customer access")
 	}
 	weavingTenantID := existingWeavingTenantID(items, financialCompanyID)
-	if projectKey == "textile-erp" && allowWeaving && weavingTenantID == "" {
+	trialActive := projectKey == "textile-erp" && !trialEndsAt.IsZero() && trialEndsAt.After(time.Now())
+	if projectKey == "textile-erp" && (allowWeaving || trialActive) && weavingTenantID == "" {
 		weavingTenantID, err = a.provisionWeavingTenant(financialCompanyID, accessID, companyName, contactName, username, password)
 		if err != nil {
 			return projectAccess{}, "", err
@@ -3247,7 +3311,9 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 		AllowFinancial:     allowFinancial,
 		AllowOperational:   allowOperational,
 		AllowWeaving:       allowWeaving,
+		ModuleAccessSet:    projectKey == "textile-erp",
 		WeavingTenantID:    weavingTenantID,
+		TrialEndsAt:        trialEndsAt.UTC(),
 		ExpiresAt:          expiresAt.UTC(),
 		AccessToken:        token,
 		PasswordHash:       hash,
@@ -3256,7 +3322,7 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 		IsActive:           true,
 		CreatedAt:          time.Now().UTC(),
 	}
-	if allowWeaving && weavingTenantID != "" {
+	if (allowWeaving || trialActive) && weavingTenantID != "" {
 		if err := a.syncWeavingUser(record, password, true); err != nil {
 			return projectAccess{}, "", err
 		}
@@ -3268,7 +3334,7 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 	return record, rawPassword, nil
 }
 
-func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, contactName, username, password string, financialCompanyID int64, expiresAt time.Time, notes, accessRole string, permissions []string, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving bool) (projectAccess, string, error) {
+func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, contactName, username, password string, financialCompanyID int64, expiresAt, trialEndsAt time.Time, notes, accessRole string, permissions []string, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving bool) (projectAccess, string, error) {
 	if !validProject(projectKey) {
 		return projectAccess{}, "", fmt.Errorf("invalid project key")
 	}
@@ -3297,12 +3363,6 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 		allowWeaving = false
 	} else {
 		allowFinancial, allowOperational, allowWeaving = normalizeModuleAccess(projectKey, allowFinancial, allowOperational, allowWeaving)
-		if !allowFinancial && !allowOperational && !allowWeaving {
-			return projectAccess{}, "", fmt.Errorf("حداقل یکی از بخش‌های مالی، عملیاتی یا راندمان سالن باید فعال باشد")
-		}
-		if requiresSetup && allowWeaving {
-			return projectAccess{}, "", fmt.Errorf("برای فعال‌سازی راندمان سالن، نام کاربری و رمز مدیر را همین حالا تعیین کنید")
-		}
 		if !allowFinancial {
 			normalizedPermissions = nil
 		}
@@ -3327,7 +3387,19 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 	}
 
 	record := items[index]
-	previousAllowWeaving := record.AllowWeaving
+	if trialEndsAt.IsZero() && projectKey == "textile-erp" {
+		trialEndsAt = record.TrialEndsAt
+	} else if projectKey != "textile-erp" {
+		trialEndsAt = time.Time{}
+	}
+	trialActive := !trialEndsAt.IsZero() && trialEndsAt.After(time.Now())
+	if projectKey == "textile-erp" && !allowFinancial && !allowOperational && !allowWeaving && !trialActive {
+		return projectAccess{}, "", fmt.Errorf("حداقل یکی از بخش‌های مالی، عملیاتی یا راندمان سالن باید فعال باشد")
+	}
+	if projectKey == "textile-erp" && requiresSetup && (allowWeaving || trialActive) {
+		return projectAccess{}, "", fmt.Errorf("برای فعال‌سازی راندمان سالن، نام کاربری و رمز مدیر را همین حالا تعیین کنید")
+	}
+	previousAllowWeaving := effectiveAllowWeaving(record)
 	if requiresSetup {
 		username = ""
 		password = ""
@@ -3359,6 +3431,8 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 	record.AllowFinancial = allowFinancial
 	record.AllowOperational = allowOperational
 	record.AllowWeaving = allowWeaving
+	record.ModuleAccessSet = projectKey == "textile-erp"
+	record.TrialEndsAt = trialEndsAt.UTC()
 	record.ExpiresAt = expiresAt.UTC()
 	record.Notes = notes
 
@@ -3392,7 +3466,7 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 	if weavingTenantID == "" {
 		weavingTenantID = existingWeavingTenantID(items, financialCompanyID)
 	}
-	if allowWeaving && weavingTenantID == "" {
+	if (allowWeaving || trialActive) && weavingTenantID == "" {
 		if role != "owner" {
 			return projectAccess{}, "", fmt.Errorf("ابتدا باید راندمان سالن برای مدیر اصلی این مشتری فعال شود")
 		}
@@ -3402,8 +3476,8 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 		}
 	}
 	record.WeavingTenantID = weavingTenantID
-	if weavingTenantID != "" && (allowWeaving || previousAllowWeaving) {
-		if err := a.syncWeavingUser(record, rawPassword, allowWeaving && record.IsActive); err != nil {
+	if weavingTenantID != "" && (allowWeaving || trialActive || previousAllowWeaving) {
+		if err := a.syncWeavingUser(record, rawPassword, (allowWeaving || trialActive) && record.IsActive); err != nil {
 			return projectAccess{}, "", err
 		}
 	}
@@ -3413,6 +3487,54 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 		return projectAccess{}, "", err
 	}
 	return record, rawPassword, nil
+}
+
+func (a *portalApp) grantFullTrial(id int64, days int) (projectAccess, string, error) {
+	if days < 1 || days > 90 {
+		return projectAccess{}, "", fmt.Errorf("مدت تست باید بین ۱ تا ۹۰ روز باشد")
+	}
+	items, err := a.listAccesses()
+	if err != nil {
+		return projectAccess{}, "", err
+	}
+	var target projectAccess
+	for _, item := range items {
+		if item.ID == id {
+			target = item
+			break
+		}
+	}
+	if target.ID == 0 || target.ProjectKey != "textile-erp" {
+		return projectAccess{}, "", fmt.Errorf("حساب مشتری Textile ERP پیدا نشد")
+	}
+	if effectiveAccessRole(target) != "owner" {
+		return projectAccess{}, "", fmt.Errorf("تست کامل باید برای حساب مدیر اصلی شرکت فعال شود")
+	}
+	trialEndsAt := time.Now().Add(time.Duration(days) * 24 * time.Hour)
+	expiresAt := target.ExpiresAt
+	if expiresAt.Before(trialEndsAt) {
+		expiresAt = trialEndsAt
+	}
+	notes := strings.TrimSpace(target.Notes + "\n" + fmt.Sprintf("تست رایگان کامل %d روزه تا %s", days, trialEndsAt.Local().Format(timeLayout)))
+	return a.updateManagedAccess(
+		target.ID,
+		target.ProjectKey,
+		target.CompanyName,
+		target.ContactName,
+		target.Username,
+		"",
+		target.FinancialCompanyID,
+		expiresAt,
+		trialEndsAt,
+		notes,
+		effectiveAccessRole(target),
+		effectivePermissions(target),
+		effectiveCanManageTeam(target),
+		false,
+		target.AllowFinancial,
+		target.AllowOperational,
+		target.AllowWeaving,
+	)
 }
 
 func (a *portalApp) setAccessMustChangePassword(id int64, mustChange bool) (projectAccess, error) {
@@ -3753,6 +3875,9 @@ func (a *portalApp) accessResponse(record projectAccess, rawPassword string) map
 	createdAt := record.CreatedAt.Format(time.RFC3339)
 	lastUsedAt := emptyTime(record.LastUsedAt)
 	isExpired := time.Now().After(record.ExpiresAt)
+	trialActive := fullTrialActive(record)
+	trialEndsAt := emptyTime(record.TrialEndsAt)
+	trialDaysRemaining := fullTrialDaysRemaining(record, time.Now())
 	role := effectiveAccessRole(record)
 	permissions := effectivePermissions(record)
 	return map[string]any{
@@ -3786,6 +3911,12 @@ func (a *portalApp) accessResponse(record projectAccess, rawPassword string) map
 		"allowWeaving":         effectiveAllowWeaving(record),
 		"weaving_tenant_id":    record.WeavingTenantID,
 		"weavingTenantId":      record.WeavingTenantID,
+		"trial_active":         trialActive,
+		"trialActive":          trialActive,
+		"trial_ends_at":        trialEndsAt,
+		"trialEndsAt":          trialEndsAt,
+		"trial_days_remaining": trialDaysRemaining,
+		"trialDaysRemaining":   trialDaysRemaining,
 		"module_access_label":  accessModuleLabel(record),
 		"moduleAccessLabel":    accessModuleLabel(record),
 		"expires_at":           expiresAt,
@@ -4196,7 +4327,7 @@ func readAccesses(path string) ([]projectAccess, error) {
 				_, hasFinancialFlag := rawItems[i]["allow_financial"]
 				_, hasOperationalFlag := rawItems[i]["allow_operational"]
 				_, hasWeavingFlag := rawItems[i]["allow_weaving"]
-				if !hasFinancialFlag && !hasOperationalFlag && !hasWeavingFlag {
+				if !items[i].ModuleAccessSet && !hasFinancialFlag && !hasOperationalFlag && !hasWeavingFlag {
 					items[i].AllowFinancial = true
 					items[i].AllowOperational = true
 				}

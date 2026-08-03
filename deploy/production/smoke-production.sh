@@ -26,6 +26,8 @@ grep -Fq 'مالی' "$work_dir/plans.html"
 grep -Fq 'عملیاتی' "$work_dir/plans.html"
 grep -Fq 'راندمان سالن بافت' "$work_dir/plans.html"
 grep -Fq 'مرکز فرمان مدیر نساجی' "$work_dir/plans.html"
+grep -Fq '۳۰ روز هر سه بخش را رایگان آزمایش کنید' "$work_dir/plans.html"
+grep -Fq 'شروع تست رایگان ۳۰روزه هر سه بخش' "$work_dir/plans.html"
 
 curl "${curl_retry[@]}" -D "$work_dir/image.headers" \
   "$textile_base/assets/plans-og.png" -o "$work_dir/plans-og.png"
