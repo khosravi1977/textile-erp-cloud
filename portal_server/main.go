@@ -686,7 +686,7 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 		if effectiveAllowFinancial(record) {
-			cardParts = append(cardParts, `<a class="card" href="/module-login?module=financial">ورود به بخش مالی</a>`, `<a class="card mobile" href="/HesabYar.apk?v=1.0.2-production-20260802">دانلود اپ حسابیار</a>`)
+			cardParts = append(cardParts, `<a class="card" href="/module-login?module=financial">ورود به بخش مالی</a>`, `<a class="card mobile" href="/HesabYar.apk?v=1.0.3-production-20260803">دانلود اپ حسابیار</a>`)
 		}
 		if effectiveAllowOperational(record) {
 			cardParts = append(cardParts, `<a class="card secondary" href="/module-login?module=operational">ورود به بخش عملیاتی</a>`)
