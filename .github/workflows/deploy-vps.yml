@@ -110,6 +110,22 @@ jobs:
           scp -o BatchMode=yes "$local_file" "$VPS_USER@$VPS_HOST:$remote_temp"
           ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
             "set -eu; umask 077; test ! -L '$remote_file'; chmod 0600 '$remote_temp'; mv -f '$remote_temp' '$remote_file'"
+      - name: Verify Textile Telegram relay from VPS
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" '
+            set -eu
+            . /var/tmp/textile-telegram.env
+            response="$(curl --fail --silent --show-error --max-time 30 --retry 2 --retry-all-errors \
+              -H "Authorization: Bearer $TEXTILE_TELEGRAM_RELAY_TOKEN" \
+              -H "X-Telegram-Bot-Token: $TEXTILE_TELEGRAM_BOT_TOKEN" \
+              "${TEXTILE_TELEGRAM_RELAY_URL%/}/getMe")"
+            printf "%s" "$response" | grep -Eq '"'"'"ok"[[:space:]]*:[[:space:]]*true'"'"'
+          '
       - name: Authenticate VPS for private images
         shell: bash
         env:

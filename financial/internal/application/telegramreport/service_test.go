@@ -456,6 +456,27 @@ func TestPollLoopMarksServiceUnavailableAfterPollingFailure(t *testing.T) {
 	}
 }
 
+func TestPollOnceUsesRelayCompatibleTimeout(t *testing.T) {
+	const token = "123456789:relay-compatible-polling-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bot"+token+"/getUpdates" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.URL.Query().Get("timeout"); got != "5" {
+			t.Fatalf("expected short relay-compatible timeout, got %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": []any{}})
+	}))
+	defer server.Close()
+
+	service := New(nil, Config{Enabled: true, BotToken: token, APIBase: server.URL})
+	service.client = server.Client()
+	if err := service.pollOnce(context.Background()); err != nil {
+		t.Fatalf("poll once failed: %v", err)
+	}
+}
+
 func TestBootstrapRedactsTokenFromTelegramErrors(t *testing.T) {
 	const token = "123456:must-never-leak"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
