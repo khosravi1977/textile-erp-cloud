@@ -27,7 +27,10 @@ import (
 	"github.com/erpsystem/textile-erp/internal/infrastructure/persistence/postgres"
 )
 
-const pairingTTL = 10 * time.Minute
+const (
+	pairingTTL                 = 10 * time.Minute
+	telegramPollTimeoutSeconds = 5
+)
 
 type Config struct {
 	Enabled     bool
@@ -694,7 +697,7 @@ func (s *Service) pollOnce(ctx context.Context) error {
 		} `json:"result"`
 	}
 	query := url.Values{
-		"timeout":         {"25"},
+		"timeout":         {strconv.Itoa(telegramPollTimeoutSeconds)},
 		"allowed_updates": {`["message"]`},
 		"offset":          {strconv.FormatInt(offset, 10)},
 	}
