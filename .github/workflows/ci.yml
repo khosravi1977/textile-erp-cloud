@@ -59,6 +59,14 @@ jobs:
       - name: Operational web production build
         run: npm ci && npm run build
         working-directory: operational_cycle_go/web
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13"
+          cache: npm
+          cache-dependency-path: telegram_relay/package-lock.json
+      - name: Telegram relay security tests and production build
+        run: npm ci && npm test
+        working-directory: telegram_relay
       - name: Docker compose config
         run: docker compose -f docker-compose.prod.yml config
         working-directory: financial

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -24,6 +25,27 @@ func signedModuleCookie(t *testing.T, app *portalApp, module, authMode string, r
 		t.Fatalf("sign module session: %v", err)
 	}
 	return &http.Cookie{Name: moduleCookieName(module), Value: value}
+}
+
+func TestTelegramReportStatusRequiresAvailableFinancialService(t *testing.T) {
+	t.Parallel()
+
+	available := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","telegramReports":{"available":true}}`))
+	}))
+	defer available.Close()
+
+	if got := (&portalApp{financialAPIURL: available.URL}).telegramReportStatus(context.Background()); got != "ok" {
+		t.Fatalf("expected Telegram status ok, got %q", got)
+	}
+	if got := (&portalApp{financialAPIURL: "http://127.0.0.1:1"}).telegramReportStatus(context.Background()); got != "unavailable" {
+		t.Fatalf("expected unavailable status, got %q", got)
+	}
 }
 
 func TestCustomerLoginDoesNotExposeDefaultCredentials(t *testing.T) {

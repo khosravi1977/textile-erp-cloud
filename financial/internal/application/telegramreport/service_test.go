@@ -366,6 +366,75 @@ func TestBootstrapRejectsConfiguredUsernameMismatch(t *testing.T) {
 	}
 }
 
+func TestBootstrapUsesSecureRelayWithoutTokenInRequestURL(t *testing.T) {
+	const (
+		botToken   = "123456789:relay-secret-bot-token-1234567890"
+		relayToken = "relay-access-token"
+	)
+	requests := make([]string, 0, 2)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.RequestURI(), botToken) {
+			t.Fatalf("bot token leaked in relay request URL: %s", r.URL.RequestURI())
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+relayToken {
+			t.Fatalf("unexpected relay authorization: %q", got)
+		}
+		if got := r.Header.Get("X-Telegram-Bot-Token"); got != botToken {
+			t.Fatalf("unexpected bot token header: %q", got)
+		}
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		switch r.URL.Path {
+		case "/telegram/getMe":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"result": map[string]any{
+					"is_bot":   true,
+					"username": "textile_reports_bot",
+				},
+			})
+		case "/telegram/deleteWebhook":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	service := New(nil, Config{
+		Enabled:     true,
+		BotToken:    botToken,
+		BotUsername: "textile_reports_bot",
+		APIBase:     "https://api.telegram.org",
+		RelayURL:    server.URL + "/telegram",
+		RelayToken:  relayToken,
+	})
+	service.client = server.Client()
+	if err := service.bootstrap(context.Background()); err != nil {
+		t.Fatalf("bootstrap through relay failed: %v", err)
+	}
+	if !service.Available() {
+		t.Fatal("service must become available after relay bootstrap")
+	}
+	expected := []string{
+		http.MethodGet + " /telegram/getMe",
+		http.MethodPost + " /telegram/deleteWebhook",
+	}
+	if strings.Join(requests, "\n") != strings.Join(expected, "\n") {
+		t.Fatalf("unexpected relay calls:\n%v", requests)
+	}
+}
+
+func TestTelegramEndpointRejectsInsecureRelay(t *testing.T) {
+	service := New(nil, Config{
+		BotToken:   "123456789:test-token",
+		RelayURL:   "http://relay.example.test/telegram",
+		RelayToken: "relay-access-token",
+	})
+	if _, err := service.telegramEndpoint("getMe", nil); err == nil || !strings.Contains(err.Error(), "HTTPS") {
+		t.Fatalf("expected insecure relay URL rejection, got %v", err)
+	}
+}
+
 func TestBootstrapRedactsTokenFromTelegramErrors(t *testing.T) {
 	const token = "123456:must-never-leak"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+:root {
+  --background: #071711;
+  --foreground: #eefbf5;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: Tahoma, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Tahoma, Arial, sans-serif;
+}
+
+main {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 20% 15%, rgba(39, 182, 126, 0.2), transparent 34%),
+    radial-gradient(circle at 80% 85%, rgba(25, 109, 82, 0.22), transparent 38%),
+    #071711;
+}
+
+.status-card {
+  width: min(560px, 100%);
+  padding: clamp(28px, 6vw, 48px);
+  border: 1px solid rgba(119, 225, 178, 0.25);
+  border-radius: 28px;
+  background: rgba(9, 35, 26, 0.9);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.38);
+}
+
+.status-dot {
+  width: 16px;
+  height: 16px;
+  margin-bottom: 24px;
+  border-radius: 50%;
+  background: #43d696;
+  box-shadow: 0 0 0 8px rgba(67, 214, 150, 0.12), 0 0 28px rgba(67, 214, 150, 0.8);
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  color: #77e1b2;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(28px, 5vw, 42px);
+  line-height: 1.45;
+}
+
+p {
+  margin: 18px 0 0;
+  color: #b9d7ca;
+  line-height: 2;
+}
+
+.status-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 30px;
+  padding-top: 22px;
+  border-top: 1px solid rgba(119, 225, 178, 0.18);
+  color: #a4c6b8;
+}
+
+.status-line strong { color: #77e1b2; }
+
+@media (max-width: 520px) {
+  .status-line { flex-direction: column; }
+}

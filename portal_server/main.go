@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -643,16 +644,47 @@ func rewriteAssetRefs(body []byte, prefix string) []byte {
 
 func (a *portalApp) health(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]any{
-		"ok":             true,
-		"financial":      a.financialURL,
-		"operational":    a.operationalURL,
-		"financialApi":   a.financialAPIURL,
-		"operationalApi": a.operationalAPI,
-		"coolerStore":    a.coolerStoreURL,
-		"weavingApp":     a.weavingAppURL,
-		"accessManager":  "ok",
-		"purchaseOrders": a.purchaseOrderStoreStatus(),
+		"ok":              true,
+		"financial":       a.financialURL,
+		"operational":     a.operationalURL,
+		"financialApi":    a.financialAPIURL,
+		"operationalApi":  a.operationalAPI,
+		"coolerStore":     a.coolerStoreURL,
+		"weavingApp":      a.weavingAppURL,
+		"accessManager":   "ok",
+		"purchaseOrders":  a.purchaseOrderStoreStatus(),
+		"telegramReports": a.telegramReportStatus(r.Context()),
 	})
+}
+
+func (a *portalApp) telegramReportStatus(parent context.Context) string {
+	base := strings.TrimRight(strings.TrimSpace(a.financialAPIURL), "/")
+	if base == "" {
+		return "unavailable"
+	}
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/health", nil)
+	if err != nil {
+		return "unavailable"
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return "unavailable"
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "unavailable"
+	}
+	var payload struct {
+		TelegramReports struct {
+			Available bool `json:"available"`
+		} `json:"telegramReports"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&payload); err != nil || !payload.TelegramReports.Available {
+		return "unavailable"
+	}
+	return "ok"
 }
 
 func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {

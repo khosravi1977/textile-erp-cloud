@@ -83,13 +83,19 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TEXTILE_TELEGRAM_BOT_TOKEN }}
           TELEGRAM_BOT_USERNAME: ${{ secrets.TEXTILE_TELEGRAM_BOT_USERNAME }}
+          TELEGRAM_RELAY_URL: ${{ secrets.TEXTILE_TELEGRAM_RELAY_URL }}
+          TELEGRAM_RELAY_TOKEN: ${{ secrets.TEXTILE_TELEGRAM_RELAY_TOKEN }}
         run: |
           set -euo pipefail
           test -n "$TELEGRAM_BOT_TOKEN"
           configured="${TELEGRAM_BOT_USERNAME#@}"
           [[ "$configured" =~ ^[A-Za-z][A-Za-z0-9_]{4,31}$ ]]
+          [[ "$TELEGRAM_RELAY_URL" =~ ^https://[^/?#]+(/[^?#]*)?$ ]]
+          [[ "$TELEGRAM_RELAY_TOKEN" =~ ^[A-Za-z0-9_-]{43,128}$ ]]
           response="$(curl --fail --silent --show-error --max-time 30 \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe")"
+            -H "Authorization: Bearer $TELEGRAM_RELAY_TOKEN" \
+            -H "X-Telegram-Bot-Token: $TELEGRAM_BOT_TOKEN" \
+            "${TELEGRAM_RELAY_URL%/}/getMe")"
           actual="$(jq -er '.result | select(.is_bot == true) | .username' <<<"$response")"
           test "${actual,,}" = "${configured,,}"
           local_file="$RUNNER_TEMP/textile-telegram.env"
@@ -98,6 +104,8 @@ jobs:
           printf 'TEXTILE_TELEGRAM_ENABLED=true\n' > "$local_file"
           printf 'TEXTILE_TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN" >> "$local_file"
           printf 'TEXTILE_TELEGRAM_BOT_USERNAME=%s\n' "$configured" >> "$local_file"
+          printf 'TEXTILE_TELEGRAM_RELAY_URL=%s\n' "${TELEGRAM_RELAY_URL%/}" >> "$local_file"
+          printf 'TEXTILE_TELEGRAM_RELAY_TOKEN=%s\n' "$TELEGRAM_RELAY_TOKEN" >> "$local_file"
           chmod 0600 "$local_file"
           scp -o BatchMode=yes "$local_file" "$VPS_USER@$VPS_HOST:$remote_temp"
           ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" \

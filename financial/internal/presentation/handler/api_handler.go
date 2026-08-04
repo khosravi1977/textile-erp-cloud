@@ -102,10 +102,12 @@ func (h *APIHandler) requireOperational(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *APIHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
+	telegramAvailable := h.telegram != nil && h.telegram.Available()
 	RespondJSON(w, http.StatusOK, map[string]interface{}{
-		"status":  "ok",
-		"service": "textile-erp",
-		"version": "2.1.0",
+		"status":          "ok",
+		"service":         "textile-erp",
+		"version":         "2.1.0",
+		"telegramReports": map[string]bool{"available": telegramAvailable},
 		"features": []string{
 			"financial-advisor", "waste-calculator", "commission-calculator",
 			"credit-scoring", "settlement-validator", "production-usecase",
