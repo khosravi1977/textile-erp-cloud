@@ -211,6 +211,15 @@ func (s *Service) Available() bool {
 	return s.ready
 }
 
+func (s *Service) setAvailable(available bool) {
+	if s == nil {
+		return
+	}
+	s.readyMu.Lock()
+	s.ready = available
+	s.readyMu.Unlock()
+}
+
 func (s *Service) Start(ctx context.Context) {
 	if s == nil || !s.cfg.Enabled || s.cfg.BotToken == "" {
 		log.Printf("telegram daily reports disabled: configure TEXTILE_TELEGRAM_* secrets")
@@ -249,9 +258,7 @@ func (s *Service) startWithRetry(ctx context.Context) {
 }
 
 func (s *Service) bootstrap(ctx context.Context) error {
-	s.readyMu.Lock()
-	s.ready = false
-	s.readyMu.Unlock()
+	s.setAvailable(false)
 
 	username, err := s.getMe(ctx)
 	if err != nil {
@@ -650,13 +657,19 @@ func (s *Service) History(ctx context.Context, companyID int64, limit int) ([]De
 
 func (s *Service) pollLoop(ctx context.Context) {
 	for ctx.Err() == nil {
-		if err := s.pollOnce(ctx); err != nil && ctx.Err() == nil {
+		if err := s.pollOnce(ctx); err != nil {
+			s.setAvailable(false)
+			if ctx.Err() != nil {
+				return
+			}
 			log.Printf("telegram polling error: %v", err)
 			select {
 			case <-time.After(5 * time.Second):
 			case <-ctx.Done():
 			}
+			continue
 		}
+		s.setAvailable(true)
 	}
 }
 

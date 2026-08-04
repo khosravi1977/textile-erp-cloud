@@ -435,6 +435,27 @@ func TestTelegramEndpointRejectsInsecureRelay(t *testing.T) {
 	}
 }
 
+func TestPollLoopMarksServiceUnavailableAfterPollingFailure(t *testing.T) {
+	const token = "123456789:polling-failure-token"
+	ctx, cancel := context.WithCancel(context.Background())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bot"+token+"/getUpdates" {
+			http.NotFound(w, r)
+			return
+		}
+		cancel()
+		http.Error(w, "temporary upstream failure", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	service := New(nil, Config{Enabled: true, BotToken: token, APIBase: server.URL})
+	service.setAvailable(true)
+	service.pollLoop(ctx)
+	if service.Available() {
+		t.Fatal("service must become unavailable after Telegram polling fails")
+	}
+}
+
 func TestBootstrapRedactsTokenFromTelegramErrors(t *testing.T) {
 	const token = "123456:must-never-leak"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
