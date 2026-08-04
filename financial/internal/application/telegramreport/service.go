@@ -34,6 +34,8 @@ type Config struct {
 	BotToken    string
 	BotUsername string
 	APIBase     string
+	RelayURL    string
+	RelayToken  string
 }
 
 func ConfigFromEnv() Config {
@@ -42,6 +44,8 @@ func ConfigFromEnv() Config {
 		BotToken:    strings.TrimSpace(os.Getenv("TEXTILE_TELEGRAM_BOT_TOKEN")),
 		BotUsername: strings.TrimPrefix(strings.TrimSpace(os.Getenv("TEXTILE_TELEGRAM_BOT_USERNAME")), "@"),
 		APIBase:     "https://api.telegram.org",
+		RelayURL:    strings.TrimSpace(os.Getenv("TEXTILE_TELEGRAM_RELAY_URL")),
+		RelayToken:  strings.TrimSpace(os.Getenv("TEXTILE_TELEGRAM_RELAY_TOKEN")),
 	}
 }
 
@@ -207,6 +211,15 @@ func (s *Service) Available() bool {
 	return s.ready
 }
 
+func (s *Service) setAvailable(available bool) {
+	if s == nil {
+		return
+	}
+	s.readyMu.Lock()
+	s.ready = available
+	s.readyMu.Unlock()
+}
+
 func (s *Service) Start(ctx context.Context) {
 	if s == nil || !s.cfg.Enabled || s.cfg.BotToken == "" {
 		log.Printf("telegram daily reports disabled: configure TEXTILE_TELEGRAM_* secrets")
@@ -245,9 +258,7 @@ func (s *Service) startWithRetry(ctx context.Context) {
 }
 
 func (s *Service) bootstrap(ctx context.Context) error {
-	s.readyMu.Lock()
-	s.ready = false
-	s.readyMu.Unlock()
+	s.setAvailable(false)
 
 	username, err := s.getMe(ctx)
 	if err != nil {
@@ -276,7 +287,10 @@ func (s *Service) getMe(ctx context.Context) (string, error) {
 			Username string `json:"username"`
 		} `json:"result"`
 	}
-	endpoint := fmt.Sprintf("%s/bot%s/getMe", strings.TrimRight(s.cfg.APIBase, "/"), s.cfg.BotToken)
+	endpoint, err := s.telegramEndpoint("getMe", nil)
+	if err != nil {
+		return "", err
+	}
 	if err := s.call(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
 		return "", err
 	}
@@ -296,7 +310,10 @@ func (s *Service) deleteWebhook(ctx context.Context) error {
 		Description string `json:"description"`
 		Result      bool   `json:"result"`
 	}
-	endpoint := fmt.Sprintf("%s/bot%s/deleteWebhook", strings.TrimRight(s.cfg.APIBase, "/"), s.cfg.BotToken)
+	endpoint, err := s.telegramEndpoint("deleteWebhook", nil)
+	if err != nil {
+		return err
+	}
 	if err := s.call(ctx, http.MethodPost, endpoint, map[string]any{"drop_pending_updates": false}, &response); err != nil {
 		return err
 	}
@@ -640,13 +657,19 @@ func (s *Service) History(ctx context.Context, companyID int64, limit int) ([]De
 
 func (s *Service) pollLoop(ctx context.Context) {
 	for ctx.Err() == nil {
-		if err := s.pollOnce(ctx); err != nil && ctx.Err() == nil {
+		if err := s.pollOnce(ctx); err != nil {
+			s.setAvailable(false)
+			if ctx.Err() != nil {
+				return
+			}
 			log.Printf("telegram polling error: %v", err)
 			select {
 			case <-time.After(5 * time.Second):
 			case <-ctx.Done():
 			}
+			continue
 		}
+		s.setAvailable(true)
 	}
 }
 
@@ -670,7 +693,15 @@ func (s *Service) pollOnce(ctx context.Context) error {
 			} `json:"message"`
 		} `json:"result"`
 	}
-	endpoint := fmt.Sprintf("%s/bot%s/getUpdates?timeout=25&allowed_updates=%%5B%%22message%%22%%5D&offset=%d", strings.TrimRight(s.cfg.APIBase, "/"), s.cfg.BotToken, offset)
+	query := url.Values{
+		"timeout":         {"25"},
+		"allowed_updates": {`["message"]`},
+		"offset":          {strconv.FormatInt(offset, 10)},
+	}
+	endpoint, err := s.telegramEndpoint("getUpdates", query)
+	if err != nil {
+		return err
+	}
 	if err := s.call(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
 		return err
 	}
@@ -1838,8 +1869,11 @@ func (s *Service) sendMessage(ctx context.Context, chatID, text string) (int64, 
 			MessageID int64 `json:"message_id"`
 		} `json:"result"`
 	}
-	endpoint := fmt.Sprintf("%s/bot%s/sendMessage", strings.TrimRight(s.cfg.APIBase, "/"), s.cfg.BotToken)
-	err := s.call(ctx, http.MethodPost, endpoint, map[string]any{
+	endpoint, err := s.telegramEndpoint("sendMessage", nil)
+	if err != nil {
+		return 0, err
+	}
+	err = s.call(ctx, http.MethodPost, endpoint, map[string]any{
 		"chat_id": chatID, "text": text, "disable_web_page_preview": true,
 	}, &response)
 	if err != nil {
@@ -1867,6 +1901,10 @@ func (s *Service) call(ctx context.Context, method, endpoint string, body any, o
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
+	if strings.TrimSpace(s.cfg.RelayURL) != "" {
+		request.Header.Set("Authorization", "Bearer "+s.cfg.RelayToken)
+		request.Header.Set("X-Telegram-Bot-Token", s.cfg.BotToken)
+	}
 	response, err := s.client.Do(request)
 	if err != nil {
 		return errors.New(s.redactToken(err.Error()))
@@ -1879,6 +1917,32 @@ func (s *Service) call(ctx context.Context, method, endpoint string, body any, o
 		return fmt.Errorf("telegram http %d", response.StatusCode)
 	}
 	return nil
+}
+
+func (s *Service) telegramEndpoint(method string, query url.Values) (string, error) {
+	method = strings.TrimSpace(method)
+	if method == "" || strings.ContainsAny(method, "/?#") {
+		return "", errors.New("invalid telegram method")
+	}
+
+	relayURL := strings.TrimSpace(s.cfg.RelayURL)
+	if relayURL == "" {
+		endpoint := fmt.Sprintf("%s/bot%s/%s", strings.TrimRight(s.cfg.APIBase, "/"), s.cfg.BotToken, method)
+		if len(query) > 0 {
+			endpoint += "?" + query.Encode()
+		}
+		return endpoint, nil
+	}
+	if strings.TrimSpace(s.cfg.RelayToken) == "" {
+		return "", errors.New("telegram relay token is not configured")
+	}
+	parsed, err := url.Parse(relayURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("telegram relay URL must be a clean HTTPS address")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + method
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
 }
 
 func (s *Service) redactToken(value string) string {
