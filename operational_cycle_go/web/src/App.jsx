@@ -23,6 +23,16 @@ const PORTAL_OPERATIONAL_SESSION = window.ERP_PORTAL_OPERATIONAL_SESSION || (
     : ''
 );
 
+function normalizeMachineNumber(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  const englishDigits = text
+    .replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .replace(/[٠-٩]/g, d => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)));
+  if (/^\d+(\.0+)?$/.test(englishDigits)) return String(Number.parseInt(englishDigits, 10));
+  return text;
+}
+
 
 
 const tabs = [
@@ -1062,9 +1072,9 @@ function NakhSalon({ lookups, notify }) {
 
   const load = () => Promise.all([api('/nakh-salon?chelles=1'), api('/nakh-khor?inventory=1'), api('/nakh-salon')])
     .then(([activeChelles, yarnInventory, salonMovements]) => {
-      setChelles(activeChelles);
+      setChelles((activeChelles || []).map(x => ({ ...x, machine: normalizeMachineNumber(x.machine) })));
       setInventory(yarnInventory);
-      setMovements(salonMovements);
+      setMovements((salonMovements || []).map(x => ({ ...x, machine: normalizeMachineNumber(x.machine) })));
     })
     .catch(() => { setChelles([]); setInventory([]); setMovements([]); });
 
@@ -1084,7 +1094,7 @@ function NakhSalon({ lookups, notify }) {
 
     filters={[['machine','ماشین'],['ham_nakh','همبافت نخ'],['nakh_name','نوع نخ'],['shom_chelle','چله'],['mosh_name','مالک نخ'],['vor_khor','نوع']]}
 
-    mapEdit={row => ({ id: row.id, machine: row.machine || '', ham_nakh: row.ham_nakh || '', weight: Math.abs(Number(row.weight || 0)), chelle_id: row.chelle_id || '', mosh_name: row.mosh_name || '', nakh_name: row.nakh_name || '', vor_khor: row.vor_khor || 'vorud' })}
+    mapEdit={row => ({ id: row.id, machine: normalizeMachineNumber(row.machine), ham_nakh: row.ham_nakh || '', weight: Math.abs(Number(row.weight || 0)), chelle_id: row.chelle_id || '', mosh_name: row.mosh_name || '', nakh_name: row.nakh_name || '', vor_khor: row.vor_khor || 'vorud' })}
 
     renderForm={(form, set) => {
       const current = movements.find(x => Number(x.id) === Number(form.id));
@@ -1095,7 +1105,7 @@ function NakhSalon({ lookups, notify }) {
       const returnable = movements
         .filter(x => Number(x.id) !== Number(form.id)
           && Number(x.chelle_id) === Number(form.chelle_id)
-          && x.machine === form.machine
+          && normalizeMachineNumber(x.machine) === normalizeMachineNumber(form.machine)
           && x.mosh_name === form.mosh_name
           && x.ham_nakh === form.ham_nakh
           && x.nakh_name === form.nakh_name)
@@ -1105,19 +1115,19 @@ function NakhSalon({ lookups, notify }) {
         const selected = chelles.find(x => Number(x.id) === id);
         set('chelle_id', id);
         if (selected) {
-          set('machine', selected.machine || '');
+          set('machine', normalizeMachineNumber(selected.machine));
           set('mosh_name', selected.mosh_name || form.mosh_name || '');
         }
       };
       return <>
 
-      <Input label="شماره ماشین" value={form.machine} onChange={v => set('machine', v)} hint="باید با ماشین چله فعال یکسان باشد." />
+      <Input label="شماره ماشین" value={form.machine} onChange={v => set('machine', normalizeMachineNumber(v))} hint="باید با ماشین چله فعال یکسان باشد." />
 
       <Select label="هم‌بافت نخ پود" value={form.ham_nakh} onChange={v => set('ham_nakh', v)} items={(lookups.hambaftYarn || []).map(x => ({ id: x, name: x }))} />
 
       <Input label="وزن" type="number" value={form.weight} onChange={v => set('weight', Number(v))} />
 
-      <Select label="شماره چله فعال روی ماشین" value={form.chelle_id} onChange={chooseChelle} items={uniqueOptions(chelles.map(x => ({ id: x.id, name: `${x.shom_chelle} - ماشین ${x.machine}` })), form.chelle_id)} />
+      <Select label="شماره چله فعال روی ماشین" value={form.chelle_id} onChange={chooseChelle} items={uniqueOptions(chelles.map(x => ({ id: x.id, name: `${x.shom_chelle} - ماشین ${normalizeMachineNumber(x.machine)}` })), form.chelle_id)} />
 
       <Select label="مالک نخ / مشتری" value={form.mosh_name} onChange={v => set('mosh_name', v)} items={(lookups.customers || []).map(x => ({ id: x.name, name: x.name }))} />
 
@@ -3967,7 +3977,12 @@ function Page({ title, children }) { return <div className="page"><h1>{title}</h
 
 function filterOptions(rows, key) {
 
-  return [...new Set((rows || []).map(r => r?.[key]).filter(v => String(v ?? '').trim() !== '').map(v => String(v)))].sort();
+  return [...new Set((rows || []).map(r => r?.[key]).filter(v => String(v ?? '').trim() !== '').map(v => machineKey(key) ? normalizeMachineNumber(v) : String(v)))].sort((a, b) => {
+    const na = Number(a);
+    const nb = Number(b);
+    if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+    return String(a).localeCompare(String(b));
+  });
 
 }
 
@@ -3977,7 +3992,7 @@ function Table({ rows, columns, onEdit, onDelete, hideActions = false }) {
 
   if (!rows?.length) return <div className="empty">داده‌ای برای نمایش وجود ندارد.</div>;
 
-  return <div className="table-wrap"><table><thead><tr>{columns.map(c => <th key={c[0]}>{c[1]}</th>)}{!hideActions && <th>عملیات</th>}</tr></thead><tbody>{rows.map((r, i) => <tr key={r.id || `${r.machine}-${r.shom_chelle}-${i}`}>{columns.map(c => <td key={c[0]}>{display(r[c[0]])}</td>)}{!hideActions && <td className="table-actions"><button onClick={() => onEdit(r)}>ویرایش</button><button className="ghost" onClick={() => onDelete(r.id)}>حذف</button></td>}</tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr>{columns.map(c => <th key={c[0]}>{c[1]}</th>)}{!hideActions && <th>عملیات</th>}</tr></thead><tbody>{rows.map((r, i) => <tr key={r.id || `${r.machine}-${r.shom_chelle}-${i}`}>{columns.map(c => <td key={c[0]}>{display(machineKey(c[0]) ? normalizeMachineNumber(r[c[0]]) : r[c[0]])}</td>)}{!hideActions && <td className="table-actions"><button onClick={() => onEdit(r)}>ویرایش</button><button className="ghost" onClick={() => onDelete(r.id)}>حذف</button></td>}</tr>)}</tbody></table></div>;
 
 }
 
@@ -4205,7 +4220,17 @@ async function api(path, opts = {}) {
 
 function filterRows(rows, filters) {
 
-  return rows.filter(row => Object.entries(filters || {}).every(([key, val]) => !String(val || '').trim() || String(row[key] ?? '').toLowerCase().includes(String(val).trim().toLowerCase())));
+  return rows.filter(row => Object.entries(filters || {}).every(([key, val]) => {
+    const wanted = machineKey(key) ? normalizeMachineNumber(val) : String(val || '').trim();
+    const actual = machineKey(key) ? normalizeMachineNumber(row[key]) : String(row[key] ?? '');
+    return !wanted || actual.toLowerCase().includes(wanted.toLowerCase());
+  }));
+
+}
+
+function machineKey(key) {
+
+  return ['machine', 'machin', 'last_machine'].includes(String(key || ''));
 
 }
 
