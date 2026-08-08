@@ -70,6 +70,7 @@ type portalApp struct {
 
 type launchTicket struct {
 	AccessToken string
+	Module      string
 	ExpiresAt   time.Time
 }
 
@@ -1963,8 +1964,9 @@ func (a *portalApp) deprovisionTextileTenant(username string) error {
 	return nil
 }
 
-func (a *portalApp) issueLaunchTicket(accessToken string) (string, time.Time, error) {
+func (a *portalApp) issueLaunchTicket(accessToken, module string) (string, time.Time, error) {
 	accessToken = strings.TrimSpace(accessToken)
+	module = strings.ToLower(strings.TrimSpace(module))
 	record, err := a.findAccessByToken(accessToken)
 	if err != nil {
 		return "", time.Time{}, err
@@ -1977,6 +1979,14 @@ func (a *portalApp) issueLaunchTicket(accessToken string) (string, time.Time, er
 	// password-change flags must not force that customer through a second login.
 	if strings.TrimSpace(record.Username) == "" || strings.TrimSpace(record.PasswordHash) == "" {
 		return "", time.Time{}, errors.New("access setup is incomplete")
+	}
+	if module != "" {
+		if module != "financial" && module != "operational" && module != "weaving" {
+			return "", time.Time{}, errors.New("launch module is invalid")
+		}
+		if !moduleAllowed(record, module) {
+			return "", time.Time{}, errors.New("module access is not active")
+		}
 	}
 
 	raw := make([]byte, 32)
@@ -1993,14 +2003,14 @@ func (a *portalApp) issueLaunchTicket(accessToken string) (string, time.Time, er
 			delete(a.launchTickets, key)
 		}
 	}
-	a.launchTickets[ticket] = launchTicket{AccessToken: accessToken, ExpiresAt: expiresAt}
+	a.launchTickets[ticket] = launchTicket{AccessToken: accessToken, Module: module, ExpiresAt: expiresAt}
 	return ticket, expiresAt, nil
 }
 
-func (a *portalApp) consumeLaunchTicket(ticket string) (projectAccess, error) {
+func (a *portalApp) consumeLaunchTicket(ticket string) (projectAccess, string, error) {
 	ticket = strings.TrimSpace(ticket)
 	if ticket == "" {
-		return projectAccess{}, errors.New("launch ticket is missing")
+		return projectAccess{}, "", errors.New("launch ticket is missing")
 	}
 
 	a.launchTicketMu.Lock()
@@ -2010,20 +2020,23 @@ func (a *portalApp) consumeLaunchTicket(ticket string) (projectAccess, error) {
 	}
 	a.launchTicketMu.Unlock()
 	if !ok || time.Now().After(item.ExpiresAt) {
-		return projectAccess{}, errors.New("launch ticket is invalid or expired")
+		return projectAccess{}, "", errors.New("launch ticket is invalid or expired")
 	}
 
 	record, err := a.findAccessByToken(item.AccessToken)
 	if err != nil {
-		return projectAccess{}, err
+		return projectAccess{}, "", err
 	}
 	if record.ProjectKey != "textile-erp" || !record.IsActive || time.Now().After(record.ExpiresAt) {
-		return projectAccess{}, errors.New("access is not active")
+		return projectAccess{}, "", errors.New("access is not active")
 	}
 	if strings.TrimSpace(record.Username) == "" || strings.TrimSpace(record.PasswordHash) == "" {
-		return projectAccess{}, errors.New("access setup is incomplete")
+		return projectAccess{}, "", errors.New("access setup is incomplete")
 	}
-	return record, nil
+	if item.Module != "" && !moduleAllowed(record, item.Module) {
+		return projectAccess{}, "", errors.New("module access is not active")
+	}
+	return record, item.Module, nil
 }
 
 func (a *portalApp) adminLaunchTicket(w http.ResponseWriter, r *http.Request) {
@@ -2037,12 +2050,13 @@ func (a *portalApp) adminLaunchTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	var payload struct {
 		AccessToken string `json:"accessToken"`
+		Module      string `json:"module"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&payload); err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	ticket, expiresAt, err := a.issueLaunchTicket(payload.AccessToken)
+	ticket, expiresAt, err := a.issueLaunchTicket(payload.AccessToken, payload.Module)
 	if err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -2061,13 +2075,21 @@ func (a *portalApp) launchEntry(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store, no-cache, max-age=0")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	ticket := strings.Trim(strings.TrimPrefix(r.URL.Path, "/launch/"), "/")
-	record, err := a.consumeLaunchTicket(ticket)
+	record, module, err := a.consumeLaunchTicket(ticket)
 	if err != nil {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 	a.setPortalAccessCookie(w, r, record.AccessToken, record.ExpiresAt)
 	_ = a.markAccessUsed(record.ID)
+	if module == "weaving" {
+		a.redirectToWeavingSSO(w, r, record)
+		return
+	}
+	if module == "financial" || module == "operational" {
+		http.Redirect(w, r, "/module-login?module="+url.QueryEscape(module), http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, a.accessTarget(record), http.StatusSeeOther)
 }
 
