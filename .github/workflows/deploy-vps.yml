@@ -139,13 +139,16 @@ jobs:
           echo "::warning::Telegram relay is blocked from the VPS; deploying Textile ERP with Telegram reports disabled."
           ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" '
             set -eu
+            umask 077
             remote_file=/var/tmp/textile-telegram.env
-            remote_temp="${remote_file}.disabled.tmp"
+            remote_temp="$(mktemp "${remote_file}.disabled.XXXXXX")"
+            trap "rm -f \"$remote_temp\"" EXIT
             test -f "$remote_file"
             sed "s/^TEXTILE_TELEGRAM_ENABLED=.*/TEXTILE_TELEGRAM_ENABLED=false/" "$remote_file" > "$remote_temp"
             grep -qx "TEXTILE_TELEGRAM_ENABLED=false" "$remote_temp"
             chmod 0600 "$remote_temp"
             mv -f "$remote_temp" "$remote_file"
+            trap - EXIT
           '
       - name: Authenticate VPS for private images
         shell: bash
