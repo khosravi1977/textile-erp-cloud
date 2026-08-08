@@ -14,6 +14,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -249,7 +250,7 @@ func main() {
 var operationalTenantTables = []string{
 	"mosh_name", "nakh_name", "kala_name", "chellepich", "kod_navard", "gerezan",
 	"nakh_vor", "nakh_khor", "empty_beam_out", "chelle", "gere", "nakh_salon", "salon",
-	"machine_consumption", "machine_formul", "chelle_formul", "f_khor", "hazine", "operator_name", "driver_name",
+	"machine_consumption", "machine_formul", "chelle_formul", "machine_formul_archive", "machine_number_normalization_audit", "f_khor", "hazine", "operator_name", "driver_name",
 	"weaver_name", "h_rozmare", "service_type", "spare_part", "spare_parts_inventory",
 	"machinery_service", "users", "menu_items", "user_menu_access", "loading_sessions",
 	"loading_session_items", "loading_reservations", "v_kh_moto", "production_waste",
@@ -623,6 +624,8 @@ func (a *app) migrate() error {
 		`CREATE TABLE IF NOT EXISTS machine_formul (id_formul INTEGER PRIMARY KEY AUTOINCREMENT, machine TEXT UNIQUE, tar_percent REAL DEFAULT 50, pod_percent REAL DEFAULT 50, tozih_formul TEXT)`,
 		`CREATE TABLE IF NOT EXISTS chelle_formul (id_formul INTEGER PRIMARY KEY AUTOINCREMENT, chelle_id INTEGER NOT NULL, machine TEXT NOT NULL, shom_chelle TEXT NOT NULL, kala_name TEXT NOT NULL DEFAULT '', ham_chelle TEXT NOT NULL DEFAULT '', ham_pod TEXT NOT NULL DEFAULT '', tar_percent REAL NOT NULL DEFAULT 50, pod_percent REAL NOT NULL DEFAULT 50, tozih_formul TEXT, created_at TEXT DEFAULT (datetime('now','localtime')), updated_at TEXT DEFAULT (datetime('now','localtime')), UNIQUE(chelle_id,kala_name,ham_chelle,ham_pod))`,
 		`CREATE INDEX IF NOT EXISTS idx_chelle_formul_machine_chelle ON chelle_formul(machine,shom_chelle)`,
+		`CREATE TABLE IF NOT EXISTS machine_formul_archive (id_archive INTEGER PRIMARY KEY AUTOINCREMENT, source_id INTEGER, machine TEXT, canonical_machine TEXT, tar_percent REAL, pod_percent REAL, tozih_formul TEXT, reason TEXT, archived_at TEXT DEFAULT (datetime('now','localtime')))`,
+		`CREATE TABLE IF NOT EXISTS machine_number_normalization_audit (id_audit INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT, row_id INTEGER, column_name TEXT, old_value TEXT, new_value TEXT, normalized_at TEXT DEFAULT (datetime('now','localtime')))`,
 		`CREATE TABLE IF NOT EXISTS production_waste (id_waste INTEGER PRIMARY KEY AUTOINCREMENT, waste_date TEXT, machine TEXT NOT NULL, shom_chelle TEXT NOT NULL, waste_type TEXT NOT NULL, weight REAL NOT NULL, reason TEXT, operator_name TEXT, description TEXT, created_at TEXT DEFAULT (datetime('now','localtime')))`,
 		`CREATE TABLE IF NOT EXISTS f_khor (id_f_khor INTEGER PRIMARY KEY AUTOINCREMENT, tarikh_f_khor TEXT, shom_f_khor TEXT, taghe_cod_f_khor TEXT, mosh_f_khor TEXT, shomare_sanad TEXT, kala_name_f_khor TEXT)`,
 		`CREATE TABLE IF NOT EXISTS hazine (id_hazine INTEGER PRIMARY KEY AUTOINCREMENT, onvan_hazine TEXT UNIQUE)`,
@@ -715,6 +718,13 @@ func (a *app) migrate() error {
 	_, _ = a.exec(`UPDATE production_waste SET chelle_id_waste=(SELECT MAX(c.id_chelle) FROM chelle c WHERE c.shom_chelle=production_waste.shom_chelle AND (c.machin_chelle=production_waste.machine OR EXISTS(SELECT 1 FROM gere g WHERE g.chelle_id_gere=c.id_chelle AND g.machin_gere=production_waste.machine))) WHERE chelle_id_waste IS NULL`)
 	_, _ = a.exec(`UPDATE machine_formul SET tar_percent=50,pod_percent=50 WHERE COALESCE(tar_percent,0)+COALESCE(pod_percent,0)<=0`)
 	_, _ = a.exec(`UPDATE machine_formul SET tar_percent=tar_percent*100.0/(tar_percent+pod_percent), pod_percent=pod_percent*100.0/(tar_percent+pod_percent) WHERE ABS((tar_percent+pod_percent)-100)>0.001 AND tar_percent+pod_percent>0`)
+	if err := a.normalizeMachineNumbers(); err != nil {
+		return err
+	}
+	// Retry all legacy relations after machine labels such as 7.0 have become 7.
+	_, _ = a.exec(`UPDATE nakh_salon SET chelle_id_nakh_salon=(SELECT MAX(c.id_chelle) FROM chelle c WHERE c.shom_chelle=nakh_salon.shom_chelle_nakh_salon AND c.machin_chelle=nakh_salon.shom_machin_nakh_salon) WHERE COALESCE(chelle_id_nakh_salon,0)=0`)
+	_, _ = a.exec(`UPDATE salon SET chelle_id_salon=(SELECT MAX(c.id_chelle) FROM chelle c WHERE c.shom_chelle=salon.shom_chelle_salon AND (c.machin_chelle=salon.machin_salon OR EXISTS(SELECT 1 FROM gere g WHERE g.chelle_id_gere=c.id_chelle AND g.machin_gere=salon.machin_salon))) WHERE COALESCE(chelle_id_salon,0)=0`)
+	_, _ = a.exec(`UPDATE production_waste SET chelle_id_waste=(SELECT MAX(c.id_chelle) FROM chelle c WHERE c.shom_chelle=production_waste.shom_chelle AND (c.machin_chelle=production_waste.machine OR EXISTS(SELECT 1 FROM gere g WHERE g.chelle_id_gere=c.id_chelle AND g.machin_gere=production_waste.machine))) WHERE COALESCE(chelle_id_waste,0)=0`)
 	// Freeze the formula used by every legacy production row. Once populated,
 	// changes to a machine default or a later beam can no longer rewrite history.
 	_, _ = a.exec(`UPDATE salon SET chelle_id_salon=(SELECT MAX(c.id_chelle) FROM chelle c WHERE c.shom_chelle=salon.shom_chelle_salon AND c.machin_chelle=salon.machin_salon) WHERE COALESCE(chelle_id_salon,0)=0`)
@@ -1810,6 +1820,12 @@ func (a *app) gere(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &p) {
 			return
 		}
+		machine, machineErr := canonicalMachineNumber(p.Machine)
+		if machineErr != nil {
+			fail(w, 400, machineErr.Error())
+			return
+		}
+		p.Machine = machine
 		gerezan, err := a.nameByID("gerezan", "id_gerezan", "name_gerezan", p.GerezanID)
 		if err != nil || p.ChelleID == 0 || strings.TrimSpace(p.Machine) == "" {
 			fail(w, 400, "اطلاعات گره کامل نیست")
@@ -1910,7 +1926,12 @@ func (a *app) nakhSalon(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &p) {
 			return
 		}
-		p.Machine = strings.TrimSpace(p.Machine)
+		machine, machineErr := canonicalMachineNumber(p.Machine)
+		if machineErr != nil {
+			fail(w, 400, machineErr.Error())
+			return
+		}
+		p.Machine = machine
 		p.HamNakh = strings.TrimSpace(p.HamNakh)
 		p.MoshName = strings.TrimSpace(p.MoshName)
 		p.NakhName = strings.TrimSpace(p.NakhName)
@@ -1923,6 +1944,7 @@ func (a *app) nakhSalon(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "چله معتبر نیست")
 			return
 		}
+		activeMachine = normalizeStoredMachine(activeMachine)
 		if activeMachine == "" || activeMachine != p.Machine {
 			fail(w, 400, "چله انتخاب‌شده روی این ماشین فعال نیست")
 			return
@@ -2341,12 +2363,17 @@ func (a *app) salon(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &p) {
 			return
 		}
+		machine, machineErr := canonicalMachineNumber(p.Machine)
+		if machineErr != nil {
+			fail(w, 400, machineErr.Error())
+			return
+		}
+		p.Machine = machine
 		kala, err := a.nameByID("kala_name", "id_kala_name", "name_kala_name", p.KalaID)
 		if err != nil || p.Metr <= 0 || p.Weight <= 0 || p.Machine == "" || p.HamPod == "" || p.HamChelle == "" || p.ShomChelle == "" {
 			fail(w, 400, "اطلاعات تولید کامل نیست")
 			return
 		}
-		p.Machine = strings.TrimSpace(p.Machine)
 		p.ShomChelle = strings.TrimSpace(p.ShomChelle)
 		activeChelleID, activeHambaft, activeShom := int64(0), "", ""
 		var activeErr error
@@ -3168,7 +3195,12 @@ func (a *app) productionWaste(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &p) {
 			return
 		}
-		p.Machine = strings.TrimSpace(p.Machine)
+		machine, machineErr := canonicalMachineNumber(p.Machine)
+		if machineErr != nil {
+			fail(w, 400, machineErr.Error())
+			return
+		}
+		p.Machine = machine
 		p.ShomChelle = strings.TrimSpace(p.ShomChelle)
 		p.WasteType = strings.TrimSpace(p.WasteType)
 		allowed := map[string]bool{"tar": true, "pod": true, "fabric": true, "selvage": true, "other": true}
@@ -3265,7 +3297,12 @@ func (a *app) formulas(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &p) {
 			return
 		}
-		p.Machine = strings.TrimSpace(p.Machine)
+		machine, machineErr := canonicalMachineNumber(p.Machine)
+		if machineErr != nil {
+			fail(w, 400, machineErr.Error())
+			return
+		}
+		p.Machine = machine
 		if p.Machine == "" || p.TarPercent < 0 || p.PodPercent < 0 || absFloat((p.TarPercent+p.PodPercent)-100) > 0.001 {
 			fail(w, 400, "جمع درصد تار و پود باید دقیقاً ۱۰۰ باشد")
 			return
@@ -4287,31 +4324,53 @@ func (a *app) podLeftover(machine, shom string) (float64, string, string) {
 	return leftover, ham, mosh
 }
 
+func (a *app) recentMachinePodHambafts(machine string, limit int) []string {
+	where, args := machineWhere("shom_machin_nakh_salon", machine)
+	rows, err := a.query(`SELECT COALESCE(ham_nakh_salon,'') FROM nakh_salon WHERE `+where+` AND COALESCE(ham_nakh_salon,'')<>'' AND COALESCE(w_nakh_salon,0)>0 ORDER BY id_nakh_salon DESC`, args...)
+	if err != nil {
+		return []string{}
+	}
+	defer rows.Close()
+	items := []string{}
+	seen := map[string]bool{}
+	for rows.Next() {
+		var item string
+		if rows.Scan(&item) != nil {
+			continue
+		}
+		item = strings.TrimSpace(item)
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		items = append(items, item)
+		if len(items) == limit {
+			break
+		}
+	}
+	return items
+}
+
 func (a *app) salonDefaults(w http.ResponseWriter, machine string) {
+	podHambafts := a.recentMachinePodHambafts(machine, 2)
 	where, args := machineWhere("s.machin_salon", machine)
 	row := a.queryRow(`SELECT s.kala_salon, COALESCE(k.id_kala_name,0), s.ham_pod_salon, s.ham_chelle_salon, s.shom_chelle_salon, COALESCE(s.chelle_id_salon,0) FROM salon s LEFT JOIN kala_name k ON k.name_kala_name=s.kala_salon WHERE `+where+` ORDER BY s.id_salon DESC LIMIT 1`, args...)
 	var kala, hamPod, hamChelle, shom string
 	var kalaID, chelleID int64
 	if err := row.Scan(&kala, &kalaID, &hamPod, &hamChelle, &shom, &chelleID); err != nil {
-		wherePod, podArgs := machineWhere("shom_machin_nakh_salon", machine)
-		var latestPod string
-		_ = a.queryRow(`SELECT COALESCE(ham_nakh_salon,'') FROM nakh_salon WHERE `+wherePod+` AND COALESCE(ham_nakh_salon,'')<>'' ORDER BY id_nakh_salon DESC LIMIT 1`, podArgs...).Scan(&latestPod)
-		if latestPod != "" {
-			writeJSON(w, record{"success": true, "found": true, "ham_pod": latestPod})
+		if len(podHambafts) > 0 {
+			writeJSON(w, record{"success": true, "found": true, "ham_pod": podHambafts[0], "pod_hambafts": podHambafts})
 			return
 		}
-		writeJSON(w, record{"success": true, "found": false})
+		writeJSON(w, record{"success": true, "found": false, "pod_hambafts": podHambafts})
 		return
 	}
-	wherePod, podArgs := machineWhere("shom_machin_nakh_salon", machine)
-	var latestPod string
-	_ = a.queryRow(`SELECT COALESCE(ham_nakh_salon,'') FROM nakh_salon WHERE `+wherePod+` AND COALESCE(ham_nakh_salon,'')<>'' ORDER BY id_nakh_salon DESC LIMIT 1`, podArgs...).Scan(&latestPod)
-	if latestPod != "" {
-		hamPod = latestPod
+	if len(podHambafts) > 0 {
+		hamPod = podHambafts[0]
 	}
 	writeJSON(w, record{
 		"success": true, "found": true, "kala": kala, "kala_id": kalaID,
-		"ham_pod": hamPod, "ham_chelle": hamChelle, "shom_chelle": shom, "chelle_id": chelleID,
+		"ham_pod": hamPod, "pod_hambafts": podHambafts, "ham_chelle": hamChelle, "shom_chelle": shom, "chelle_id": chelleID,
 	})
 }
 
@@ -4333,7 +4392,8 @@ func (a *app) salonPodOptions(w http.ResponseWriter, machine string, chelleID in
 		  AND TRIM(COALESCE(ham_nakh_salon,''))<>''
 		GROUP BY TRIM(ham_nakh_salon), COALESCE(nakh_name_nakh_salon,''), COALESCE(mosh_name_nakh_salon,'')
 		HAVING COALESCE(SUM(w_nakh_salon),0)>0.001
-		ORDER BY MAX(id_nakh_salon) DESC`, machine, chelleID, shom)
+		ORDER BY MAX(id_nakh_salon) DESC
+		LIMIT 2`, machine, chelleID, shom)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
@@ -5128,6 +5188,147 @@ func basicMap(kind string) (string, string, string, bool) {
 	default:
 		return "", "", "", false
 	}
+}
+
+func machineDigits(value string) string {
+	return strings.NewReplacer(
+		"۰", "0", "۱", "1", "۲", "2", "۳", "3", "۴", "4",
+		"۵", "5", "۶", "6", "۷", "7", "۸", "8", "۹", "9",
+		"٠", "0", "١", "1", "٢", "2", "٣", "3", "٤", "4",
+		"٥", "5", "٦", "6", "٧", "7", "٨", "8", "٩", "9",
+		"٫", ".", "٬", "",
+	).Replace(strings.TrimSpace(value))
+}
+
+// normalizeStoredMachine repairs integer machine numbers imported from legacy
+// SQLite as floating point text (for example 7.0). Non-numeric legacy labels
+// are preserved so a migration never discards historical data.
+func normalizeStoredMachine(value string) string {
+	clean := machineDigits(value)
+	f, err := strconv.ParseFloat(clean, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 || f != math.Trunc(f) {
+		return strings.TrimSpace(value)
+	}
+	return strconv.FormatInt(int64(f), 10)
+}
+
+func canonicalMachineNumber(value string) (string, error) {
+	clean := machineDigits(value)
+	if clean == "" {
+		return "", errors.New("شماره یا شناسه ماشین الزامی است")
+	}
+	f, err := strconv.ParseFloat(clean, 64)
+	if err != nil {
+		// Some established installations use identifiers such as M-1. Keep
+		// those labels while still canonicalising numeric legacy values.
+		return clean, nil
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 || f != math.Trunc(f) {
+		return "", errors.New("شماره ماشین باید یک عدد صحیح مثبت مانند 7 باشد")
+	}
+	return strconv.FormatInt(int64(f), 10), nil
+}
+
+func (a *app) normalizeMachineNumbers() error {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	type formulaRow struct {
+		id                     int64
+		machine, tozih         string
+		tarPercent, podPercent float64
+	}
+	formulaRows, err := tx.Query(rebind(a.dialect, `SELECT id_formul,COALESCE(machine,''),COALESCE(tar_percent,50),COALESCE(pod_percent,50),COALESCE(tozih_formul,'') FROM machine_formul ORDER BY id_formul`))
+	if err != nil {
+		return err
+	}
+	formulaGroups := map[string][]formulaRow{}
+	for formulaRows.Next() {
+		var row formulaRow
+		if err := formulaRows.Scan(&row.id, &row.machine, &row.tarPercent, &row.podPercent, &row.tozih); err != nil {
+			formulaRows.Close()
+			return err
+		}
+		canonical := normalizeStoredMachine(row.machine)
+		formulaGroups[canonical] = append(formulaGroups[canonical], row)
+	}
+	if err := formulaRows.Close(); err != nil {
+		return err
+	}
+	for canonical, rows := range formulaGroups {
+		keeper := rows[len(rows)-1]
+		for _, row := range rows[:len(rows)-1] {
+			if _, err := txExec(a.dialect, tx, `INSERT INTO machine_formul_archive(source_id,machine,canonical_machine,tar_percent,pod_percent,tozih_formul,reason) VALUES(?,?,?,?,?,?,?)`, row.id, row.machine, canonical, row.tarPercent, row.podPercent, row.tozih, "duplicate legacy machine number"); err != nil {
+				return err
+			}
+			if _, err := txExec(a.dialect, tx, `INSERT INTO machine_number_normalization_audit(table_name,row_id,column_name,old_value,new_value) VALUES(?,?,?,?,?)`, "machine_formul", row.id, "machine", row.machine, canonical); err != nil {
+				return err
+			}
+			if _, err := txExec(a.dialect, tx, `DELETE FROM machine_formul WHERE id_formul=?`, row.id); err != nil {
+				return err
+			}
+		}
+		if keeper.machine != canonical {
+			if _, err := txExec(a.dialect, tx, `INSERT INTO machine_number_normalization_audit(table_name,row_id,column_name,old_value,new_value) VALUES(?,?,?,?,?)`, "machine_formul", keeper.id, "machine", keeper.machine, canonical); err != nil {
+				return err
+			}
+			if _, err := txExec(a.dialect, tx, `UPDATE machine_formul SET machine=? WHERE id_formul=?`, canonical, keeper.id); err != nil {
+				return err
+			}
+		}
+	}
+
+	type machineColumn struct{ table, id, column string }
+	columns := []machineColumn{
+		{"chelle", "id_chelle", "machin_chelle"},
+		{"gere", "id_gere", "machin_gere"},
+		{"nakh_salon", "id_nakh_salon", "shom_machin_nakh_salon"},
+		{"salon", "id_salon", "machin_salon"},
+		{"machine_consumption", "id_consumption", "machine"},
+		{"production_waste", "id_waste", "machine"},
+		{"chelle_formul", "id_formul", "machine"},
+	}
+	for _, col := range columns {
+		rows, err := tx.Query(`SELECT ` + quoteIdent(col.id) + `,COALESCE(` + quoteIdent(col.column) + `,'') FROM ` + quoteIdent(col.table))
+		if err != nil {
+			return err
+		}
+		type change struct {
+			id                 int64
+			oldValue, newValue string
+		}
+		changes := []change{}
+		for rows.Next() {
+			var item change
+			if err := rows.Scan(&item.id, &item.oldValue); err != nil {
+				rows.Close()
+				return err
+			}
+			item.newValue = normalizeStoredMachine(item.oldValue)
+			if item.oldValue != item.newValue {
+				changes = append(changes, item)
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, item := range changes {
+			if _, err := txExec(a.dialect, tx, `INSERT INTO machine_number_normalization_audit(table_name,row_id,column_name,old_value,new_value) VALUES(?,?,?,?,?)`, col.table, item.id, col.column, item.oldValue, item.newValue); err != nil {
+				return err
+			}
+			query := `UPDATE ` + quoteIdent(col.table) + ` SET ` + quoteIdent(col.column) + `=? WHERE ` + quoteIdent(col.id) + `=?`
+			if _, err := txExec(a.dialect, tx, query, item.newValue, item.id); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := txExec(a.dialect, tx, `DELETE FROM machine_consumption WHERE id_consumption NOT IN (SELECT MAX(id_consumption) FROM machine_consumption GROUP BY machine,shom_chelle)`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func machineWhere(col, machine string) (string, []any) {
