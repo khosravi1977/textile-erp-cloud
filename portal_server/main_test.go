@@ -731,6 +731,78 @@ func TestOneTimeLaunchTicketCreatesPortalSessionAndCannotBeReused(t *testing.T) 
 	}
 }
 
+func TestOneTimeLaunchTicketCanOpenWeavingDirectly(t *testing.T) {
+	t.Parallel()
+
+	accessFile := filepath.Join(t.TempDir(), "portal-access.db")
+	payload, _ := json.Marshal([]projectAccess{{
+		ID:               23,
+		ProjectKey:       "textile-erp",
+		Username:         "weaving-owner",
+		AccessToken:      "weaving-launch-token",
+		PasswordHash:     "stored-password-hash",
+		AllowFinancial:   true,
+		AllowOperational: true,
+		AllowWeaving:     true,
+		ModuleAccessSet:  true,
+		WeavingTenantID:  "11111111-1111-4111-8111-111111111111",
+		IsActive:         true,
+		ExpiresAt:        time.Now().Add(time.Hour),
+	}})
+	if err := os.WriteFile(accessFile, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &portalApp{
+		accessFile:          accessFile,
+		sessionSecret:       "launch-session-secret",
+		launchTickets:       make(map[string]launchTicket),
+		weavingAppURL:       "https://weaving.example.test",
+		weavingMonitorToken: "weaving-launch-secret-that-is-long-enough",
+	}
+
+	body := strings.NewReader(`{"accessToken":"weaving-launch-token","module":"weaving"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/api/launch-ticket", body)
+	createReq.Header.Set("Content-Type", "application/json")
+	createReq.AddCookie(&http.Cookie{
+		Name:  adminCookieName,
+		Value: app.signAdminSession(time.Now().Add(time.Hour)),
+	})
+	createRec := httptest.NewRecorder()
+	app.adminLaunchTicket(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected ticket creation, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	launchReq := httptest.NewRequest(http.MethodGet, "/launch/"+created.Ticket, nil)
+	launchRec := httptest.NewRecorder()
+	app.launchEntry(launchRec, launchReq)
+	location := launchRec.Header().Get("Location")
+	if launchRec.Code != http.StatusSeeOther || !strings.HasPrefix(location, "https://weaving.example.test/api/auth/portal-sso?token=") {
+		t.Fatalf("expected direct weaving SSO redirect, got %d %s", launchRec.Code, location)
+	}
+	if !strings.Contains(location, "textile-access%3A23") {
+		decoded, err := url.QueryUnescape(location)
+		if err != nil || !strings.Contains(decoded, "token=") {
+			t.Fatalf("expected signed weaving token, got %s", location)
+		}
+	}
+	var accessCookie *http.Cookie
+	for _, cookie := range launchRec.Result().Cookies() {
+		if cookie.Name == accessCookieName {
+			accessCookie = cookie
+		}
+	}
+	if accessCookie == nil || accessCookie.Value != "weaving-launch-token" {
+		t.Fatalf("expected portal access cookie, got %#v", launchRec.Result().Cookies())
+	}
+}
+
 func TestLocalAdminLoginCreatesOwnerWorkspace(t *testing.T) {
 	tempDir := t.TempDir()
 	accessFile := filepath.Join(tempDir, "portal-access.db")
