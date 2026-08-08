@@ -326,3 +326,160 @@ func TestPortalSessionMenusComeOnlyFromCentralAccess(t *testing.T) {
 		t.Fatalf("portal user management must be denied, got %d: %s", deniedResponse.Code, deniedResponse.Body.String())
 	}
 }
+
+func TestMachineNumberNormalizationRepairsLegacyDecimals(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:machine-normalization-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	application := &app{db: db, dialect: "sqlite", dbLabel: "test"}
+	if err := application.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`INSERT INTO chelle(shom_chelle,machin_chelle) VALUES('CH-7','7.0')`,
+		`INSERT INTO gere(shom_chelle_gere,machin_gere) VALUES('CH-7','7.0')`,
+		`INSERT INTO nakh_salon(shom_machin_nakh_salon,ham_nakh_salon,w_nakh_salon) VALUES('7.0','P-7',10)`,
+		`INSERT INTO salon(id_salon,machin_salon,shom_chelle_salon) VALUES(1,'7.0','CH-7')`,
+		`INSERT INTO production_waste(machine,shom_chelle,waste_type,weight,reason) VALUES('7.0','CH-7','pod',1,'test')`,
+		`INSERT INTO machine_formul(machine,tar_percent,pod_percent) VALUES('7',60,40)`,
+		`INSERT INTO machine_formul(machine,tar_percent,pod_percent) VALUES('7.0',62,38)`,
+	}
+	for _, statement := range statements {
+		if _, err := application.exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := application.normalizeMachineNumbers(); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct{ table, column string }{
+		{"chelle", "machin_chelle"}, {"gere", "machin_gere"},
+		{"nakh_salon", "shom_machin_nakh_salon"}, {"salon", "machin_salon"},
+		{"production_waste", "machine"},
+	} {
+		var value string
+		if err := application.queryRow(`SELECT ` + check.column + ` FROM ` + check.table + ` LIMIT 1`).Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		if value != "7" {
+			t.Fatalf("%s.%s was not normalized: %q", check.table, check.column, value)
+		}
+	}
+	var formulaCount int
+	var tarPercent, podPercent float64
+	if err := application.queryRow(`SELECT COUNT(*),MAX(tar_percent),MAX(pod_percent) FROM machine_formul WHERE machine='7'`).Scan(&formulaCount, &tarPercent, &podPercent); err != nil {
+		t.Fatal(err)
+	}
+	if formulaCount != 1 || tarPercent != 62 || podPercent != 38 {
+		t.Fatalf("latest duplicate formula was not preserved: count=%d tar=%v pod=%v", formulaCount, tarPercent, podPercent)
+	}
+	var archived int
+	if err := application.queryRow(`SELECT COUNT(*) FROM machine_formul_archive WHERE canonical_machine='7'`).Scan(&archived); err != nil || archived != 1 {
+		t.Fatalf("duplicate formula was not archived: count=%d err=%v", archived, err)
+	}
+}
+
+func TestNakhSalonCreateAndEditAcceptLegacyMachineDecimal(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:nakh-salon-machine-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	application := &app{db: db, dialect: "sqlite", dbLabel: "test"}
+	if err := application.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec(`INSERT INTO mosh_name(name_mosh) VALUES('PAREGOL')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec(`INSERT INTO nakh_name(name_nakh_name) VALUES('YARN-7')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec(`INSERT INTO chelle(id_chelle,shom_chelle,machin_chelle,hambaft_chelle,mosh_chelle,nakh_chelle) VALUES(1,'CH-7','7.0','HB-7','PAREGOL','YARN-7')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec(`INSERT INTO nakh_vor(w_vor_nakh_vor,moshname_nakh_vor,hambaft_nakh_vor,nakh_name_nakh_vor) VALUES(100,'PAREGOL','HB-7','YARN-7')`); err != nil {
+		t.Fatal(err)
+	}
+	post := func(body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/api/nakh-salon", bytes.NewBufferString(body))
+		response := httptest.NewRecorder()
+		application.nakhSalon(response, request)
+		return response
+	}
+	created := post(`{"machine":"7","ham_nakh":"HB-7","weight":20,"chelle_id":1,"mosh_name":"PAREGOL","nakh_name":"YARN-7","vor_khor":"vorud"}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create failed: %d %s", created.Code, created.Body.String())
+	}
+	updated := post(`{"id":1,"machine":"7.0","ham_nakh":"HB-7","weight":25,"chelle_id":1,"mosh_name":"PAREGOL","nakh_name":"YARN-7","vor_khor":"vorud"}`)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("edit failed: %d %s", updated.Code, updated.Body.String())
+	}
+	var machine string
+	var weight float64
+	if err := application.queryRow(`SELECT shom_machin_nakh_salon,w_nakh_salon FROM nakh_salon WHERE id_nakh_salon=1`).Scan(&machine, &weight); err != nil {
+		t.Fatal(err)
+	}
+	if machine != "7" || weight != 25 {
+		t.Fatalf("edited yarn entry was not canonical: machine=%q weight=%v", machine, weight)
+	}
+}
+
+func TestSalonDefaultsReturnsTwoLatestDistinctPodHambafts(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:salon-pod-options-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	application := &app{db: db, dialect: "sqlite", dbLabel: "test"}
+	if err := application.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, hambaft := range []string{"HB-OLD", "HB-CURRENT", "HB-CURRENT", "HB-NEW"} {
+		if _, err := application.exec(`INSERT INTO nakh_salon(shom_machin_nakh_salon,ham_nakh_salon,w_nakh_salon,vor_khor_nakh_salon) VALUES('8.0',?,10,'vorud')`, hambaft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items := application.recentMachinePodHambafts("8", 2)
+	if len(items) != 2 || items[0] != "HB-NEW" || items[1] != "HB-CURRENT" {
+		t.Fatalf("unexpected pod hambaft options: %#v", items)
+	}
+}
+
+func TestSalonPodOptionsLimitsResultsToTwoLatestHambafts(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:salon-pod-options-handler-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	application := &app{db: db, dialect: "sqlite", dbLabel: "test"}
+	if err := application.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec(`INSERT INTO chelle(id_chelle,shom_chelle,machin_chelle) VALUES(1,'CH-8','8')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, hambaft := range []string{"HB-OLD", "HB-CURRENT", "HB-NEW"} {
+		if _, err := application.exec(`INSERT INTO nakh_salon(shom_machin_nakh_salon,ham_nakh_salon,w_nakh_salon,shom_chelle_nakh_salon,chelle_id_nakh_salon) VALUES('8',?,10,'CH-8',1)`, hambaft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response := httptest.NewRecorder()
+	application.salonPodOptions(response, "8", 1)
+	if response.Code != http.StatusOK {
+		t.Fatalf("pod options failed: %d %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Items []struct {
+			Hambaft string `json:"hambaft"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Items) != 2 || payload.Items[0].Hambaft != "HB-NEW" || payload.Items[1].Hambaft != "HB-CURRENT" {
+		t.Fatalf("unexpected pod options response: %#v", payload.Items)
+	}
+}

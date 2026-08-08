@@ -1144,6 +1144,8 @@ function Salon({ lookups, notify }) {
 
   const [recent, setRecent] = useState([]);
 
+  const [podOptions, setPodOptions] = useState([]);
+
   const [nextId, setNextId] = useState('');
 
   const [form, setForm] = useState(salonEmpty());
@@ -1161,8 +1163,6 @@ function Salon({ lookups, notify }) {
   const [formulaConfigured, setFormulaConfigured] = useState(false);
 
   const [formulaSource, setFormulaSource] = useState('');
-
-  const [podOptions, setPodOptions] = useState([]);
 
   const [saving, setSaving] = useState(false);
 
@@ -1263,7 +1263,6 @@ function Salon({ lookups, notify }) {
       setPodOptions([]);
 
       return setRecent([]);
-
     }
 
     const [recentData, defaults] = await Promise.all([
@@ -1276,7 +1275,11 @@ function Salon({ lookups, notify }) {
 
     const recentItems = recentData.items || [];
 
+    const recentPods = uniqueInOrder(defaults.pod_hambafts || []);
+
     setRecent(recentItems);
+
+    setPodOptions(recentPods);
 
     const latest = recentItems[0];
 
@@ -1457,7 +1460,6 @@ function Salon({ lookups, notify }) {
     }
 
     const savedLabel = labelData();
-
     setSaving(true);
 
     try {
@@ -1495,7 +1497,6 @@ function Salon({ lookups, notify }) {
       setSaving(false);
 
     }
-
   };
 
 
@@ -1511,9 +1512,23 @@ function Salon({ lookups, notify }) {
 
     if (row.machine) {
 
-      const data = await api(`/salon/recent-chelles/${encodeURIComponent(row.machine)}`);
-
-      setRecent(data.items || []);
+      try {
+        const data = await api(`/salon/recent-chelles/${encodeURIComponent(row.machine)}`);
+        setRecent(data.items || []);
+        const chelleID = Number(row.chelle_id || 0);
+        if (chelleID > 0) {
+          const podData = await api(`/salon/pod-options/${encodeURIComponent(row.machine)}/${encodeURIComponent(chelleID)}`);
+          const options = podData.items || [];
+          setPodOptions(options.some(x => x.hambaft === row.ham_pod)
+            ? options
+            : [{ hambaft: row.ham_pod, yarn: '', owner: '', balance: 0 }, ...options].filter(x => x.hambaft));
+        } else {
+          setPodOptions(row.ham_pod ? [{ hambaft: row.ham_pod, yarn: '', owner: '', balance: 0 }] : []);
+        }
+      } catch (err) {
+        setPodOptions(row.ham_pod ? [{ hambaft: row.ham_pod, yarn: '', owner: '', balance: 0 }] : []);
+        setFormError(err?.message || 'اطلاعات هم‌بافت‌های پود این ماشین خوانده نشد');
+      }
 
     }
 
@@ -1731,7 +1746,7 @@ function Salon({ lookups, notify }) {
 
       {formError && <div className="error-box" role="alert">{formError}</div>}
 
-      <div className="hint">با وارد کردن شماره ماشین، آخرین کالا، همبافت پود، همبافت تار/چله و چله‌های آخر همان ماشین به صورت خودکار جایگذاری می‌شود.</div>
+      <div className="hint">با وارد کردن شماره ماشین، آخرین کالا، دو همبافت پود ثبت‌شده در ورود نخ سالن و دو چله آخر همان ماشین برای انتخاب نمایش داده می‌شوند.</div>
 
     </section>
 
@@ -3834,6 +3849,8 @@ function CrudPage({ title, endpoint, empty, renderForm, columns, notify, afterSa
 
   const [editing, setEditing] = useState(false);
 
+  const [busy, setBusy] = useState(false);
+
 
 
   const load = async () => {
@@ -3850,17 +3867,20 @@ function CrudPage({ title, endpoint, empty, renderForm, columns, notify, afterSa
 
   const save = async () => {
 
-    await api(endpoint, { method: 'POST', body: form });
-
-    setForm(empty);
-
-    setEditing(false);
-
-    await load();
-
-    afterSave && afterSave();
-
-    notify(editing ? 'ویرایش انجام شد' : 'ثبت انجام شد');
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api(endpoint, { method: 'POST', body: form });
+      setForm(empty);
+      setEditing(false);
+      await load();
+      afterSave && afterSave();
+      notify(editing ? 'ویرایش انجام شد' : 'ثبت انجام شد');
+    } catch (err) {
+      notify(err.message || 'درخواست ثبت با خطا مواجه شد');
+    } finally {
+      setBusy(false);
+    }
 
   };
 
@@ -3890,7 +3910,10 @@ function CrudPage({ title, endpoint, empty, renderForm, columns, notify, afterSa
 
       <div className="form-grid">{renderForm(form, set)}</div>
 
-      <div className="actions-row"><button className="primary" onClick={save}>{editing ? 'ثبت ویرایش' : 'ثبت'}</button>{editing && <button className="ghost" onClick={() => { setForm(empty); setEditing(false); }}>لغو ویرایش</button>}</div>
+      <div className="actions-row">
+        <button className="primary" disabled={busy} onClick={save}>{busy ? 'در حال ذخیره...' : (editing ? 'ثبت ویرایش' : 'ثبت')}</button>
+        {editing && <button className="ghost" onClick={() => { setForm(empty); setEditing(false); }}>لغو ویرایش</button>}
+      </div>
 
     </section>
 
@@ -4197,6 +4220,12 @@ function uniqueOptions(items, selected) {
 function uniqueText(items) {
 
   return [...new Set((items || []).filter(v => String(v ?? '').trim() !== '').map(v => String(v).trim()))].sort();
+
+}
+
+function uniqueInOrder(items) {
+
+  return [...new Set((items || []).filter(v => String(v ?? '').trim() !== '').map(v => String(v).trim()))];
 
 }
 
