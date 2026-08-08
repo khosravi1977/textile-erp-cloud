@@ -608,6 +608,11 @@ func (a *portalApp) requireModuleAccess(module string, next http.Handler) http.H
 
 func injectPortalConfig(prefix string) func(*http.Response) error {
 	return func(resp *http.Response) error {
+		if prefix == "/operational" {
+			resp.Header.Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+			resp.Header.Set("Pragma", "no-cache")
+			resp.Header.Set("Expires", "0")
+		}
 		if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
 			return nil
 		}
