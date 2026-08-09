@@ -65,6 +65,7 @@ type Service struct {
 
 type Settings struct {
 	Available         bool       `json:"available"`
+	Configured        bool       `json:"configured"`
 	BotUsername       string     `json:"bot_username"`
 	ChatID            string     `json:"-"`
 	ChatTitle         string     `json:"chat_title"`
@@ -214,6 +215,10 @@ func (s *Service) Available() bool {
 	return s.ready
 }
 
+func (s *Service) Configured() bool {
+	return s != nil && s.cfg.Enabled && strings.TrimSpace(s.cfg.BotToken) != "" && strings.TrimSpace(s.cfg.BotUsername) != ""
+}
+
 func (s *Service) setAvailable(available bool) {
 	if s == nil {
 		return
@@ -329,6 +334,7 @@ func (s *Service) deleteWebhook(ctx context.Context) error {
 func (s *Service) GetSettings(ctx context.Context, companyID int64) (Settings, error) {
 	result := Settings{
 		Available:         s.Available(),
+		Configured:        s.Configured(),
 		BotUsername:       s.cfg.BotUsername,
 		AlertsEnabled:     true,
 		DailyTime:         "20:00",
@@ -448,7 +454,7 @@ func (s *Service) SaveSettings(
 }
 
 func (s *Service) CreatePairing(ctx context.Context, companyID, userID int64) (Pairing, error) {
-	if !s.Available() {
+	if !s.Configured() {
 		return Pairing{}, errors.New("بات تلگرام هنوز توسط مدیر سرور فعال نشده است")
 	}
 	recipients, err := s.Recipients(ctx, companyID)

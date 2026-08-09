@@ -237,9 +237,15 @@ function customerPaymentSchedule(finance) {
 
     const debt = customerInvoices.reduce((s, x) => s + invoiceDebt(x), 0);
 
-    const expected_cash = customerInvoices.reduce((s, x) => s + Math.round(invoiceDebt(x) * (x.paymentTerms?.cashPercent ?? 30) / 100), 0);
+    let legacyPlan;
 
-    const expected_check = customerInvoices.reduce((s, x) => s + Math.round(invoiceDebt(x) * (x.paymentTerms?.checkPercent ?? 70) / 100), 0);
+    try { legacyPlan = JSON.parse(localStorage.getItem('textile-payment-plans') || '{}')[customer]; } catch { legacyPlan = undefined; }
+
+    const personPlan = finance.paymentPlans?.[customer] || legacyPlan;
+
+    const expected_cash = customerInvoices.reduce((s, x) => { const plan = personPlan || x.paymentTerms || { cashPercent: 30 }; return s + Math.round(invoiceDebt(x) * Number(plan.cashPercent ?? 30) / 100); }, 0);
+
+    const expected_check = customerInvoices.reduce((s, x) => { const plan = personPlan || x.paymentTerms || { checkPercent: 70 }; return s + Math.round(invoiceDebt(x) * Number(plan.checkPercent ?? 70) / 100); }, 0);
 
     const latest = customerInvoices.slice().sort((a, b) => String(a.date).localeCompare(String(b.date))).pop();
 
@@ -253,7 +259,7 @@ function customerPaymentSchedule(finance) {
 
       expected_check,
 
-      expected_check_date: addMonths(latest?.date || today(), latest?.paymentTerms?.checkMonths ?? 3),
+      expected_check_date: addMonths(latest?.date || today(), personPlan?.checkMonths ?? latest?.paymentTerms?.checkMonths ?? 3),
 
     };
 
@@ -837,6 +843,8 @@ function emptyFinance() {
 
     fiscalPeriods: [],
 
+    paymentPlans: {},
+
     accountingSettings: { defaultVatRate: 0 },
 
   };
@@ -1402,7 +1410,7 @@ export default function App() {
         {currentPage === 'payableDocs' && <DocsPage kind="payable" finance={safeFinance} setFinance={updateFinance} />}
         {currentPage === 'bankCash' && <ProfessionalBankCashPage finance={safeFinance} setFinance={updateFinance} />}
         {currentPage === 'accounting' && <AccountingPage finance={safeFinance} setFinance={updateFinance} revision={workspaceStatus.revision} />}
-        {currentPage === 'reports' && <ReportsPage finance={safeFinance} />}
+        {currentPage === 'reports' && <ReportsPage finance={safeFinance} setFinance={updateFinance} />}
         {currentPage === 'taxReports' && <TaxReportPage finance={safeFinance} />}
         {currentPage === 'credit' && <CreditPage finance={safeFinance} />}
         {currentPage === 'advisor' && <AdvisorPage finance={safeFinance} />}
@@ -1601,7 +1609,8 @@ function TelegramReportsPage() {
               {settings.connected ? `${settings.recipient_count || recipients.length} گیرنده متصل` : 'متصل نشده'}
             </span>
           </div>
-          {!settings.available && <div className="mt-4 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm leading-7 text-amber-100">سرویس تلگرام در حال اتصال خودکار مجدد است. توکن فقط در رازهای سرور نگهداری می‌شود و پس از برقراری ارتباط، دکمه ساخت QR خودکار فعال خواهد شد.</div>}
+          {settings.configured && !settings.available && <div className="mt-4 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm leading-7 text-amber-100">بات روی سرور فعال است و در حال اتصال خودکار مجدد می‌باشد. ساخت QR و اتصال گیرنده در دسترس است؛ ارسال آزمایشی پس از سبزشدن ارتباط انجام می‌شود.</div>}
+          {!settings.configured && <div className="mt-4 rounded-md border border-red-700 bg-red-950 p-3 text-sm leading-7 text-red-100">تنظیم محرمانه بات روی سرور کامل نیست و باید توسط مدیر زیرساخت تکمیل شود.</div>}
           <div className="mt-5 grid gap-4 md:grid-cols-2">
             <label className="text-sm text-slate-300">زمان ارسال روزانه
               <TextInput type="time" className="mt-2 w-full" value={settings.daily_time || '20:00'} onChange={e => setSettings(current => ({ ...current, daily_time: e.target.value }))} />
@@ -1661,7 +1670,7 @@ function TelegramReportsPage() {
           <div className="mt-5 flex flex-wrap gap-3">
             <PrimaryButton onClick={save}>{busy === 'save' ? 'در حال ذخیره...' : 'ذخیره تنظیمات'}</PrimaryButton>
             <GhostButton onClick={sendTest}>{busy === 'test' ? 'در حال ارسال...' : 'ارسال گزارش آزمایشی'}</GhostButton>
-            <GhostButton disabled={!settings.available || recipients.length >= 5 || busy === 'pair'} onClick={createPairing}>{busy === 'pair' ? 'در حال ساخت...' : settings.connected ? 'افزودن گیرنده جدید با QR' : 'ساخت QR اتصال'}</GhostButton>
+            <GhostButton disabled={!settings.configured || recipients.length >= 5 || busy === 'pair'} onClick={createPairing}>{busy === 'pair' ? 'در حال ساخت...' : settings.connected ? 'افزودن گیرنده جدید با QR' : 'ساخت QR اتصال'}</GhostButton>
           </div>
           {message && <div className="mt-4 rounded-md border border-emerald-800 bg-emerald-950 p-3 text-sm text-emerald-100">{message}</div>}
           {error && <div className="mt-4"><ErrorBox message={error} /></div>}
@@ -3477,6 +3486,8 @@ function InvoicePage({ finance, setFinance }) {
 
   const [selected, setSelected] = useState(null);
 
+  const [manualMode, setManualMode] = useState(false);
+
   const [editingNumber, setEditingNumber] = useState('');
 
   const [pricingMode, setPricingMode] = useState('commission');
@@ -3537,6 +3548,34 @@ function InvoicePage({ finance, setFinance }) {
 
   const selectableRows = rows.filter(row => !registeredNumbers.has(String(row.shom_f_khor)) || String(row.shom_f_khor) === String(editingNumber));
 
+  const customerNames = [...new Set((data.customers || []).map(row => row.name || row.mosh_name).filter(Boolean))];
+
+  const itemNames = [...new Set((data.kala || []).map(row => row.name || row.kala_name).filter(Boolean))];
+
+  const updateSelected = patch => setSelected(current => ({ ...(current || {}), ...patch }));
+
+  const beginManualInvoice = () => {
+
+    setManualMode(true);
+
+    setEditingNumber('');
+
+    setSelected({ id_f_khor: '', shom_f_khor: shortId('FIN'), tarikh_f_khor: today(), mosh_f_khor: '', kala_name: '', metr_salon: '', w_salon: '', piece_count: '' });
+
+    setPricingMode('sale');
+
+    setBasis('weight');
+
+    setUnitPrice(0);
+
+    setCostUnitPrice(0);
+
+    setTaxable(false);
+
+    setPayments([newPaymentLine('credit')]);
+
+  };
+
 
 
   const updatePayment = (id, patch) => setPayments(prev => prev.map(p => p.id === id ? { ...p, ...patch } : p));
@@ -3544,6 +3583,8 @@ function InvoicePage({ finance, setFinance }) {
   const removePayment = id => setPayments(prev => prev.filter(p => p.id !== id));
 
   const editInvoice = invoice => {
+
+    setManualMode(Boolean(invoice.sourceType === 'manual' || !invoice.operationalId));
 
     setEditingNumber(invoice.number);
 
@@ -3591,7 +3632,31 @@ function InvoicePage({ finance, setFinance }) {
 
   const saveSettlement = () => {
 
-    if (!selected || !total) return;
+    if (!selected) return;
+
+    if (!String(selected.shom_f_khor || '').trim() || !String(selected.mosh_f_khor || '').trim() || !String(selected.kala_name || '').trim()) {
+
+      window.alert('شماره فاکتور، شخص و نام کالا الزامی است.');
+
+      return;
+
+    }
+
+    if (!(Number(quantity || 0) > 0) || !(Number(total || 0) > 0)) {
+
+      window.alert('مقدار و نرخ واحد باید بیشتر از صفر باشند.');
+
+      return;
+
+    }
+
+    if (!editingNumber && finance.invoices.some(row => String(row.number) === String(selected.shom_f_khor))) {
+
+      window.alert('این شماره فاکتور قبلاً ثبت شده است.');
+
+      return;
+
+    }
 
     const cleanPayments = payments
 
@@ -3607,11 +3672,13 @@ function InvoicePage({ finance, setFinance }) {
 
       id: uid('finv'),
 
-      operationalId: selected.id_f_khor,
+      operationalId: manualMode ? null : selected.id_f_khor,
+
+      sourceType: manualMode ? 'manual' : 'operational',
 
       number: selected.shom_f_khor,
 
-      date: today(),
+      date: manualMode ? (selected.tarikh_f_khor || today()) : today(),
 
       operationalDate: selected.tarikh_f_khor,
 
@@ -3729,6 +3796,8 @@ function InvoicePage({ finance, setFinance }) {
 
     setEditingNumber('');
 
+    setManualMode(false);
+
     setSelected(selectableRows.find(row => String(row.shom_f_khor) !== String(invoice.number)) || null);
 
     setTermCashPercent(30);
@@ -3745,6 +3814,44 @@ function InvoicePage({ finance, setFinance }) {
 
   };
 
+  const removeInvoice = invoice => {
+
+    if (!window.confirm(`فاکتور مالی شماره ${invoice.number} حذف شود؟`)) return;
+
+    setFinance(prev => ({
+
+      ...prev,
+
+      invoices: prev.invoices.filter(row => row.id !== invoice.id),
+
+      receivableDocs: prev.receivableDocs.filter(row => String(row.sourceInvoice) !== String(invoice.number)),
+
+      movements: prev.movements.filter(row => String(row.sourceInvoice) !== String(invoice.number)),
+
+      ownedInventory: (prev.ownedInventory || []).filter(row => String(row.sourceInvoice) !== String(invoice.number)),
+
+    }));
+
+    if (String(editingNumber) === String(invoice.number)) {
+
+      setEditingNumber('');
+
+      setManualMode(false);
+
+      setSelected(null);
+
+    }
+
+  };
+
+  const printInvoice = invoice => {
+
+    const paymentsText = (invoice.payments || []).map(row => `${paymentTypes.find(type => type.id === row.type)?.label || row.type}: ${money(row.amount)} تومان`).join('<br>') || '-';
+
+    printSection(`فاکتور مالی شماره ${invoice.number}`, `<table><tbody><tr><th>تاریخ</th><td>${toJalali(invoice.date)}</td><th>شخص</th><td>${invoice.customer || '-'}</td></tr><tr><th>کالا</th><td>${invoice.item || '-'}</td><th>مقدار</th><td>${num(invoice.quantity)}</td></tr><tr><th>نرخ واحد</th><td>${money(invoice.unitPrice)}</td><th>مبلغ کل</th><td>${money(invoice.total)}</td></tr><tr><th>روش تسویه</th><td colspan="3">${paymentsText}</td></tr></tbody></table>`);
+
+  };
+
 
 
   return (
@@ -3755,13 +3862,21 @@ function InvoicePage({ finance, setFinance }) {
 
         <Card>
 
-        <h3 className="mb-4 font-bold">انتخاب فاکتور خروج عملياتي</h3>
+        <div className="mb-4 space-y-3">
+
+          <h3 className="font-bold">منبع فاکتور مالی</h3>
+
+          <PrimaryButton className="w-full" onClick={beginManualInvoice}>صدور فاکتور جدید مستقل</PrimaryButton>
+
+          <p className="text-xs leading-6 text-slate-400">یا یکی از فاکتورهای خروج عملیاتی زیر را برای تعیین قیمت و تسویه انتخاب کنید.</p>
+
+        </div>
 
         <div className="max-h-[620px] space-y-2 overflow-auto pl-1">
 
           {selectableRows.map(row => (
 
-            <button key={row.id_f_khor} className={`w-full rounded-md border p-3 text-right ${selected?.id_f_khor === row.id_f_khor ? 'border-blue-500 bg-blue-950' : 'border-slate-700 bg-slate-900 hover:bg-slate-800'}`} onClick={() => setSelected(row)}>
+            <button key={row.id_f_khor} className={`w-full rounded-md border p-3 text-right ${!manualMode && selected?.id_f_khor === row.id_f_khor ? 'border-blue-500 bg-blue-950' : 'border-slate-700 bg-slate-900 hover:bg-slate-800'}`} onClick={() => { setManualMode(false); setEditingNumber(''); setSelected(row); }}>
 
               <div className="flex justify-between gap-3"><strong>شماره {row.shom_f_khor}</strong><span className="text-sm text-slate-400">{row.tarikh_f_khor}</span></div>
 
@@ -3789,7 +3904,21 @@ function InvoicePage({ finance, setFinance }) {
 
           <div className="space-y-4">
 
-            <div className="grid grid-cols-3 gap-3">
+            {manualMode ? <div className="grid grid-cols-3 gap-3">
+
+              <label className="text-sm text-slate-300">شماره فاکتور<TextInput className="mt-2 w-full" value={selected.shom_f_khor || ''} onChange={e => updateSelected({ shom_f_khor: e.target.value })} /></label>
+
+              <label className="text-sm text-slate-300">تاریخ<DateInput className="mt-2 w-full" value={selected.tarikh_f_khor || today()} onChange={e => updateSelected({ tarikh_f_khor: e.target.value })} /></label>
+
+              <label className="text-sm text-slate-300">شخص / مشتری<TextInput className="mt-2 w-full" list="manual-financial-customers" value={selected.mosh_f_khor || ''} onChange={e => updateSelected({ mosh_f_khor: e.target.value })} /><datalist id="manual-financial-customers">{customerNames.map(name => <option key={name} value={name} />)}</datalist></label>
+
+              <label className="text-sm text-slate-300">کالا یا خدمت<TextInput className="mt-2 w-full" list="manual-financial-items" value={selected.kala_name || ''} onChange={e => updateSelected({ kala_name: e.target.value })} /><datalist id="manual-financial-items">{itemNames.map(name => <option key={name} value={name} />)}</datalist></label>
+
+              <label className="text-sm text-slate-300">وزن<TextInput className="mt-2 w-full" type="number" min="0" step="0.001" value={selected.w_salon || ''} onChange={e => updateSelected({ w_salon: Number(e.target.value || 0) })} /></label>
+
+              <label className="text-sm text-slate-300">متراژ<TextInput className="mt-2 w-full" type="number" min="0" step="0.01" value={selected.metr_salon || ''} onChange={e => updateSelected({ metr_salon: Number(e.target.value || 0) })} /></label>
+
+            </div> : <div className="grid grid-cols-3 gap-3">
 
               <Field label="شماره فاکتور" value={selected.shom_f_khor} />
 
@@ -3803,7 +3932,7 @@ function InvoicePage({ finance, setFinance }) {
 
               <Field label="وزن" value={num(selected.w_salon)} />
 
-            </div>
+            </div>}
 
             <div className="grid grid-cols-6 gap-3">
 
@@ -3873,9 +4002,21 @@ function InvoicePage({ finance, setFinance }) {
 
       <Card>
 
-        <h3 className="mb-4 font-bold">فاکتورهاي مالي ثبت شده</h3>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
 
-        <FinancialInvoiceTable rows={finance.invoices} onEdit={editInvoice} />
+          <h3 className="font-bold">فاکتورهاي مالي ثبت شده</h3>
+
+          <div className="flex gap-2">
+
+            <PrimaryButton onClick={() => printSection('فاکتورهای مالی', `<table><thead><tr><th>شماره</th><th>تاریخ</th><th>شخص</th><th>کالا</th><th>مبلغ</th><th>مانده</th></tr></thead><tbody>${finance.invoices.map(row => `<tr><td>${row.number}</td><td>${toJalali(row.date)}</td><td>${row.customer}</td><td>${row.item}</td><td>${money(row.total)}</td><td>${money(invoiceDebt(row))}</td></tr>`).join('')}</tbody></table>`)}>چاپ گزارش</PrimaryButton>
+
+            <PrimaryButton onClick={() => exportExcel('فاکتورهای مالی', finance.invoices.map(row => ({ ...row, debt: invoiceDebt(row), paid: paidAmount(row) })), [['number','شماره'],['date','تاریخ'],['customer','شخص'],['item','کالا'],['quantity','مقدار'],['unitPrice','نرخ واحد'],['total','مبلغ'],['paid','تسویه'],['debt','مانده']])}>خروجی اکسل</PrimaryButton>
+
+          </div>
+
+        </div>
+
+        <FinancialInvoiceTable rows={finance.invoices} onEdit={editInvoice} onPrint={printInvoice} onDelete={removeInvoice} />
 
       </Card>
 
@@ -4798,7 +4939,7 @@ function AccountingPage({ finance, setFinance, revision }) {
   </div>;
 }
 
-function ReportsPage({ finance }) {
+function ReportsPage({ finance, setFinance }) {
 
   const customers = [...new Set([...finance.invoices.map(x => x.customer), ...finance.incomingInvoices.map(x => x.customer), ...(finance.yarnOutInvoices || []).map(x => x.customer), ...finance.receivableDocs.map(x => x.customer), ...finance.receivableDocs.map(x => x.assignedTo), ...finance.payableDocs.map(x => x.customer), ...(finance.openingBalances || []).map(x => x.customer)].filter(Boolean))];
 
@@ -4810,7 +4951,9 @@ function ReportsPage({ finance }) {
 
   const [typeFilter, setTypeFilter] = useState('all');
 
-  const [paymentPlans, setPaymentPlans] = useLocalStorage('textile-payment-plans', {});
+  const legacyPaymentPlans = (() => { try { return JSON.parse(localStorage.getItem('textile-payment-plans') || '{}'); } catch { return {}; } })();
+
+  const paymentPlans = { ...legacyPaymentPlans, ...(finance.paymentPlans || {}) };
 
   const activePlan = customer === 'all' ? { cashPercent: 30, checkPercent: 70, checkMonths: 3 } : (paymentPlans[customer] || { cashPercent: 30, checkPercent: 70, checkMonths: 3 });
 
@@ -4818,7 +4961,11 @@ function ReportsPage({ finance }) {
 
     if (customer === 'all') return;
 
-    setPaymentPlans(prev => ({ ...prev, [customer]: { ...activePlan, ...patch } }));
+    const nextPlan = { ...activePlan, ...patch };
+
+    setFinance(prev => ({ ...prev, paymentPlans: { ...(prev.paymentPlans || {}), [customer]: nextPlan } }));
+
+    localStorage.setItem('textile-payment-plans', JSON.stringify({ ...paymentPlans, [customer]: nextPlan }));
 
   };
 
@@ -4826,7 +4973,7 @@ function ReportsPage({ finance }) {
 
     ...(finance.openingBalances || []).map(row => ({ type: 'مانده افتتاحيه', invoice_no: row.id, date: row.date, customer: row.customer, item: row.description || '-', pricing_basis: row.type === 'receivable' ? 'طلب از مشتري' : 'بدهي به شخص', quantity: '', unit_price: '', total: row.type === 'receivable' ? Number(row.amount || 0) : -Number(row.amount || 0), paid: 0, debt: row.type === 'receivable' ? Number(row.amount || 0) : -Number(row.amount || 0) })),
 
-    ...finance.invoices.map(row => { const plan = row.paymentTerms || paymentPlans[row.customer] || paymentPlanFor(row.customer); return { type: 'فاکتور خروج مالي', invoice_no: row.number, date: row.date, customer: row.customer, item: row.item, pricing_basis: row.basis === 'weight' ? 'وزني' : 'متري', quantity: row.quantity, unit_price: row.unitPrice, total: row.total, paid: paidAmount(row), debt: invoiceDebt(row), expected_cash: Math.round(Number(row.total || 0) * plan.cashPercent / 100), expected_check: Math.round(Number(row.total || 0) * plan.checkPercent / 100), expected_check_date: addMonths(row.date, plan.checkMonths) }; }),
+    ...finance.invoices.map(row => { const plan = paymentPlans[row.customer] || row.paymentTerms || paymentPlanFor(row.customer); const debt = invoiceDebt(row); return { type: 'فاکتور خروج مالي', invoice_no: row.number, date: row.date, customer: row.customer, item: row.item, pricing_basis: row.basis === 'weight' ? 'وزني' : 'متري', quantity: row.quantity, unit_price: row.unitPrice, total: row.total, paid: paidAmount(row), debt, expected_cash: Math.round(debt * Number(plan.cashPercent || 0) / 100), expected_check: Math.round(debt * Number(plan.checkPercent || 0) / 100), expected_check_date: addMonths(row.date, plan.checkMonths) }; }),
 
     ...finance.incomingInvoices.map(row => ({ type: row.nonFinancial ? 'فاکتور ورود اماني' : 'فاکتور ورود', invoice_no: row.id, date: row.date, customer: row.customer, item: row.itemName, pricing_basis: row.inventoryType === 'yarn' ? 'نخ' : row.inventoryType === 'fabric' ? 'پارچه' : 'ساير', quantity: row.quantity, unit_price: row.unitPrice, total: row.nonFinancial ? 0 : row.amount, paid: row.nonFinancial ? 0 : (row.payments || []).filter(p => p.type !== 'credit').reduce((s, p) => s + Number(p.amount || 0), 0), debt: row.nonFinancial ? 0 : -(row.payments || []).filter(p => p.type === 'credit').reduce((s, p) => s + Number(p.amount || 0), 0), inventory_value: row.nonFinancial ? row.amount : '' })),
 
@@ -4856,7 +5003,7 @@ function ReportsPage({ finance }) {
 
   const printReport = () => {
 
-    const html = `<p>از تاريخ: ${toJalali(fromDate) || '-'} | تا تاريخ: ${toJalali(toDate) || '-'} | مشتري: ${customer === 'all' ? 'همه' : customer} | نوع: ${typeFilter === 'all' ? 'همه' : typeFilter}</p><table><thead><tr><th>نوع</th><th>شماره</th><th>تاريخ</th><th>شخص</th><th>شرح</th><th>مبنا/وضعيت</th><th>مقدار</th><th>نرخ واحد</th><th>مبلغ</th><th>پرداخت</th><th>مانده</th></tr></thead><tbody>${reportRows.map(x => `<tr><td>${x.type}</td><td>${x.invoice_no}</td><td>${toJalali(x.date)}</td><td>${x.customer}</td><td>${x.item}</td><td>${x.pricing_basis}</td><td>${num(x.quantity)}</td><td>${money(x.unit_price)}</td><td>${money(x.total)}</td><td>${money(x.paid)}</td><td>${money(x.debt)}</td></tr>`).join('')}</tbody></table>`;
+    const html = `<p>از تاريخ: ${toJalali(fromDate) || '-'} | تا تاريخ: ${toJalali(toDate) || '-'} | مشتري: ${customer === 'all' ? 'همه' : customer} | نوع: ${typeFilter === 'all' ? 'همه' : typeFilter}</p><table><thead><tr><th>نوع</th><th>شماره</th><th>تاريخ</th><th>شخص</th><th>شرح</th><th>مبنا/وضعيت</th><th>مقدار</th><th>نرخ واحد</th><th>مبلغ</th><th>پرداخت</th><th>مانده</th><th>نقد طبق قرار</th><th>چک طبق قرار</th><th>تاريخ چک</th></tr></thead><tbody>${reportRows.map(x => `<tr><td>${x.type}</td><td>${x.invoice_no}</td><td>${toJalali(x.date)}</td><td>${x.customer}</td><td>${x.item}</td><td>${x.pricing_basis}</td><td>${num(x.quantity)}</td><td>${money(x.unit_price)}</td><td>${money(x.total)}</td><td>${money(x.paid)}</td><td>${money(x.debt)}</td><td>${money(x.expected_cash)}</td><td>${money(x.expected_check)}</td><td>${toJalali(x.expected_check_date)}</td></tr>`).join('')}</tbody></table>`;
 
     printSection('ريز گزارش مالي فاکتورها', html);
 
@@ -4866,9 +5013,9 @@ function ReportsPage({ finance }) {
 
     <div className="space-y-5">
 
-      <Card><div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ريز گزارش مالي فاکتورها</h3><div className="flex flex-wrap gap-2"><SelectInput value={customer} onChange={e => setCustomer(e.target.value)}><option value="all">همه مشتريان</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><SelectInput value={typeFilter} onChange={e => setTypeFilter(e.target.value)}><option value="all">همه نوع ها</option>{[...new Set(allReportRows.map(x => x.type))].map(t => <option key={t} value={t}>{t}</option>)}</SelectInput><DateInput value={fromDate} onChange={e => setFromDate(e.target.value)} /><DateInput value={toDate} onChange={e => setToDate(e.target.value)} /><PrimaryButton onClick={printReport}>چاپ ريز گزارش</PrimaryButton><PrimaryButton onClick={() => exportExcel('ریز گزارش مالی', reportRows, [['type','نوع'],['invoice_no','شماره'],['date','تاریخ'],['customer','شخص'],['item','شرح'],['pricing_basis','مبنا یا وضعیت'],['quantity','مقدار'],['unit_price','نرخ واحد'],['total','مبلغ'],['paid','پرداخت'],['debt','مانده']])}>خروجی اکسل</PrimaryButton></div></div></Card>
+      <Card><div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ريز گزارش مالي فاکتورها</h3><div className="flex flex-wrap gap-2"><SelectInput value={customer} onChange={e => setCustomer(e.target.value)}><option value="all">همه مشتريان</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><SelectInput value={typeFilter} onChange={e => setTypeFilter(e.target.value)}><option value="all">همه نوع ها</option>{[...new Set(allReportRows.map(x => x.type))].map(t => <option key={t} value={t}>{t}</option>)}</SelectInput><DateInput value={fromDate} onChange={e => setFromDate(e.target.value)} /><DateInput value={toDate} onChange={e => setToDate(e.target.value)} /><PrimaryButton onClick={printReport}>چاپ ريز گزارش</PrimaryButton><PrimaryButton onClick={() => exportExcel('ریز گزارش مالی', reportRows, [['type','نوع'],['invoice_no','شماره'],['date','تاریخ'],['customer','شخص'],['item','شرح'],['pricing_basis','مبنا یا وضعیت'],['quantity','مقدار'],['unit_price','نرخ واحد'],['total','مبلغ'],['paid','پرداخت'],['debt','مانده'],['expected_cash','نقد طبق قرار'],['expected_check','چک طبق قرار'],['expected_check_date','تاریخ چک طبق قرار']])}>خروجی اکسل</PrimaryButton></div></div></Card>
 
-      {customer !== 'all' && <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">قرار پرداخت شخص</h3><span className="text-sm text-blue-200">{customer}</span></div><div className="grid grid-cols-3 gap-4"><label className="text-sm text-slate-300"><span className="mb-2 block">درصد پرداخت نقدي</span><TextInput className="w-full" type="number" min="0" max="100" value={activePlan.cashPercent} onChange={e => savePlan({ cashPercent: Number(e.target.value || 0), checkPercent: Math.max(0, 100 - Number(e.target.value || 0)) })} /></label><label className="text-sm text-slate-300"><span className="mb-2 block">درصد پرداخت چکي</span><TextInput className="w-full" type="number" min="0" max="100" value={activePlan.checkPercent} onChange={e => savePlan({ checkPercent: Number(e.target.value || 0) })} /></label><label className="text-sm text-slate-300"><span className="mb-2 block">سررسيد چک چند ماهه</span><TextInput className="w-full" type="number" min="0" value={activePlan.checkMonths} onChange={e => savePlan({ checkMonths: Number(e.target.value || 0) })} /></label></div><div className="mt-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-xs text-slate-300">طبق اين قرار، براي فاکتورهاي خروج اين شخص مبلغ نقد مورد انتظار، مبلغ چک مورد انتظار و تاريخ سررسيد چک در جدول گزارش مالي محاسبه مي‌شود.</div></Card>}
+      {customer !== 'all' && <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">قرار پرداخت شخص</h3><span className="text-sm text-blue-200">{customer}</span></div><div className="grid grid-cols-3 gap-4"><label className="text-sm text-slate-300"><span className="mb-2 block">درصد پرداخت نقدي</span><TextInput className="w-full" type="number" min="0" max="100" value={activePlan.cashPercent} onChange={e => { const value = Math.min(100, Math.max(0, Number(e.target.value || 0))); savePlan({ cashPercent: value, checkPercent: 100 - value }); }} /></label><label className="text-sm text-slate-300"><span className="mb-2 block">درصد پرداخت چکي</span><TextInput className="w-full" type="number" min="0" max="100" value={activePlan.checkPercent} onChange={e => { const value = Math.min(100, Math.max(0, Number(e.target.value || 0))); savePlan({ checkPercent: value, cashPercent: 100 - value }); }} /></label><label className="text-sm text-slate-300"><span className="mb-2 block">سررسيد چک چند ماهه</span><TextInput className="w-full" type="number" min="0" value={activePlan.checkMonths} onChange={e => savePlan({ checkMonths: Math.max(0, Number(e.target.value || 0)) })} /></label></div><div className="mt-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-xs text-slate-300">تنظیمات در فضای شرکت ذخیره می‌شود و مبلغ نقد، مبلغ چک و سررسید تمام فاکتورهای این شخص بلافاصله در جدول، چاپ و خروجی اکسل محاسبه می‌شود.</div></Card>}
 
       {summary && <div className="grid grid-cols-6 gap-4"><Field label="مانده خالص شخص" value={money(summary.netBalance) + ' تومان'} tone={summary.netBalance >= 0 ? 'text-amber-300' : 'text-emerald-300'} /><Field label="بدهی فاکتور خروج" value={money(summary.debt) + ' تومان'} tone="text-amber-300" /><Field label="بستانکاری فاکتور ورود" value={money(summary.payableToCustomer) + ' تومان'} tone="text-emerald-300" /><Field label="پرداختي خروجي" value={money(summary.paidOut) + ' تومان'} tone="text-blue-300" /><Field label="چک واگذار شده" value={money(summary.assignedChecks) + ' تومان'} tone="text-violet-300" /><Field label="جمع فاکتور ورود" value={money(summary.incomingTotal) + ' تومان'} /></div>}
 
@@ -5335,7 +5482,7 @@ function OpeningInventoryTable({ rows, onDelete }) {
 
 
 
-function FinancialInvoiceTable({ rows, onEdit }) {
+function FinancialInvoiceTable({ rows, onEdit, onPrint, onDelete }) {
 
   if (!rows.length) return <EmptyState />;
 
@@ -5389,7 +5536,7 @@ function FinancialInvoiceTable({ rows, onEdit }) {
 
               <td className="p-3 text-slate-300">{(row.payments || []).map(p => paymentTypes.find(t => t.id === p.type)?.label || p.type).join('، ')}</td>
 
-              <td className="p-3"><GhostButton onClick={() => onEdit(row)}>ويرايش</GhostButton></td>
+              <td className="p-3"><div className="flex flex-wrap gap-2"><GhostButton onClick={() => onEdit(row)}>ويرايش</GhostButton><GhostButton onClick={() => onPrint(row)}>چاپ</GhostButton><DangerButton onClick={() => onDelete(row)}>حذف</DangerButton></div></td>
 
             </tr>
 

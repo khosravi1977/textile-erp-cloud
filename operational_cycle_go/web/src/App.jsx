@@ -1816,6 +1816,7 @@ function YarnOut({ lookups, notify }) {
 
   const [yarnInRows, setYarnInRows] = useState([]);
   const [warperBalanceRows, setWarperBalanceRows] = useState([]);
+  const [warperBalanceFilters, setWarperBalanceFilters] = useState({});
   const [inventoryRows, setInventoryRows] = useState([]);
 
   const loadWarperBalances = () => api('/warper-yarn-balance').then(setWarperBalanceRows).catch(() => setWarperBalanceRows([]));
@@ -1826,6 +1827,20 @@ function YarnOut({ lookups, notify }) {
     loadWarperBalances();
     loadInventory();
   }, []);
+
+  const warperBalanceColumns = [
+    ['warper','چله‌پیچ'],
+    ['owner','مالک نخ'],
+    ['hambaft','همبافت'],
+    ['yarn','نوع نخ'],
+    ['sent_weight','ارسال به چله‌پیچی kg'],
+    ['returned_weight','ورود چله kg'],
+    ['balance_weight','مانده نزد چله‌پیچ kg'],
+    ['chelle_count','تعداد چله ورودی'],
+    ['last_sent_date','آخرین خروج'],
+    ['last_return_date','آخرین ورود چله'],
+  ];
+  const visibleWarperBalances = filterRows(warperBalanceRows, warperBalanceFilters);
 
   return <CrudPage
 
@@ -1901,18 +1916,15 @@ function YarnOut({ lookups, notify }) {
     extraSections={<section className="panel">
       <div className="panel-title-row"><h2>گزارش مانده نخ نزد چله‌پیچ</h2><button onClick={loadWarperBalances}>بروزرسانی</button></div>
       <p className="hint">این گزارش وزن نخ ارسال‌شده به چله‌پیچی را با چله‌های برگشتی همان چله‌پیچ، همبافت و نوع نخ مقایسه می‌کند.</p>
-      <Table rows={warperBalanceRows} columns={[
-        ['warper','چله‌پیچ'],
-        ['owner','مالک نخ'],
-        ['hambaft','همبافت'],
-        ['yarn','نوع نخ'],
-        ['sent_weight','ارسال به چله‌پیچی kg'],
-        ['returned_weight','ورود چله kg'],
-        ['balance_weight','مانده نزد چله‌پیچ kg'],
-        ['chelle_count','تعداد چله ورودی'],
-        ['last_sent_date','آخرین خروج'],
-        ['last_return_date','آخرین ورود چله'],
-      ]} hideActions />
+      <Filters
+        filters={[["warper","چله‌پیچ"],["owner","مالک نخ"],["hambaft","همبافت"],["yarn","نوع نخ"]]}
+        rows={warperBalanceRows}
+        values={warperBalanceFilters}
+        setValues={setWarperBalanceFilters}
+        onPrint={() => printReport('گزارش مانده نخ نزد چله‌پیچ', visibleWarperBalances, warperBalanceColumns)}
+        onExcel={() => exportExcel('گزارش مانده نخ نزد چله‌پیچ', visibleWarperBalances, warperBalanceColumns)}
+      />
+      <Table rows={visibleWarperBalances} columns={warperBalanceColumns} hideActions />
     </section>}
 
   />;
@@ -2476,7 +2488,11 @@ function LoadingMobilePage({ token, session, onLogout }) {
 
         audio: false,
 
-        video: { facingMode: { ideal: 'environment' } }
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        }
 
       }, videoRef.current, (result, err) => {
 
@@ -2562,15 +2578,15 @@ function LoadingMobilePage({ token, session, onLogout }) {
 
     <section className="panel loading-scanner-card">
 
-      <video ref={videoRef} className={cameraOn ? 'loading-camera active' : 'loading-camera'} muted playsInline />
+      <video ref={videoRef} className={cameraOn ? 'loading-camera active' : 'loading-camera'} muted playsInline autoPlay />
 
       <div className="actions-row">
 
-        <button className="primary" type="button" onClick={startCamera}>{cameraOn ? 'شروع مجدد دوربین' : 'باز کردن دوربین و اسکن بارکد'}</button>
+        <button className="primary loading-scan-button" type="button" onClick={startCamera}>{cameraOn ? 'اسکن زنده فعال است؛ شروع مجدد' : 'فعال کردن بارکدخوان زنده'}</button>
 
       </div>
 
-      <small className="loading-camera-hint">دوربین پشت گوشی به‌صورت زنده بارکد روی لیبل را می‌خواند. پس از تأیید یا رد هر طاقه، اسکن بعدی خودکار آغاز می‌شود.</small>
+      <small className="loading-camera-hint">این بخش عکس ذخیره نمی‌کند. دوربین پشت گوشی مانند بارکدخوان، تصویر زنده را می‌بیند و به‌محض خواندن کد متوقف می‌شود. پس از تأیید یا رد، اسکن بعدی خودکار آغاز می‌شود.</small>
 
       <div className="loading-manual">
 
@@ -3480,6 +3496,8 @@ function DatabaseManager({ notify }) {
 
     if (!file) return;
 
+    if (!window.confirm(`اطلاعات فایل «${file.name}» جایگزین اطلاعات فعلی شود؟ پیش از جایگذاری، پشتیبان خودکار ساخته می‌شود.`)) return;
+
     setImporting(true);
 
     try {
@@ -3488,15 +3506,29 @@ function DatabaseManager({ notify }) {
 
       fd.append('file', file);
 
-      const res = await fetch(`${API}/database/import-xlsx`, { method: 'POST', body: fd });
+      const upload = () => fetch(`${API}/database/import-xlsx`, { method: 'POST', credentials: 'same-origin', body: fd });
 
-      const data = await res.json();
+      let res = await upload();
+
+      if (res.status === 401 && PORTAL_OPERATIONAL_SESSION) {
+
+        const refreshed = await fetch(PORTAL_OPERATIONAL_SESSION, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+
+        if (refreshed.ok) res = await upload();
+
+      }
+
+      const data = await res.json().catch(() => ({}));
 
       if (!res.ok || data.success === false) throw new Error(data.error || 'خطا در بارگذاری اکسل');
 
       setSummary(data);
 
-      notify('فایل اکسل بارگذاری شد و خلاصه جدول‌ها بروزرسانی شد');
+      notify(`${fmt(data.imported_rows || 0)} ردیف در ${fmt(data.imported_tables || 0)} جدول جایگزین شد؛ پشتیبان خودکار: ${data.backup || 'ساخته شد'}`);
+
+    } catch (err) {
+
+      notify(err.message || 'جایگذاری اطلاعات اکسل انجام نشد');
 
     } finally {
 
@@ -3520,7 +3552,7 @@ function DatabaseManager({ notify }) {
 
           <span>{importing ? 'در حال بارگذاری...' : 'بارگذاری فایل اکسل و جایگذاری در دیتابیس'}</span>
 
-          <input type="file" accept=".xlsx" disabled={importing} onChange={e => importExcel(e.target.files?.[0])} />
+          <input type="file" accept=".xlsx" disabled={importing} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; importExcel(file); }} />
 
         </label>
 
