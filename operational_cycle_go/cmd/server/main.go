@@ -2259,15 +2259,42 @@ func (a *app) productionChelleInfo(machine string, chelleID int64, shom string) 
 	if err != nil {
 		return 0, "", "", err
 	}
-	defer rows.Close()
+	type chelleCandidate struct {
+		id              int64
+		hambaft         string
+		shom            string
+		assignedMachine string
+	}
+	candidates := []chelleCandidate{}
 	for rows.Next() {
-		var id int64
-		var hambaft, actualShom, assignedMachine string
-		if err := rows.Scan(&id, &hambaft, &actualShom, &assignedMachine); err != nil {
+		var candidate chelleCandidate
+		if err := rows.Scan(&candidate.id, &candidate.hambaft, &candidate.shom, &candidate.assignedMachine); err != nil {
+			_ = rows.Close()
 			return 0, "", "", err
 		}
-		if normalizeStoredMachine(assignedMachine) == machine || a.isRecentMachineChelle(machine, id, actualShom) {
-			return id, hambaft, actualShom, nil
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, "", "", err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, "", "", err
+	}
+
+	// PostgreSQL production keeps a single connection so the tenant search_path
+	// cannot leak between requests. The candidate rows must be closed before the
+	// recent-beam query starts, otherwise the second query waits forever for the
+	// connection held by the first result set and blocks every operational API.
+	recent := a.recentMachineChelles(machine, 2)
+	for _, candidate := range candidates {
+		if normalizeStoredMachine(candidate.assignedMachine) == machine {
+			return candidate.id, candidate.hambaft, candidate.shom, nil
+		}
+		for _, item := range recent {
+			if (candidate.id > 0 && item.ID == candidate.id) || sameText(item.Shom, candidate.shom) {
+				return candidate.id, candidate.hambaft, candidate.shom, nil
+			}
 		}
 	}
 	return 0, "", "", sql.ErrNoRows

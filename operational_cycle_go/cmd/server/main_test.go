@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestMobileLoadingSessionTransfersValidatedTaghe(t *testing.T) {
@@ -494,6 +495,7 @@ func TestSalonPodOptionsAllowsPreviousOfTwoRecentChelles(t *testing.T) {
 	if err := application.migrate(); err != nil {
 		t.Fatal(err)
 	}
+	db.SetMaxOpenConns(1)
 	if _, err := application.exec(`INSERT INTO chelle(id_chelle,shom_chelle,machin_chelle) VALUES
 		(1,'CH-PREVIOUS',''),(2,'CH-CURRENT','8')`); err != nil {
 		t.Fatal(err)
@@ -507,8 +509,22 @@ func TestSalonPodOptionsAllowsPreviousOfTwoRecentChelles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	response := httptest.NewRecorder()
-	application.salonPodOptions(response, "8", 1)
+	responseChannel := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		application.salonPodOptions(response, "8", 1)
+		responseChannel <- response
+	}()
+	var response *httptest.ResponseRecorder
+	select {
+	case response = <-responseChannel:
+	case <-time.After(2 * time.Second):
+		// Let a broken implementation unwind so the test can report the deadlock
+		// instead of leaving the SQLite connection occupied indefinitely.
+		db.SetMaxOpenConns(2)
+		<-responseChannel
+		t.Fatal("pod options deadlocked while resolving a previous chelle with one database connection")
+	}
 	if response.Code != http.StatusOK {
 		t.Fatalf("previous chelle pod options failed: %d %s", response.Code, response.Body.String())
 	}
