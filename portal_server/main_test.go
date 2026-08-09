@@ -496,6 +496,9 @@ func TestModuleLoginPromotesValidPortalSessionWithoutSecondPassword(t *testing.T
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/financial/" {
 		t.Fatalf("expected automatic module entry, got %d %s", rec.Code, rec.Header().Get("Location"))
 	}
+	if !strings.Contains(rec.Header().Get("Cache-Control"), "no-store") || rec.Header().Get("Vary") != "Cookie" {
+		t.Fatalf("module entry response may be cached: %#v", rec.Header())
+	}
 	cookies := map[string]*http.Cookie{}
 	for _, cookie := range rec.Result().Cookies() {
 		cookies[cookie.Name] = cookie
