@@ -881,6 +881,77 @@ func TestWeavingBridgeTicketIsOneTime(t *testing.T) {
 	}
 }
 
+func TestTeamUpdateRepairsMissingOwnerWeavingTenantBeforeGrantingEmployee(t *testing.T) {
+	t.Parallel()
+
+	const tenantID = "11111111-1111-4111-8111-111111111111"
+	var provisionedUser, syncedUser string
+	weaving := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode weaving payload: %v", err)
+		}
+		switch r.URL.Path {
+		case "/api/internal/provision":
+			provisionedUser, _ = payload["externalUserId"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"tenantId": tenantID})
+		case "/api/internal/users/sync":
+			syncedUser, _ = payload["externalUserId"].(string)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer weaving.Close()
+
+	accessFile := filepath.Join(t.TempDir(), "portal-access.db")
+	expiresAt := time.Now().Add(24 * time.Hour)
+	owner := projectAccess{
+		ID: 1, ProjectKey: "textile-erp", CompanyName: "Legacy Company", ContactName: "Owner",
+		Username: "owner", AccessToken: "owner-token", PasswordHash: "stored-owner-hash",
+		FinancialCompanyID: 77, AccessRole: "owner", AllowWeaving: true, ModuleAccessSet: true,
+		IsActive: true, ExpiresAt: expiresAt,
+	}
+	employee := projectAccess{
+		ID: 2, ProjectKey: "textile-erp", CompanyName: "Legacy Company", ContactName: "Employee",
+		Username: "employee", AccessToken: "employee-token", PasswordHash: "stored-employee-hash",
+		FinancialCompanyID: 77, AccessRole: "viewer", AllowOperational: true, ModuleAccessSet: true,
+		IsActive: true, ExpiresAt: expiresAt,
+	}
+	payload, _ := json.Marshal([]projectAccess{owner, employee})
+	if err := os.WriteFile(accessFile, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &portalApp{
+		accessFile: accessFile, weavingAppURL: weaving.URL,
+		weavingMonitorToken: "weaving-team-secret-that-is-long-enough",
+	}
+
+	body := strings.NewReader(`{"contactName":"Employee","username":"employee","accessRole":"viewer","allowFinancial":false,"allowOperational":false,"allowWeaving":true}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/portal/team/2", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: accessCookieName, Value: owner.AccessToken})
+	rec := httptest.NewRecorder()
+	app.portalTeamByID(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected weaving access update, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if provisionedUser != "textile-access:1" {
+		t.Fatalf("weaving tenant must be provisioned by owner, got %q", provisionedUser)
+	}
+	if syncedUser != "textile-access:2" {
+		t.Fatalf("employee must be synced after tenant repair, got %q", syncedUser)
+	}
+	items, err := readAccesses(accessFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items[0].WeavingTenantID != tenantID || items[1].WeavingTenantID != tenantID || !items[1].AllowWeaving {
+		t.Fatalf("tenant repair was not persisted for owner and employee: %#v", items)
+	}
+}
+
 func TestLocalAdminLoginCreatesOwnerWorkspace(t *testing.T) {
 	tempDir := t.TempDir()
 	accessFile := filepath.Join(tempDir, "portal-access.db")

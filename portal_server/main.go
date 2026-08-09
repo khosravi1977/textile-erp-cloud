@@ -2760,6 +2760,12 @@ func (a *portalApp) portalTeam(w http.ResponseWriter, r *http.Request) {
 			}
 			expiresAt = minTime(customExpiry, record.ExpiresAt)
 		}
+		if allowWeaving {
+			if err := a.ensureCompanyWeavingReady(record); err != nil {
+				respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+		}
 		access, rawPassword, err := a.createManagedAccess(record.ProjectKey, record.CompanyName, req.ContactName, req.Username, req.Password, record.FinancialCompanyID, expiresAt, record.TrialEndsAt, req.Notes, role, req.Permissions, canManage, false, allowFinancial, allowOperational, allowWeaving)
 		if err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -2848,6 +2854,12 @@ func (a *portalApp) portalTeamByID(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			expiresAt = minTime(customExpiry, record.ExpiresAt)
+		}
+		if allowWeaving {
+			if err := a.ensureCompanyWeavingReady(record); err != nil {
+				respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
 		}
 		access, rawPassword, err := a.updateManagedAccess(id, target.ProjectKey, target.CompanyName, req.ContactName, req.Username, req.Password, target.FinancialCompanyID, expiresAt, target.TrialEndsAt, req.Notes, role, req.Permissions, canManage, false, allowFinancial, allowOperational, allowWeaving)
 		if err != nil {
@@ -3439,6 +3451,32 @@ func (a *portalApp) ensureWeavingReady(record projectAccess) (projectAccess, err
 		return projectAccess{}, err
 	}
 	return a.persistWeavingTenantID(record.ID, tenantID)
+}
+
+// ensureCompanyWeavingReady repairs legacy/trial access records that allow the
+// weaving module but were saved before a weaving tenant id was persisted. The
+// tenant must be provisioned with the company owner, never with an employee,
+// otherwise the first employee could accidentally become the tenant manager.
+func (a *portalApp) ensureCompanyWeavingReady(record projectAccess) error {
+	items, err := a.tenantAccesses(record)
+	if err != nil {
+		return err
+	}
+	if existingWeavingTenantID(items, record.FinancialCompanyID) != "" {
+		return nil
+	}
+	var owner projectAccess
+	for _, item := range items {
+		if effectiveAccessRole(item) == "owner" {
+			owner = item
+			break
+		}
+	}
+	if owner.ID == 0 {
+		return errors.New("مدیر اصلی این مشتری برای فعال‌سازی راندمان سالن پیدا نشد")
+	}
+	_, err = a.ensureWeavingReady(owner)
+	return err
 }
 
 func (a *portalApp) signWeavingSSO(record projectAccess) (string, error) {
