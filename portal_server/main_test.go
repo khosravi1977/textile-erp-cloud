@@ -48,28 +48,23 @@ func TestTelegramReportStatusRequiresAvailableFinancialService(t *testing.T) {
 	}
 }
 
-func TestWeavingIntegrationStatusValidatesTheSharedServerCredential(t *testing.T) {
+func TestWeavingIntegrationStatusValidatesTheServerBridge(t *testing.T) {
 	t.Parallel()
-	const secret = "weaving-health-secret-that-is-long-enough"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/internal/hall-snapshot" || r.Header.Get("Authorization") != "Bearer "+secret {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		if r.Header.Get("X-Viora-Tenant-Id") != "00000000-0000-4000-8000-000000000001" {
-			http.Error(w, "tenant required", http.StatusBadRequest)
+		if r.URL.Path != "/api/auth/portal-sso/health" {
+			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"dataStatus":"empty"}`))
+		_, _ = w.Write([]byte(`{"status":"ok","bridge":"textile"}`))
 	}))
 	defer server.Close()
 
-	app := &portalApp{weavingAppURL: server.URL, weavingMonitorToken: secret}
+	app := &portalApp{weavingAppURL: server.URL}
 	if got := app.weavingIntegrationStatus(context.Background()); got != "ok" {
 		t.Fatalf("expected integration status ok, got %q", got)
 	}
-	app.weavingMonitorToken = "wrong-secret-that-is-still-long-enough"
+	app.weavingAppURL = "http://127.0.0.1:1"
 	if got := app.weavingIntegrationStatus(context.Background()); got != "unavailable" {
 		t.Fatalf("expected integration failure, got %q", got)
 	}
@@ -547,7 +542,7 @@ func TestModuleLoginRedirectsPurchasedWeavingToTenantSSO(t *testing.T) {
 	accessFile := filepath.Join(t.TempDir(), "portal-access.db")
 	record := projectAccess{
 		ID: 9, ProjectKey: "textile-erp", CompanyName: "سالن آزمون", Username: "weaving_manager",
-		AccessToken: "weaving-portal-token", AllowWeaving: true,
+		AccessToken: "weaving-portal-token", AllowWeaving: true, FinancialCompanyID: 9,
 		WeavingTenantID: "11111111-1111-4111-8111-111111111111",
 		PasswordHash:    "stored-password-hash", IsActive: true, ExpiresAt: time.Now().Add(time.Hour),
 	}
@@ -564,7 +559,7 @@ func TestModuleLoginRedirectsPurchasedWeavingToTenantSSO(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: accessCookieName, Value: record.AccessToken})
 	rec := httptest.NewRecorder()
 	app.moduleLogin(rec, req)
-	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "https://weaving.example.test/api/auth/portal-sso?token=") {
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "https://weaving.example.test/api/auth/portal-sso?ticket=") {
 		t.Fatalf("expected tenant SSO redirect, got %d %s", rec.Code, rec.Header().Get("Location"))
 	}
 }
@@ -766,18 +761,19 @@ func TestOneTimeLaunchTicketCanOpenWeavingDirectly(t *testing.T) {
 
 	accessFile := filepath.Join(t.TempDir(), "portal-access.db")
 	payload, _ := json.Marshal([]projectAccess{{
-		ID:               23,
-		ProjectKey:       "textile-erp",
-		Username:         "weaving-owner",
-		AccessToken:      "weaving-launch-token",
-		PasswordHash:     "stored-password-hash",
-		AllowFinancial:   true,
-		AllowOperational: true,
-		AllowWeaving:     true,
-		ModuleAccessSet:  true,
-		WeavingTenantID:  "11111111-1111-4111-8111-111111111111",
-		IsActive:         true,
-		ExpiresAt:        time.Now().Add(time.Hour),
+		ID:                 23,
+		ProjectKey:         "textile-erp",
+		Username:           "weaving-owner",
+		AccessToken:        "weaving-launch-token",
+		PasswordHash:       "stored-password-hash",
+		AllowFinancial:     true,
+		AllowOperational:   true,
+		AllowWeaving:       true,
+		ModuleAccessSet:    true,
+		FinancialCompanyID: 23,
+		WeavingTenantID:    "11111111-1111-4111-8111-111111111111",
+		IsActive:           true,
+		ExpiresAt:          time.Now().Add(time.Hour),
 	}})
 	if err := os.WriteFile(accessFile, payload, 0o600); err != nil {
 		t.Fatal(err)
@@ -813,14 +809,12 @@ func TestOneTimeLaunchTicketCanOpenWeavingDirectly(t *testing.T) {
 	launchRec := httptest.NewRecorder()
 	app.launchEntry(launchRec, launchReq)
 	location := launchRec.Header().Get("Location")
-	if launchRec.Code != http.StatusSeeOther || !strings.HasPrefix(location, "https://weaving.example.test/api/auth/portal-sso?token=") {
+	if launchRec.Code != http.StatusSeeOther || !strings.HasPrefix(location, "https://weaving.example.test/api/auth/portal-sso?ticket=") {
 		t.Fatalf("expected direct weaving SSO redirect, got %d %s", launchRec.Code, location)
 	}
-	if !strings.Contains(location, "textile-access%3A23") {
-		decoded, err := url.QueryUnescape(location)
-		if err != nil || !strings.Contains(decoded, "token=") {
-			t.Fatalf("expected signed weaving token, got %s", location)
-		}
+	parsed, err := url.Parse(location)
+	if err != nil || len(parsed.Query().Get("ticket")) < 40 {
+		t.Fatalf("expected opaque one-time weaving ticket, got %s", location)
 	}
 	var accessCookie *http.Cookie
 	for _, cookie := range launchRec.Result().Cookies() {
@@ -833,24 +827,8 @@ func TestOneTimeLaunchTicketCanOpenWeavingDirectly(t *testing.T) {
 	}
 }
 
-func TestWeavingSSOLazilyProvisionsMissingTenant(t *testing.T) {
+func TestWeavingBridgeTicketIsOneTime(t *testing.T) {
 	t.Parallel()
-
-	var provisionCalls int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/internal/provision" {
-			http.NotFound(w, r)
-			return
-		}
-		provisionCalls++
-		if got := r.Header.Get("Authorization"); got != "Bearer weaving-lazy-secret-that-is-long-enough" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"tenantId": "22222222-2222-4222-8222-222222222222"})
-	}))
-	defer server.Close()
-
 	accessFile := filepath.Join(t.TempDir(), "portal-access.db")
 	record := projectAccess{
 		ID: 24, ProjectKey: "textile-erp", CompanyName: "Acme Weaving",
@@ -865,25 +843,41 @@ func TestWeavingSSOLazilyProvisionsMissingTenant(t *testing.T) {
 	}
 	app := &portalApp{
 		accessFile: accessFile, sessionSecret: "lazy-session-secret",
-		weavingAppURL:       server.URL,
-		weavingMonitorToken: "weaving-lazy-secret-that-is-long-enough",
+		weavingAppURL: "https://weaving.example.test", weavingTickets: make(map[string]weavingBridgeTicket),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/module-login?module=weaving", nil)
 	rec := httptest.NewRecorder()
 	app.redirectToWeavingSSO(rec, req, record)
-	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), server.URL+"/api/auth/portal-sso?token=") {
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "https://weaving.example.test/api/auth/portal-sso?ticket=") {
 		t.Fatalf("expected direct weaving SSO redirect, got %d %s", rec.Code, rec.Header().Get("Location"))
 	}
-	if provisionCalls != 1 {
-		t.Fatalf("expected one lazy provisioning call, got %d", provisionCalls)
-	}
-	items, err := app.listAccesses()
+	location, err := url.Parse(rec.Header().Get("Location"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].WeavingTenantID != "22222222-2222-4222-8222-222222222222" {
-		t.Fatalf("lazy tenant id was not persisted: %#v", items)
+	ticket := location.Query().Get("ticket")
+	consumeReq := httptest.NewRequest(http.MethodGet, "/api/weaving/sso-ticket/"+ticket, nil)
+	consumeRec := httptest.NewRecorder()
+	app.weavingSSOTicket(consumeRec, consumeReq)
+	if consumeRec.Code != http.StatusOK {
+		t.Fatalf("expected bridge ticket payload, got %d %s", consumeRec.Code, consumeRec.Body.String())
+	}
+	var bridge struct {
+		ExternalTenantKey string `json:"externalTenantKey"`
+		ExternalUserID    string `json:"externalUserId"`
+		Role              string `json:"role"`
+	}
+	if err := json.NewDecoder(consumeRec.Body).Decode(&bridge); err != nil {
+		t.Fatal(err)
+	}
+	if bridge.ExternalTenantKey != "textile-company:88" || bridge.ExternalUserID != "textile-access:24" || bridge.Role != "manager" {
+		t.Fatalf("unexpected bridge payload: %#v", bridge)
+	}
+	replayRec := httptest.NewRecorder()
+	app.weavingSSOTicket(replayRec, consumeReq)
+	if replayRec.Code != http.StatusUnauthorized {
+		t.Fatalf("one-time ticket replay was accepted: %d", replayRec.Code)
 	}
 }
 

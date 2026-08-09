@@ -46,6 +46,8 @@ type portalApp struct {
 	ordersMu                       sync.Mutex
 	launchTicketMu                 sync.Mutex
 	launchTickets                  map[string]launchTicket
+	weavingTicketMu                sync.Mutex
+	weavingTickets                 map[string]weavingBridgeTicket
 	publicBase                     string
 	financialURL                   string
 	operationalURL                 string
@@ -72,6 +74,11 @@ type launchTicket struct {
 	AccessToken string
 	Module      string
 	ExpiresAt   time.Time
+}
+
+type weavingBridgeTicket struct {
+	AccessID  int64
+	ExpiresAt time.Time
 }
 
 type moduleSessionClaims struct {
@@ -468,6 +475,7 @@ func main() {
 		accessFile:                     dbPath,
 		ordersFile:                     ordersPath,
 		launchTickets:                  make(map[string]launchTicket),
+		weavingTickets:                 make(map[string]weavingBridgeTicket),
 		publicBase:                     strings.TrimRight(publicBase, "/"),
 		financialURL:                   *financial,
 		operationalURL:                 *operational,
@@ -517,6 +525,7 @@ func main() {
 	mux.HandleFunc("/admin", app.adminPanel)
 	mux.HandleFunc("/access/", app.accessEntry)
 	mux.HandleFunc("/launch/", app.launchEntry)
+	mux.HandleFunc("/api/weaving/sso-ticket/", app.weavingSSOTicket)
 	mux.HandleFunc("/api/portal/financial-session", app.portalFinancialSession)
 	mux.HandleFunc("/api/portal/operational-session", app.portalOperationalSession)
 	mux.HandleFunc("/api/portal/team", app.portalTeam)
@@ -666,18 +675,15 @@ func (a *portalApp) health(w http.ResponseWriter, r *http.Request) {
 
 func (a *portalApp) weavingIntegrationStatus(parent context.Context) string {
 	base := strings.TrimRight(strings.TrimSpace(a.weavingAppURL), "/")
-	token := strings.TrimSpace(a.weavingMonitorToken)
-	if base == "" || len(token) < 32 {
+	if base == "" {
 		return "unavailable"
 	}
 	ctx, cancel := context.WithTimeout(parent, 4*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/internal/hall-snapshot", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/auth/portal-sso/health", nil)
 	if err != nil {
 		return "unavailable"
 	}
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("X-Viora-Tenant-Id", "00000000-0000-4000-8000-000000000001")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return "unavailable"
@@ -687,6 +693,92 @@ func (a *portalApp) weavingIntegrationStatus(parent context.Context) string {
 		return "unavailable"
 	}
 	return "ok"
+}
+
+func (a *portalApp) issueWeavingBridgeTicket(record projectAccess) (string, error) {
+	if record.ProjectKey != "textile-erp" || !record.IsActive || time.Now().After(record.ExpiresAt) || !moduleAllowed(record, "weaving") {
+		return "", errors.New("weaving access is not active")
+	}
+	if record.FinancialCompanyID <= 0 || strings.TrimSpace(record.Username) == "" {
+		return "", errors.New("weaving account is incomplete")
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	ticket := base64.RawURLEncoding.EncodeToString(raw)
+	a.weavingTicketMu.Lock()
+	defer a.weavingTicketMu.Unlock()
+	if a.weavingTickets == nil {
+		a.weavingTickets = make(map[string]weavingBridgeTicket)
+	}
+	for key, item := range a.weavingTickets {
+		if time.Now().After(item.ExpiresAt) {
+			delete(a.weavingTickets, key)
+		}
+	}
+	a.weavingTickets[ticket] = weavingBridgeTicket{AccessID: record.ID, ExpiresAt: time.Now().Add(2 * time.Minute)}
+	return ticket, nil
+}
+
+func (a *portalApp) weavingSSOTicket(w http.ResponseWriter, r *http.Request) {
+	setPrivatePageHeaders(w)
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ticket := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/weaving/sso-ticket/"), "/")
+	if ticket == "health" {
+		respondJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "textile-weaving-sso-bridge"})
+		return
+	}
+	a.weavingTicketMu.Lock()
+	item, ok := a.weavingTickets[ticket]
+	if ok {
+		delete(a.weavingTickets, ticket)
+	}
+	a.weavingTicketMu.Unlock()
+	if !ok || time.Now().After(item.ExpiresAt) {
+		respondJSON(w, http.StatusUnauthorized, map[string]string{"error": "ticket is invalid or expired"})
+		return
+	}
+	items, err := a.listAccesses()
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "access store is unavailable"})
+		return
+	}
+	var record projectAccess
+	for _, candidate := range items {
+		if candidate.ID == item.AccessID {
+			record = candidate
+			break
+		}
+	}
+	if record.ID == 0 || !record.IsActive || time.Now().After(record.ExpiresAt) || !moduleAllowed(record, "weaving") {
+		respondJSON(w, http.StatusForbidden, map[string]string{"error": "weaving access is not active"})
+		return
+	}
+	role := "worker"
+	if effectiveAccessRole(record) == "owner" || effectiveAccessRole(record) == "manager" {
+		role = "manager"
+	}
+	tenantName := strings.TrimSpace(record.CompanyName)
+	if tenantName == "" {
+		tenantName = "سالن بافت"
+	}
+	displayName := strings.TrimSpace(record.ContactName)
+	if displayName == "" {
+		displayName = record.Username
+	}
+	respondJSON(w, http.StatusOK, map[string]any{
+		"tenantName":        tenantName,
+		"externalTenantKey": fmt.Sprintf("textile-company:%d", record.FinancialCompanyID),
+		"externalUserId":    fmt.Sprintf("textile-access:%d", record.ID),
+		"username":          record.Username,
+		"displayName":       displayName,
+		"role":              role,
+		"sessionExpiresAt":  minTime(record.ExpiresAt, time.Now().Add(12*time.Hour)).Unix(),
+	})
 }
 
 func (a *portalApp) telegramReportStatus(parent context.Context) string {
@@ -3371,16 +3463,7 @@ func (a *portalApp) signWeavingSSO(record projectAccess) (string, error) {
 }
 
 func (a *portalApp) redirectToWeavingSSO(w http.ResponseWriter, r *http.Request, record projectAccess) {
-	if strings.TrimSpace(record.WeavingTenantID) == "" {
-		ready, readyErr := a.ensureWeavingReady(record)
-		if readyErr != nil {
-			log.Printf("lazy weaving provisioning failed for access=%d: %v", record.ID, readyErr)
-			a.renderModuleLogin(w, "weaving", moduleTarget("weaving"), "ورود مستقیم راندمان سالن آماده نشد؛ لطفاً چند لحظه دیگر دوباره تلاش کنید.")
-			return
-		}
-		record = ready
-	}
-	token, err := a.signWeavingSSO(record)
+	ticket, err := a.issueWeavingBridgeTicket(record)
 	if err != nil {
 		log.Printf("weaving SSO failed for access=%d: %v", record.ID, err)
 		a.renderModuleLogin(w, "weaving", moduleTarget("weaving"), "ورود یکپارچه راندمان سالن آماده نیست؛ با پشتیبانی تماس بگیرید.")
@@ -3388,7 +3471,7 @@ func (a *portalApp) redirectToWeavingSSO(w http.ResponseWriter, r *http.Request,
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	http.Redirect(w, r, strings.TrimRight(a.weavingAppURL, "/")+"/api/auth/portal-sso?token="+url.QueryEscape(token), http.StatusSeeOther)
+	http.Redirect(w, r, strings.TrimRight(a.weavingAppURL, "/")+"/api/auth/portal-sso?ticket="+url.QueryEscape(ticket), http.StatusSeeOther)
 }
 
 func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, username, password string, financialCompanyID int64, expiresAt, trialEndsAt time.Time, notes, accessRole string, permissions []string, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving bool) (projectAccess, string, error) {
