@@ -4,6 +4,7 @@ import { useRef } from 'react';
 import QRCode from 'qrcode';
 import { confirmMovementCounterparty, confirmedMovementCounterparty, movementNeedsCounterparty } from './counterparty.js';
 import { isDateWithinInclusiveRange } from './dateRange.js';
+import { mapOperationalExpense, matchesExpenseFilters } from './expenseMapping.js';
 import { formatTableValue, toPersianDigits } from './localization.js';
 
 const FINANCIAL_DEV_ORIGIN = `${window.location.protocol}//${window.location.hostname}:5173`;
@@ -336,7 +337,7 @@ const defaultExpenseGroups = [
 
 const expenseGroup = row => row.group || row.title || 'سایر';
 const expenseSubgroup = row => row.subgroup || row.title || 'سایر';
-const expenseSourceLabel = row => row.source_type === 'mobile_sms' ? 'اپ موبایل' : row.source_type === 'operational_expense' ? 'بخش عملیاتی' : 'ثبت وب‌اپ';
+const expenseSourceLabel = row => row.source_type === 'mobile_sms' ? 'اپ موبایل' : row.source_type === 'operational_expense' ? 'عملیاتی' : 'ثبت وب‌اپ';
 
 
 
@@ -3002,7 +3003,7 @@ function OperationalPage() {
 
         {!error && activeTab === 'outInvoices' && <InvoiceTable rows={rows} />}
 
-        {!error && activeTab === 'expenses' && <GenericTable rows={rows.map(row => ({ source: 'بخش عملیاتی', date: row.date, group: row.group || 'عملیاتی', subgroup: row.subgroup || row.title || 'سایر', amount: row.amount, description: row.description || '', doc_no: row.doc_no || '' }))} />}
+        {!error && activeTab === 'expenses' && <GenericTable rows={rows.map(row => ({ source: 'عملیاتی', date: row.date, group: row.title || 'سایر', subgroup: row.weaver_name || 'سایر', amount: row.amount, description: row.description || '' }))} />}
 
         {!error && activeTab !== 'outInvoices' && activeTab !== 'expenses' && <GenericTable rows={rows} />}
 
@@ -4279,6 +4280,10 @@ function CostsPage({ finance, setFinance }) {
 
   const [categoryFilter, setCategoryFilter] = useState('all');
 
+  const [subgroupFilter, setSubgroupFilter] = useState('all');
+
+  const [sourceFilter, setSourceFilter] = useState('all');
+
   const [accountFilter, setAccountFilter] = useState('all');
 
   const [editingId, setEditingId] = useState('');
@@ -4302,27 +4307,38 @@ function CostsPage({ finance, setFinance }) {
 
   const operational = data.expenses
     .filter(x => !settledOperational.has(`operational_expense:${x.id}`))
-    .map(x => ({ ...x, group: x.group || 'عملیاتی', subgroup: x.subgroup || x.title || 'سایر', source: 'بخش عملیاتی', financialRecord: false }));
+    .map(mapOperationalExpense);
 
-  const financial = finance.expenses.map(x => ({ ...x, group: expenseGroup(x), subgroup: expenseSubgroup(x), source: expenseSourceLabel(x), financialRecord: true }));
+  const operationalById = new Map(data.expenses.map(x => [String(x.id), x]));
 
-  const rows = [...financial, ...operational].filter(x => {
-
-    const byTerm = `${expenseGroup(x)} ${expenseSubgroup(x)} ${x.description || ''} ${x.doc_no || ''}`.includes(term);
-
-    const byCategory = categoryFilter === 'all' || expenseGroup(x) === categoryFilter;
-
-    const byAccount = accountFilter === 'all' || x.accountId === accountFilter;
-
-    return byTerm && byCategory && byAccount;
-
+  const financial = finance.expenses.map(x => {
+    const operationalSource = x.source_type === 'operational_expense' ? operationalById.get(String(x.sourceId)) : null;
+    return {
+      ...x,
+      date: x.date || operationalSource?.date || '',
+      group: operationalSource?.title || expenseGroup(x),
+      subgroup: operationalSource?.weaver_name || expenseSubgroup(x),
+      description: operationalSource?.description ?? x.description ?? '',
+      source: expenseSourceLabel(x),
+      financialRecord: true,
+    };
   });
+
+  const allExpenseRows = [...financial, ...operational];
+
+  const groupOptions = [...new Set(allExpenseRows.map(x => x.group).filter(Boolean))];
+
+  const subgroupOptions = [...new Set(allExpenseRows.filter(x => categoryFilter === 'all' || x.group === categoryFilter).map(x => x.subgroup).filter(Boolean))];
+
+  const sourceOptions = [...new Set(allExpenseRows.map(x => x.source).filter(Boolean))];
+
+  const rows = allExpenseRows.filter(x => matchesExpenseFilters(x, { term, group: categoryFilter, subgroup: subgroupFilter, source: sourceFilter, accountId: accountFilter }));
 
   const total = rows.reduce((s, x) => s + Number(x.amount || 0), 0);
 
   const printCosts = () => {
 
-    const html = `<p>گروه: ${categoryFilter === 'all' ? 'همه' : categoryFilter} | حساب: ${accountFilter === 'all' ? 'همه' : finance.accounts.find(a => a.id === accountFilter)?.name || '-'}</p><table><thead><tr><th>منبع</th><th>تاريخ شمسي</th><th>گروه</th><th>زيرگروه</th><th>مبلغ</th><th>شرح</th></tr></thead><tbody>${rows.map(x => `<tr><td>${x.source}</td><td>${toJalali(x.date) || ''}</td><td>${expenseGroup(x)}</td><td>${expenseSubgroup(x)}</td><td>${money(x.amount)}</td><td>${x.description || ''}</td></tr>`).join('')}</tbody></table>`;
+    const html = `<p>منبع: ${sourceFilter === 'all' ? 'همه' : sourceFilter} | گروه: ${categoryFilter === 'all' ? 'همه' : categoryFilter} | زیرگروه: ${subgroupFilter === 'all' ? 'همه' : subgroupFilter} | حساب: ${accountFilter === 'all' ? 'همه' : finance.accounts.find(a => a.id === accountFilter)?.name || '-'}</p><table><thead><tr><th>منبع</th><th>تاریخ</th><th>گروه</th><th>زیرگروه</th><th>مبلغ</th><th>توضیحات</th></tr></thead><tbody>${rows.map(x => `<tr><td>${x.source}</td><td>${toJalali(x.date) || ''}</td><td>${expenseGroup(x)}</td><td>${expenseSubgroup(x)}</td><td>${money(x.amount)}</td><td>${x.description || ''}</td></tr>`).join('')}</tbody></table>`;
 
     printSection('گزارش هزينه ها', `<h2>جمع ستون مبلغ: ${money(total)} تومان</h2>${html}`);
 
@@ -4421,8 +4437,8 @@ function CostsPage({ finance, setFinance }) {
     if (row.settled) return;
     setEditingId('');
     setForm({
-      date: row.date || today(), operationalDate: row.date || '', group: 'عملیاتی', subgroup: row.title || 'سایر', amount: Number(row.amount || 0),
-      description: `${row.description || 'هزینه ثبت‌شده در بخش عملیاتی'}${row.doc_no ? ` | سند ${row.doc_no}` : ''}`,
+      date: row.date || today(), operationalDate: row.date || '', group: row.title || 'سایر', subgroup: row.weaver_name || 'سایر', amount: Number(row.amount || 0),
+      description: row.description || '',
       accountId: finance.accounts[0]?.id || '', payer: '', source_type: 'operational_expense', sourceId: row.id,
     });
     setFormMessage({ type: 'success', text: 'اطلاعات هزینه عملیاتی در فرم قرار گرفت؛ حساب پرداخت‌کننده را انتخاب و ثبت را بزنید.' });
@@ -4486,7 +4502,7 @@ function CostsPage({ finance, setFinance }) {
 
       </Card>
 
-      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ليست هزينه ها</h3><div className="flex flex-wrap gap-2"><SelectInput value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}><option value="all">همه گروه‌ها</option>{groups.map(row => <option key={row.name} value={row.name}>{row.name}</option>)}</SelectInput><SelectInput value={accountFilter} onChange={e => setAccountFilter(e.target.value)}><option value="all">همه بانک/صندوق</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><TextInput placeholder="جستجو در گروه و زيرگروه" value={term} onChange={e => setTerm(e.target.value)} /><PrimaryButton onClick={printCosts}>چاپ</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش هزینه‌ها', rows.map(row => ({ ...row, group_name: expenseGroup(row), subgroup_name: expenseSubgroup(row) })), [['source','منبع'],['date','تاریخ'],['group_name','گروه'],['subgroup_name','زیرگروه'],['amount','مبلغ'],['description','شرح']], { label: 'جمع کل', amount: total })}>خروجی اکسل</PrimaryButton></div></div>{loading && <p className="text-sm text-slate-400">در حال دريافت...</p>}{error ? <ErrorBox message={error} /> : <ExpensesTable rows={rows} onEdit={editExpense} onDelete={deleteExpense} onImport={importOperationalExpense} />}</Card>
+      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ليست هزينه ها</h3><div className="flex flex-wrap gap-2"><SelectInput value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}><option value="all">همه منابع</option>{sourceOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={categoryFilter} onChange={e => { setCategoryFilter(e.target.value); setSubgroupFilter('all'); }}><option value="all">همه گروه‌ها</option>{groupOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={subgroupFilter} onChange={e => setSubgroupFilter(e.target.value)}><option value="all">همه زیرگروه‌ها</option>{subgroupOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={accountFilter} onChange={e => setAccountFilter(e.target.value)}><option value="all">همه بانک/صندوق</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><TextInput placeholder="جستجو در گروه و زيرگروه" value={term} onChange={e => setTerm(e.target.value)} /><PrimaryButton onClick={printCosts}>چاپ</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش هزینه‌ها', rows.map(row => ({ ...row, group_name: expenseGroup(row), subgroup_name: expenseSubgroup(row) })), [['source','منبع'],['date','تاریخ'],['group_name','گروه'],['subgroup_name','زیرگروه'],['amount','مبلغ'],['description','توضیحات']], { label: 'جمع کل', amount: total })}>خروجی اکسل</PrimaryButton></div></div>{loading && <p className="text-sm text-slate-400">در حال دريافت...</p>}{error ? <ErrorBox message={error} /> : <ExpensesTable rows={rows} onEdit={editExpense} onDelete={deleteExpense} onImport={importOperationalExpense} />}</Card>
 
     </div>
 
@@ -5429,7 +5445,7 @@ function ExpensesTable({ rows, onEdit, onDelete, onImport }) {
 
   return (
 
-    <div className="overflow-auto"><table className="w-full border-collapse text-sm"><thead><tr className="border-b border-slate-700 text-slate-400"><th className="p-3 text-right">منبع</th><th className="p-3 text-right">تاريخ و زمان شمسي</th><th className="p-3 text-right">گروه</th><th className="p-3 text-right">زيرگروه</th><th className="p-3 text-right">مبلغ</th><th className="p-3 text-right">توضيحات</th><th className="p-3 text-right">عمليات</th></tr></thead><tbody>{rows.map(row => <tr key={`${row.source}-${row.id}`} className="border-b border-slate-800"><td className="p-3">{row.source}</td><td className="p-3 whitespace-nowrap">{toJalali(row.date)}</td><td className="p-3 font-bold text-blue-200">{expenseGroup(row)}</td><td className="p-3">{expenseSubgroup(row)}</td><td className="p-3 font-bold text-red-200">{money(row.amount)}</td><td className="p-3 text-slate-400">{row.description || '-'}</td><td className="p-3">{row.financialRecord ? <div className="flex gap-2"><GhostButton onClick={() => onEdit(row)}>ويرايش</GhostButton><DangerButton onClick={() => onDelete(row.id)}>حذف</DangerButton></div> : <PrimaryButton onClick={() => onImport(row)}>ثبت در مالی</PrimaryButton>}</td></tr>)}</tbody></table></div>
+    <div className="overflow-auto"><table className="w-full border-collapse text-sm"><thead><tr className="border-b border-slate-700 text-slate-400"><th className="p-3 text-right">منبع</th><th className="p-3 text-right">تاریخ</th><th className="p-3 text-right">گروه</th><th className="p-3 text-right">زیرگروه</th><th className="p-3 text-right">مبلغ</th><th className="p-3 text-right">توضیحات</th><th className="p-3 text-right">عملیات</th></tr></thead><tbody>{rows.map(row => <tr key={`${row.source}-${row.id}`} className="border-b border-slate-800"><td className="p-3">{row.source}</td><td className="p-3 whitespace-nowrap">{toJalali(row.date)}</td><td className="p-3 font-bold text-blue-200">{expenseGroup(row)}</td><td className="p-3">{expenseSubgroup(row)}</td><td className="p-3 font-bold text-red-200">{money(row.amount)}</td><td className="p-3 text-slate-400">{row.description || '-'}</td><td className="p-3">{row.financialRecord ? <div className="flex gap-2"><GhostButton onClick={() => onEdit(row)}>ویرایش</GhostButton><DangerButton onClick={() => onDelete(row.id)}>حذف</DangerButton></div> : <PrimaryButton onClick={() => onImport(row)}>ثبت در مالی</PrimaryButton>}</td></tr>)}</tbody></table></div>
 
   );
 

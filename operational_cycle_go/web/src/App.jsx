@@ -2024,7 +2024,7 @@ function Expenses({ lookups, notify }) {
 
     notify={notify}
 
-    filters={[['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','بافنده'],['shomare_sanad','شماره سند']]}
+    filters={[['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','زیرگروه'],['shomare_sanad','شماره سند']]}
 
     mapEdit={row => ({ id: row.id, hazine_id: row.hazine_id || '', operator_id: row.operator_id || '', weaver_id: row.weaver_id || '', mablagh: Number(row.mablagh || 0), description: row.tozih || '', sanad_no: row.shomare_sanad || '' })}
 
@@ -2034,7 +2034,7 @@ function Expenses({ lookups, notify }) {
 
       <Select label="ثبت کننده" value={form.operator_id} onChange={v => set('operator_id', Number(v))} items={lookups.operators} />
 
-      <Select label="بافنده / مرتبط با" value={form.weaver_id} onChange={v => set('weaver_id', Number(v))} items={lookups.weavers} />
+      <Select label="زیرگروه" value={form.weaver_id} onChange={v => set('weaver_id', Number(v))} items={lookups.weavers} />
 
       <Input label="مبلغ" type="number" value={form.mablagh} onChange={v => set('mablagh', Number(v))} />
 
@@ -2044,7 +2044,7 @@ function Expenses({ lookups, notify }) {
 
     </>}
 
-    columns={[['tarikh','تاریخ'],['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','بافنده'],['mablagh','مبلغ'],['shomare_sanad','شماره سند'],['tozih','توضیحات']]}
+    columns={[['tarikh','تاریخ'],['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','زیرگروه'],['mablagh','مبلغ'],['shomare_sanad','شماره سند'],['tozih','توضیحات']]}
 
   />;
 
@@ -2216,7 +2216,7 @@ function ReportsPro() {
 
     <section className="panel"><h2>گزارش خروج نخ</h2><Table rows={yarnOut} columns={[['tarikh','تاریخ'],['hambaft','همبافت'],['weight','وزن'],['mosh','مشتری'],['nakh','نخ']]} hideActions /></section>
 
-    <section className="panel"><h2>گزارش هزینه‌ها</h2><Table rows={expenses} columns={[['tarikh','تاریخ'],['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','بافنده'],['mablagh','مبلغ'],['shomare_sanad','شماره سند'],['tozih','توضیحات']]} hideActions /></section>
+    <section className="panel"><h2>گزارش هزینه‌ها</h2><Table rows={expenses} columns={[['tarikh','تاریخ'],['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','زیرگروه'],['mablagh','مبلغ'],['shomare_sanad','شماره سند'],['tozih','توضیحات']]} hideActions /></section>
 
   </Page>;
 
@@ -3121,7 +3121,7 @@ function ReportsPro2() {
 
     <ReportTable title="گزارش خروج نخ" rows={data.yarnOut} columns={[['tarikh','تاریخ'],['owner_mosh','مالک نخ'],['hambaft','همبافت'],['nakh','نخ'],['weight','وزن'],['mosh','مقصد']]} />
 
-    <ReportTable title="گزارش هزینه‌ها" rows={data.expenses} columns={[['tarikh','تاریخ'],['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','بافنده'],['mablagh','مبلغ'],['shomare_sanad','شماره سند'],['tozih','توضیحات']]} />
+    <ReportTable title="گزارش هزینه‌ها" rows={data.expenses} columns={[['tarikh','تاریخ'],['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','زیرگروه'],['mablagh','مبلغ'],['shomare_sanad','شماره سند'],['tozih','توضیحات']]} />
 
   </Page>;
 
