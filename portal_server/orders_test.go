@@ -597,6 +597,44 @@ func TestGrantFullTrialPreservesPurchasedModules(t *testing.T) {
 	}
 }
 
+func TestGrantFullTrialPersistsEntitlementWhenDownstreamIsUnavailable(t *testing.T) {
+	app := newPurchaseOrderTestApp(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	app.operationalAPI = server.URL
+	app.operationalSessionSecret = "operational-outage-secret"
+	app.weavingAppURL = server.URL
+	app.weavingMonitorToken = "weaving-outage-secret-that-is-long-enough"
+
+	owner := projectAccess{
+		ID: 901, ProjectKey: "textile-erp", CompanyName: "Acme Weaving",
+		ContactName: "Owner", Username: "trial-owner", PasswordHash: "legacy-hash",
+		FinancialCompanyID: 77, AccessRole: "owner", CanManageTeam: true,
+		AllowFinancial: true, ModuleAccessSet: true, IsActive: true,
+		ExpiresAt: time.Now().Add(24 * time.Hour), CreatedAt: time.Now(),
+	}
+	if err := writeAccesses(app.accessFile, []projectAccess{owner}); err != nil {
+		t.Fatal(err)
+	}
+
+	granted, _, err := app.grantFullTrial(owner.ID, 30)
+	if err != nil {
+		t.Fatalf("downstream outage incorrectly rejected the trial: %v", err)
+	}
+	if !fullTrialActive(granted) || !effectiveAllowWeaving(granted) || !effectiveAllowOperational(granted) {
+		t.Fatalf("trial entitlement was not returned: %#v", granted)
+	}
+	stored, err := app.listAccesses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 1 || !fullTrialActive(stored[0]) || stored[0].ExpiresAt.Before(stored[0].TrialEndsAt) {
+		t.Fatalf("trial entitlement was not durably stored: %#v", stored)
+	}
+}
+
 func TestPurchaseOrderStoreFileMode(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {

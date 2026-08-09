@@ -650,17 +650,43 @@ func rewriteAssetRefs(body []byte, prefix string) []byte {
 
 func (a *portalApp) health(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]any{
-		"ok":              true,
-		"financial":       a.financialURL,
-		"operational":     a.operationalURL,
-		"financialApi":    a.financialAPIURL,
-		"operationalApi":  a.operationalAPI,
-		"coolerStore":     a.coolerStoreURL,
-		"weavingApp":      a.weavingAppURL,
-		"accessManager":   "ok",
-		"purchaseOrders":  a.purchaseOrderStoreStatus(),
-		"telegramReports": a.telegramReportStatus(r.Context()),
+		"ok":                 true,
+		"financial":          a.financialURL,
+		"operational":        a.operationalURL,
+		"financialApi":       a.financialAPIURL,
+		"operationalApi":     a.operationalAPI,
+		"coolerStore":        a.coolerStoreURL,
+		"weavingApp":         a.weavingAppURL,
+		"weavingIntegration": a.weavingIntegrationStatus(r.Context()),
+		"accessManager":      "ok",
+		"purchaseOrders":     a.purchaseOrderStoreStatus(),
+		"telegramReports":    a.telegramReportStatus(r.Context()),
 	})
+}
+
+func (a *portalApp) weavingIntegrationStatus(parent context.Context) string {
+	base := strings.TrimRight(strings.TrimSpace(a.weavingAppURL), "/")
+	token := strings.TrimSpace(a.weavingMonitorToken)
+	if base == "" || len(token) < 32 {
+		return "unavailable"
+	}
+	ctx, cancel := context.WithTimeout(parent, 4*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/internal/hall-snapshot", nil)
+	if err != nil {
+		return "unavailable"
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("X-Viora-Tenant-Id", "00000000-0000-4000-8000-000000000001")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return "unavailable"
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "unavailable"
+	}
+	return "ok"
 }
 
 func (a *portalApp) telegramReportStatus(parent context.Context) string {
@@ -3273,6 +3299,56 @@ func (a *portalApp) syncWeavingUser(record projectAccess, password string, activ
 	return errors.New(result.Error)
 }
 
+func (a *portalApp) persistWeavingTenantID(accessID int64, tenantID string) (projectAccess, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return projectAccess{}, errors.New("weaving tenant id is missing")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	items, err := readAccesses(a.accessFile)
+	if err != nil {
+		return projectAccess{}, err
+	}
+	for index := range items {
+		if items[index].ID != accessID {
+			continue
+		}
+		items[index].WeavingTenantID = tenantID
+		if err := writeAccesses(a.accessFile, items); err != nil {
+			return projectAccess{}, err
+		}
+		return items[index], nil
+	}
+	return projectAccess{}, errors.New("access not found")
+}
+
+func (a *portalApp) ensureWeavingReady(record projectAccess) (projectAccess, error) {
+	if strings.TrimSpace(record.WeavingTenantID) != "" {
+		return record, nil
+	}
+	password := strings.TrimSpace(a.mustDecryptPassword(record))
+	if password == "" {
+		generated, err := randomHex(24)
+		if err != nil {
+			return projectAccess{}, err
+		}
+		password = generated
+	}
+	tenantID, err := a.provisionWeavingTenant(
+		record.FinancialCompanyID,
+		record.ID,
+		record.CompanyName,
+		record.ContactName,
+		record.Username,
+		password,
+	)
+	if err != nil {
+		return projectAccess{}, err
+	}
+	return a.persistWeavingTenantID(record.ID, tenantID)
+}
+
 func (a *portalApp) signWeavingSSO(record projectAccess) (string, error) {
 	secret := strings.TrimSpace(a.weavingMonitorToken)
 	if len(secret) < 32 || strings.TrimSpace(record.WeavingTenantID) == "" {
@@ -3295,6 +3371,15 @@ func (a *portalApp) signWeavingSSO(record projectAccess) (string, error) {
 }
 
 func (a *portalApp) redirectToWeavingSSO(w http.ResponseWriter, r *http.Request, record projectAccess) {
+	if strings.TrimSpace(record.WeavingTenantID) == "" {
+		ready, readyErr := a.ensureWeavingReady(record)
+		if readyErr != nil {
+			log.Printf("lazy weaving provisioning failed for access=%d: %v", record.ID, readyErr)
+			a.renderModuleLogin(w, "weaving", moduleTarget("weaving"), "ورود مستقیم راندمان سالن آماده نشد؛ لطفاً چند لحظه دیگر دوباره تلاش کنید.")
+			return
+		}
+		record = ready
+	}
 	token, err := a.signWeavingSSO(record)
 	if err != nil {
 		log.Printf("weaving SSO failed for access=%d: %v", record.ID, err)
@@ -3647,7 +3732,35 @@ func (a *portalApp) grantFullTrial(id int64, days int) (projectAccess, string, e
 		expiresAt = trialEndsAt
 	}
 	notes := strings.TrimSpace(target.Notes + "\n" + fmt.Sprintf("تست رایگان کامل %d روزه تا %s", days, trialEndsAt.Local().Format(timeLayout)))
-	return a.updateManagedAccess(
+
+	// Persist the customer's trial entitlement before provisioning downstream
+	// modules. A temporary outage in one module must not make the whole trial
+	// disappear or cause the Viora customer portal to report a false failure.
+	a.mu.Lock()
+	items, readErr := readAccesses(a.accessFile)
+	found := false
+	if readErr == nil {
+		for index := range items {
+			if items[index].ID == target.ID {
+				found = true
+				items[index].TrialEndsAt = trialEndsAt.UTC()
+				items[index].ExpiresAt = expiresAt.UTC()
+				items[index].Notes = notes
+				target = items[index]
+				readErr = writeAccesses(a.accessFile, items)
+				break
+			}
+		}
+	}
+	a.mu.Unlock()
+	if readErr != nil {
+		return projectAccess{}, "", readErr
+	}
+	if !found {
+		return projectAccess{}, "", errors.New("access not found")
+	}
+
+	updated, rawPassword, updateErr := a.updateManagedAccess(
 		target.ID,
 		target.ProjectKey,
 		target.CompanyName,
@@ -3666,6 +3779,11 @@ func (a *portalApp) grantFullTrial(id int64, days int) (projectAccess, string, e
 		target.AllowOperational,
 		target.AllowWeaving,
 	)
+	if updateErr != nil {
+		log.Printf("trial entitlement active; downstream provisioning deferred for access %d: %v", target.ID, updateErr)
+		return target, "", nil
+	}
+	return updated, rawPassword, nil
 }
 
 func (a *portalApp) setAccessMustChangePassword(id int64, mustChange bool) (projectAccess, error) {

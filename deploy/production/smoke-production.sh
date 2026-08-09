@@ -20,6 +20,7 @@ grep -Fq 'درگاه دسترسی ERP نساجی' "$work_dir/home.html"
 
 curl "${curl_retry[@]}" "$textile_base/health" -o "$work_dir/health.json"
 grep -Eq '"purchaseOrders"[[:space:]]*:[[:space:]]*"ok"' "$work_dir/health.json"
+grep -Eq '"weavingIntegration"[[:space:]]*:[[:space:]]*"ok"' "$work_dir/health.json"
 grep -Eq '"telegramReports"[[:space:]]*:[[:space:]]*"(ok|unavailable)"' "$work_dir/health.json"
 
 curl "${curl_retry[@]}" "$textile_base/plans" -o "$work_dir/plans.html"
