@@ -48,6 +48,33 @@ func TestTelegramReportStatusRequiresAvailableFinancialService(t *testing.T) {
 	}
 }
 
+func TestWeavingIntegrationStatusValidatesTheSharedServerCredential(t *testing.T) {
+	t.Parallel()
+	const secret = "weaving-health-secret-that-is-long-enough"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/internal/hall-snapshot" || r.Header.Get("Authorization") != "Bearer "+secret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.Header.Get("X-Viora-Tenant-Id") != "00000000-0000-4000-8000-000000000001" {
+			http.Error(w, "tenant required", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"dataStatus":"empty"}`))
+	}))
+	defer server.Close()
+
+	app := &portalApp{weavingAppURL: server.URL, weavingMonitorToken: secret}
+	if got := app.weavingIntegrationStatus(context.Background()); got != "ok" {
+		t.Fatalf("expected integration status ok, got %q", got)
+	}
+	app.weavingMonitorToken = "wrong-secret-that-is-still-long-enough"
+	if got := app.weavingIntegrationStatus(context.Background()); got != "unavailable" {
+		t.Fatalf("expected integration failure, got %q", got)
+	}
+}
+
 func TestCustomerLoginDoesNotExposeDefaultCredentials(t *testing.T) {
 	t.Parallel()
 
@@ -803,6 +830,60 @@ func TestOneTimeLaunchTicketCanOpenWeavingDirectly(t *testing.T) {
 	}
 	if accessCookie == nil || accessCookie.Value != "weaving-launch-token" {
 		t.Fatalf("expected portal access cookie, got %#v", launchRec.Result().Cookies())
+	}
+}
+
+func TestWeavingSSOLazilyProvisionsMissingTenant(t *testing.T) {
+	t.Parallel()
+
+	var provisionCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/internal/provision" {
+			http.NotFound(w, r)
+			return
+		}
+		provisionCalls++
+		if got := r.Header.Get("Authorization"); got != "Bearer weaving-lazy-secret-that-is-long-enough" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"tenantId": "22222222-2222-4222-8222-222222222222"})
+	}))
+	defer server.Close()
+
+	accessFile := filepath.Join(t.TempDir(), "portal-access.db")
+	record := projectAccess{
+		ID: 24, ProjectKey: "textile-erp", CompanyName: "Acme Weaving",
+		ContactName: "Owner", Username: "weaving-owner", PasswordHash: "legacy-hash",
+		AccessToken: "lazy-weaving-token", FinancialCompanyID: 88, AccessRole: "owner",
+		AllowWeaving: true, ModuleAccessSet: true, IsActive: true,
+		ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now(),
+	}
+	payload, _ := json.Marshal([]projectAccess{record})
+	if err := os.WriteFile(accessFile, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &portalApp{
+		accessFile: accessFile, sessionSecret: "lazy-session-secret",
+		weavingAppURL:       server.URL,
+		weavingMonitorToken: "weaving-lazy-secret-that-is-long-enough",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/module-login?module=weaving", nil)
+	rec := httptest.NewRecorder()
+	app.redirectToWeavingSSO(rec, req, record)
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), server.URL+"/api/auth/portal-sso?token=") {
+		t.Fatalf("expected direct weaving SSO redirect, got %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	if provisionCalls != 1 {
+		t.Fatalf("expected one lazy provisioning call, got %d", provisionCalls)
+	}
+	items, err := app.listAccesses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].WeavingTenantID != "22222222-2222-4222-8222-222222222222" {
+		t.Fatalf("lazy tenant id was not persisted: %#v", items)
 	}
 }
 
