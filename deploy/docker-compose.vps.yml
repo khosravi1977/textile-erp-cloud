@@ -160,6 +160,9 @@ services:
       - -operational-api=http://textile-erp-operational-app:8091
     ports:
       - "127.0.0.1:8180:8080"
+    env_file:
+      - path: ${TEXTILE_WEAVING_ENV_FILE:-/var/tmp/textile-weaving.env}
+        required: false
     environment:
       PORTAL_PUBLIC_BASE: ${PORTAL_PUBLIC_BASE}
       PORTAL_COOLER_STORE_URL: ${PORTAL_COOLER_STORE_URL}
@@ -171,8 +174,6 @@ services:
       PORTAL_FINANCIAL_JWT_SECRET: ${JWT_SECRET}
       OPERATIONAL_ADMIN_PASSWORD: ${OPERATIONAL_ADMIN_PASSWORD}
       PORTAL_OPERATIONAL_SECRET: ${OPERATIONAL_PORTAL_SECRET}
-      PORTAL_WEAVING_MONITOR_SUMMARY_URL: ${PORTAL_WEAVING_MONITOR_SUMMARY_URL:-}
-      PORTAL_WEAVING_MONITOR_TOKEN: ${PORTAL_WEAVING_MONITOR_TOKEN:-}
       PORTAL_WEAVING_APP_URL: ${PORTAL_WEAVING_APP_URL:-https://weaving.vioraapps.com}
       ACCESS_DB_PATH: /data/portal-access.db
       PORTAL_ORDERS_PATH: /data/portal-orders.json
