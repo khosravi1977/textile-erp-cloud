@@ -3427,11 +3427,34 @@ func (a *app) databaseTools(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		if err := a.importXLSX(r); err != nil {
+		dir := a.backupDir()
+		if err := os.MkdirAll(dir, 0755); err != nil {
 			fail(w, 500, err.Error())
 			return
 		}
-		a.writeDatabaseSummary(w)
+		backupName := "backup_before_excel_import_" + time.Now().Format("20060102_150405") + ".json"
+		if err := a.writeJSONBackup(filepath.Join(dir, backupName)); err != nil {
+			fail(w, 500, "ساخت پشتیبان پیش از ورود اکسل انجام نشد: "+err.Error())
+			return
+		}
+		importedTables, importedRows, err := a.importXLSX(r)
+		if err != nil {
+			fail(w, 500, err.Error())
+			return
+		}
+		tables, err := a.tableNames()
+		if err != nil {
+			fail(w, 500, err.Error())
+			return
+		}
+		items := []record{}
+		for _, name := range tables {
+			items = append(items, record{"table": name, "count": a.count(name)})
+		}
+		writeJSON(w, record{
+			"success": true, "tables": items, "database": a.dbLabel, "driver": a.dialect,
+			"imported_tables": importedTables, "imported_rows": importedRows, "backup": backupName,
+		})
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -3674,37 +3697,45 @@ func (a *app) readTable(table string) ([]string, [][]string, error) {
 	return cols, data, rows.Err()
 }
 
-func (a *app) importXLSX(r *http.Request) error {
+func (a *app) importXLSX(r *http.Request) (int, int, error) {
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
-		return err
+		return 0, 0, err
 	}
 	file, _, err := r.FormFile("file")
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	defer file.Close()
 	content, err := io.ReadAll(file)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	sheets, err := parseXLSX(content)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	tableList, err := a.tableNames()
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
-	existingTables := map[string]bool{}
+	tableBySheetName := map[string]string{}
 	for _, table := range tableList {
-		existingTables[table] = true
+		tableBySheetName[table] = table
+		short := sheetName(table)
+		if current, exists := tableBySheetName[short]; !exists || current == table {
+			tableBySheetName[short] = table
+		}
 	}
 	tx, err := a.db.Begin()
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
-	for table, rows := range sheets {
-		if len(rows) < 1 || !existingTables[table] {
+	importedTables := 0
+	importedRows := 0
+	importedTableNames := []string{}
+	for worksheetName, rows := range sheets {
+		table, exists := tableBySheetName[worksheetName]
+		if len(rows) < 1 || !exists {
 			continue
 		}
 		cols := rows[0]
@@ -3713,7 +3744,7 @@ func (a *app) importXLSX(r *http.Request) error {
 		}
 		if _, err := txExec(a.dialect, tx, "DELETE FROM "+quoteIdent(table)); err != nil {
 			_ = tx.Rollback()
-			return err
+			return 0, 0, err
 		}
 		placeholders := strings.TrimRight(strings.Repeat("?,", len(cols)), ",")
 		stmt := "INSERT INTO " + quoteIdent(table) + " (" + quoteColumns(cols) + ") VALUES (" + placeholders + ")"
@@ -3728,14 +3759,78 @@ func (a *app) importXLSX(r *http.Request) error {
 			}
 			if _, err := txExec(a.dialect, tx, stmt, vals...); err != nil {
 				_ = tx.Rollback()
-				return fmt.Errorf("%s: %w", table, err)
+				return 0, 0, fmt.Errorf("%s: %w", table, err)
+			}
+			importedRows++
+		}
+		importedTables++
+		importedTableNames = append(importedTableNames, table)
+	}
+	if importedTables == 0 {
+		_ = tx.Rollback()
+		return 0, 0, errors.New("هیچ شیت معتبری مطابق جدول‌های دیتابیس پیدا نشد؛ فایل خروجی همین سامانه را انتخاب کنید")
+	}
+	if err := a.resetImportedSequences(tx, importedTableNames); err != nil {
+		_ = tx.Rollback()
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	if err := a.migrate(); err != nil {
+		return 0, 0, err
+	}
+	return importedTables, importedRows, nil
+}
+
+func (a *app) resetImportedSequences(tx *sql.Tx, tables []string) error {
+	if a.dialect != "postgres" {
+		return nil
+	}
+	for _, table := range tables {
+		rows, err := tx.Query(`
+			SELECT column_name
+			FROM information_schema.columns
+			WHERE table_schema=current_schema() AND table_name=$1
+			  AND (is_identity='YES' OR column_default LIKE 'nextval(%')
+		`, table)
+		if err != nil {
+			return err
+		}
+		columns := []string{}
+		for rows.Next() {
+			var column string
+			if err := rows.Scan(&column); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			columns = append(columns, column)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, column := range columns {
+			var sequence sql.NullString
+			if err := tx.QueryRow(`SELECT pg_get_serial_sequence(current_schema()||'.'||$1,$2)`, table, column).Scan(&sequence); err != nil {
+				return err
+			}
+			if !sequence.Valid || strings.TrimSpace(sequence.String) == "" {
+				continue
+			}
+			var maximum sql.NullInt64
+			if err := tx.QueryRow("SELECT MAX(" + quoteIdent(column) + ") FROM " + quoteIdent(table)).Scan(&maximum); err != nil {
+				return err
+			}
+			if maximum.Valid && maximum.Int64 > 0 {
+				if _, err := tx.Exec(`SELECT setval($1,$2,true)`, sequence.String, maximum.Int64); err != nil {
+					return err
+				}
+			} else if _, err := tx.Exec(`SELECT setval($1,1,false)`, sequence.String); err != nil {
+				return err
 			}
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	return a.migrate()
+	return nil
 }
 
 func (a *app) tableExists(table string) bool {

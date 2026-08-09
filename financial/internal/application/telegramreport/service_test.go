@@ -274,6 +274,16 @@ func TestSecretsAreNeverReturnedInSettings(t *testing.T) {
 	}
 }
 
+func TestConfiguredDoesNotDependOnTemporaryTelegramReachability(t *testing.T) {
+	service := New(nil, Config{Enabled: true, BotToken: "123456789:secret-token-value-for-test", BotUsername: "textile_reports_bot"})
+	if !service.Configured() {
+		t.Fatal("configured bot must allow pairing while the relay reconnects")
+	}
+	if service.Available() {
+		t.Fatal("service must not report ready before bootstrap succeeds")
+	}
+}
+
 func TestBootstrapValidatesBotAndRemovesWebhook(t *testing.T) {
 	const token = "123456:test-secret-token"
 	var requests []string
