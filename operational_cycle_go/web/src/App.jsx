@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 import JsBarcode from 'jsbarcode';
 
 import QRCode from 'qrcode';
+import { monetaryColumnTotals } from './reportTotals.js';
 
 import { BrowserMultiFormatReader } from '@zxing/browser';
 
@@ -4124,7 +4125,15 @@ function printReport(title, rows, columns) {
 
   const body = rows.map(r => `<tr>${columns.map(c => `<td>${safe(display(r[c[0]]))}</td>`).join('')}</tr>`).join('');
 
-  const html = `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><title>${safe(title)}</title><style>body{font-family:Tahoma;padding:20px;color:#111}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #999;padding:8px;text-align:right}th{background:#e5e7eb}@media print{button{display:none}}</style></head><body><button onclick="window.print()">چاپ</button><h1>${safe(title)}</h1><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></body></html>`;
+  const totals = monetaryColumnTotals(rows, columns);
+
+  const totalsByIndex = new Map(totals.map(item => [item.index, item.total]));
+
+  const labelIndex = columns.findIndex((_, index) => !totalsByIndex.has(index));
+
+  const footer = totals.length ? `<tfoot><tr>${columns.map((_, index) => `<td>${totalsByIndex.has(index) ? safe(display(totalsByIndex.get(index))) : index === (labelIndex >= 0 ? labelIndex : 0) ? 'جمع کل' : ''}</td>`).join('')}</tr></tfoot>` : '';
+
+  const html = `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><title>${safe(title)}</title><style>body{font-family:Tahoma;padding:20px;color:#111}h1{text-align:center}table{width:100%;border-collapse:collapse}th,td{border:1px solid #999;padding:8px;text-align:right}th{background:#e5e7eb}tfoot td{background:#dcfce7;font-weight:900;border-top:2px solid #166534}@media print{button{display:none}}</style></head><body><button onclick="window.print()">چاپ</button><h1>${safe(title)}</h1><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody>${footer}</table></body></html>`;
 
   const win = window.open('', '_blank', 'width=1100,height=800');
 
@@ -4154,7 +4163,15 @@ function exportExcel(title, rows = [], columns = []) {
 
   const body = rows.map(row => `<Row>${columns.map(([key]) => cell(row?.[key])).join('')}</Row>`).join('');
 
-  const xml = `<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Styles><Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Horizontal="Right"/><Font ss:FontName="Tahoma"/></Style><Style ss:ID="Header"><Font ss:FontName="Tahoma" ss:Bold="1"/><Interior ss:Color="#DDEBF7" ss:Pattern="Solid"/></Style></Styles><Worksheet ss:Name="${xmlText(String(title || 'گزارش').slice(0, 31))}"><Table>${header}${body}</Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><DisplayRightToLeft/></WorksheetOptions></Worksheet></Workbook>`;
+  const totals = monetaryColumnTotals(rows, columns);
+
+  const totalsByIndex = new Map(totals.map(item => [item.index, item.total]));
+
+  const totalLabelIndex = Math.max(0, columns.findIndex((_, index) => !totalsByIndex.has(index)));
+
+  const totalRow = totals.length ? `<Row>${columns.map((_, index) => totalsByIndex.has(index) ? cell(totalsByIndex.get(index)) : index === totalLabelIndex ? cell('جمع کل') : cell('')).join('')}</Row>` : '';
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Styles><Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Horizontal="Right"/><Font ss:FontName="Tahoma"/></Style><Style ss:ID="Header"><Font ss:FontName="Tahoma" ss:Bold="1"/><Interior ss:Color="#DDEBF7" ss:Pattern="Solid"/></Style></Styles><Worksheet ss:Name="${xmlText(String(title || 'گزارش').slice(0, 31))}"><Table>${header}${body}${totalRow}</Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><DisplayRightToLeft/></WorksheetOptions></Worksheet></Workbook>`;
 
   const url = URL.createObjectURL(new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8' }));
 
