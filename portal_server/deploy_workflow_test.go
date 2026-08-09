@@ -19,9 +19,7 @@ func TestCoreDeployContinuesWhenOptionalTelegramRelayIsBlocked(t *testing.T) {
 		"id: telegram_relay_vps",
 		"continue-on-error: true",
 		"if: steps.telegram_relay_vps.outcome == 'failure'",
-		"TEXTILE_TELEGRAM_ENABLED=false",
-		"umask 077",
-		"mktemp \"${remote_file}.disabled.XXXXXX\"",
+		"keeping Textile Telegram enabled",
 		"sudo /usr/local/sbin/viora-deploy textile-erp",
 	} {
 		if !strings.Contains(source, expected) {
