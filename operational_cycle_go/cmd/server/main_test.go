@@ -483,3 +483,48 @@ func TestSalonPodOptionsLimitsResultsToTwoLatestHambafts(t *testing.T) {
 		t.Fatalf("unexpected pod options response: %#v", payload.Items)
 	}
 }
+
+func TestSalonPodOptionsAllowsPreviousOfTwoRecentChelles(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:salon-previous-chelle-pod-options-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	application := &app{db: db, dialect: "sqlite", dbLabel: "test"}
+	if err := application.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec(`INSERT INTO chelle(id_chelle,shom_chelle,machin_chelle) VALUES
+		(1,'CH-PREVIOUS',''),(2,'CH-CURRENT','8')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec(`INSERT INTO gere(id_gere,tarikh_gere,shom_chelle_gere,machin_gere,chelle_id_gere) VALUES
+		(1,'1405/05/01','CH-PREVIOUS','8.0',1),(2,'1405/05/02','CH-CURRENT','8',2)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, hambaft := range []string{"HB-OLD", "HB-CURRENT", "HB-NEW"} {
+		if _, err := application.exec(`INSERT INTO nakh_salon(shom_machin_nakh_salon,ham_nakh_salon,w_nakh_salon,shom_chelle_nakh_salon,chelle_id_nakh_salon) VALUES('8.0',?,10,'CH-PREVIOUS',1)`, hambaft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response := httptest.NewRecorder()
+	application.salonPodOptions(response, "8", 1)
+	if response.Code != http.StatusOK {
+		t.Fatalf("previous chelle pod options failed: %d %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Items []struct {
+			Hambaft string `json:"hambaft"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Items) != 2 || payload.Items[0].Hambaft != "HB-NEW" || payload.Items[1].Hambaft != "HB-CURRENT" {
+		t.Fatalf("unexpected previous chelle pod options: %#v", payload.Items)
+	}
+	id, _, shom, err := application.productionChelleInfo("8", 1, "CH-PREVIOUS")
+	if err != nil || id != 1 || shom != "CH-PREVIOUS" {
+		t.Fatalf("previous chelle was not accepted for production: id=%d shom=%q err=%v", id, shom, err)
+	}
+}

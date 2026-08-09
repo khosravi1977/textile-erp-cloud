@@ -2192,11 +2192,89 @@ func (a *app) emptyBeamOutByID(w http.ResponseWriter, r *http.Request) {
 	writeSave(w, execErr(a.exec(`DELETE FROM empty_beam_out WHERE id_empty_beam_out=?`, id)))
 }
 
+type recentMachineChelle struct {
+	ID   int64
+	Shom string
+}
+
+// recentMachineChelles returns the same two-beam window that is offered by the
+// production-hall UI. A previous beam can still have a few final rolls to be
+// registered after the next beam is tied to the machine, so checking only the
+// current value of chelle.machin_chelle incorrectly rejects that valid beam.
+func (a *app) recentMachineChelles(machine string, limit int) []recentMachineChelle {
+	where, args := machineWhere("g.machin_gere", machine)
+	rows, err := a.query(`SELECT COALESCE(g.chelle_id_gere,0),COALESCE(g.shom_chelle_gere,'')
+		FROM gere g WHERE `+where+` AND COALESCE(g.shom_chelle_gere,'')<>''
+		ORDER BY COALESCE(g.tarikh_gere,'') DESC,g.id_gere DESC`, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	items := []recentMachineChelle{}
+	seen := map[string]bool{}
+	for rows.Next() {
+		var item recentMachineChelle
+		if rows.Scan(&item.ID, &item.Shom) != nil {
+			continue
+		}
+		item.Shom = strings.TrimSpace(item.Shom)
+		key := strings.ToLower(item.Shom)
+		if item.Shom == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		items = append(items, item)
+		if len(items) == limit {
+			break
+		}
+	}
+	return items
+}
+
+func (a *app) isRecentMachineChelle(machine string, chelleID int64, shom string) bool {
+	for _, item := range a.recentMachineChelles(machine, 2) {
+		if chelleID > 0 && item.ID == chelleID {
+			return true
+		}
+		if sameText(item.Shom, shom) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *app) productionChelleInfo(machine string, chelleID int64, shom string) (int64, string, string, error) {
+	machine = normalizeStoredMachine(machine)
+	shom = strings.TrimSpace(shom)
+	query := `SELECT id_chelle,COALESCE(hambaft_chelle,''),shom_chelle,COALESCE(machin_chelle,'') FROM chelle`
+	args := []any{}
+	if chelleID > 0 {
+		query += ` WHERE id_chelle=?`
+		args = append(args, chelleID)
+	} else {
+		query += ` WHERE shom_chelle=? ORDER BY id_chelle DESC`
+		args = append(args, shom)
+	}
+	rows, err := a.query(query, args...)
+	if err != nil {
+		return 0, "", "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var hambaft, actualShom, assignedMachine string
+		if err := rows.Scan(&id, &hambaft, &actualShom, &assignedMachine); err != nil {
+			return 0, "", "", err
+		}
+		if normalizeStoredMachine(assignedMachine) == machine || a.isRecentMachineChelle(machine, id, actualShom) {
+			return id, hambaft, actualShom, nil
+		}
+	}
+	return 0, "", "", sql.ErrNoRows
+}
+
 func (a *app) activeChelleInfo(machine, shom string) (int64, string, error) {
-	var id int64
-	var hambaft string
-	err := a.queryRow(`SELECT id_chelle,COALESCE(hambaft_chelle,'') FROM chelle
-		WHERE machin_chelle=? AND shom_chelle=? ORDER BY id_chelle DESC LIMIT 1`, machine, shom).Scan(&id, &hambaft)
+	id, hambaft, _, err := a.productionChelleInfo(machine, 0, shom)
 	return id, hambaft, err
 }
 
@@ -2377,12 +2455,7 @@ func (a *app) salon(w http.ResponseWriter, r *http.Request) {
 		p.ShomChelle = strings.TrimSpace(p.ShomChelle)
 		activeChelleID, activeHambaft, activeShom := int64(0), "", ""
 		var activeErr error
-		if p.ChelleID > 0 {
-			activeErr = a.queryRow(`SELECT id_chelle,COALESCE(hambaft_chelle,''),shom_chelle FROM chelle WHERE id_chelle=? AND machin_chelle=?`, p.ChelleID, p.Machine).Scan(&activeChelleID, &activeHambaft, &activeShom)
-		} else {
-			activeChelleID, activeHambaft, activeErr = a.activeChelleInfo(p.Machine, p.ShomChelle)
-			activeShom = p.ShomChelle
-		}
+		activeChelleID, activeHambaft, activeShom, activeErr = a.productionChelleInfo(p.Machine, p.ChelleID, p.ShomChelle)
 		if activeErr != nil {
 			fail(w, 400, "چله انتخاب‌شده روی این ماشین فعال نیست؛ ابتدا ثبت گره را کنترل کنید")
 			return
@@ -4470,25 +4543,27 @@ func (a *app) salonDefaults(w http.ResponseWriter, machine string) {
 }
 
 func (a *app) salonPodOptions(w http.ResponseWriter, machine string, chelleID int64) {
-	machine = strings.TrimSpace(machine)
+	machine = normalizeStoredMachine(machine)
 	if machine == "" || chelleID <= 0 {
 		fail(w, http.StatusBadRequest, "شماره ماشین و چله الزامی است")
 		return
 	}
-	var shom string
-	if err := a.queryRow(`SELECT shom_chelle FROM chelle WHERE id_chelle=? AND machin_chelle=?`, chelleID, machine).Scan(&shom); err != nil {
+	resolvedID, _, shom, err := a.productionChelleInfo(machine, chelleID, "")
+	if err != nil || resolvedID == 0 {
 		fail(w, http.StatusBadRequest, "چله انتخاب‌شده روی این ماشین فعال نیست")
 		return
 	}
-	rows, err := a.query(`SELECT TRIM(ham_nakh_salon), COALESCE(nakh_name_nakh_salon,''), COALESCE(mosh_name_nakh_salon,''), COALESCE(SUM(w_nakh_salon),0)
-		FROM nakh_salon
-		WHERE shom_machin_nakh_salon=?
+	whereMachine, args := machineWhere("ns.shom_machin_nakh_salon", machine)
+	args = append(args, resolvedID, shom)
+	rows, err := a.query(`SELECT TRIM(ns.ham_nakh_salon), COALESCE(MAX(ns.nakh_name_nakh_salon),''), COALESCE(MAX(ns.mosh_name_nakh_salon),''), COALESCE(SUM(ns.w_nakh_salon),0)
+		FROM nakh_salon ns
+		WHERE `+whereMachine+`
 		  AND (chelle_id_nakh_salon=? OR (COALESCE(chelle_id_nakh_salon,0)=0 AND shom_chelle_nakh_salon=?))
-		  AND TRIM(COALESCE(ham_nakh_salon,''))<>''
-		GROUP BY TRIM(ham_nakh_salon), COALESCE(nakh_name_nakh_salon,''), COALESCE(mosh_name_nakh_salon,'')
-		HAVING COALESCE(SUM(w_nakh_salon),0)>0.001
-		ORDER BY MAX(id_nakh_salon) DESC
-		LIMIT 2`, machine, chelleID, shom)
+		  AND TRIM(COALESCE(ns.ham_nakh_salon,''))<>''
+		GROUP BY TRIM(ns.ham_nakh_salon)
+		HAVING COALESCE(SUM(ns.w_nakh_salon),0)>0.001
+		ORDER BY MAX(ns.id_nakh_salon) DESC
+		LIMIT 2`, args...)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
