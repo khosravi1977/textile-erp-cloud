@@ -698,6 +698,7 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	setPrivatePageHeaders(w)
 	record, err := a.accessRecordFromRequest(r)
 	hasAccess := err == nil && record.ProjectKey == "textile-erp"
 	if hasAccess {
@@ -1078,6 +1079,7 @@ func (a *portalApp) setModuleAccessCookie(w http.ResponseWriter, r *http.Request
 }
 
 func (a *portalApp) moduleLogin(w http.ResponseWriter, r *http.Request) {
+	setPrivatePageHeaders(w)
 	module := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("module")))
 	if r.Method == http.MethodPost {
 		if err := r.ParseForm(); err == nil {
@@ -1198,6 +1200,7 @@ func (a *portalApp) renderModuleLogin(w http.ResponseWriter, module, nextPath, e
 }
 
 func (a *portalApp) renderCustomerLogin(w http.ResponseWriter, errMsg, nextPath string) {
+	setPrivatePageHeaders(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	errorHTML := ""
 	if errMsg != "" {
@@ -3563,9 +3566,6 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 	} else {
 		record.MustChangePassword = false
 		rawPassword = a.mustDecryptPassword(record)
-		if password == "" && strings.TrimSpace(rawPassword) == "" {
-			password = generatedAccessPassword(username)
-		}
 		if strings.TrimSpace(password) != "" {
 			passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 			if err != nil {
@@ -3581,6 +3581,18 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 			record.MustChangePassword = false
 		}
 	}
+	downstreamPassword := strings.TrimSpace(rawPassword)
+	if downstreamPassword == "" && (allowOperational || allowWeaving || trialActive) {
+		downstreamPassword, err = randomHex(24)
+		if err != nil {
+			return projectAccess{}, "", err
+		}
+	}
+	if allowOperational || trialActive {
+		if _, err := a.provisionTextileTenant(financialCompanyID, id, companyName, contactName, username, downstreamPassword, role); err != nil {
+			return projectAccess{}, "", err
+		}
+	}
 	weavingTenantID := strings.TrimSpace(record.WeavingTenantID)
 	if weavingTenantID == "" {
 		weavingTenantID = existingWeavingTenantID(items, financialCompanyID)
@@ -3589,14 +3601,14 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 		if role != "owner" {
 			return projectAccess{}, "", fmt.Errorf("ابتدا باید راندمان سالن برای مدیر اصلی این مشتری فعال شود")
 		}
-		weavingTenantID, err = a.provisionWeavingTenant(financialCompanyID, id, companyName, contactName, username, rawPassword)
+		weavingTenantID, err = a.provisionWeavingTenant(financialCompanyID, id, companyName, contactName, username, downstreamPassword)
 		if err != nil {
 			return projectAccess{}, "", err
 		}
 	}
 	record.WeavingTenantID = weavingTenantID
 	if weavingTenantID != "" && (allowWeaving || trialActive || previousAllowWeaving) {
-		if err := a.syncWeavingUser(record, rawPassword, (allowWeaving || trialActive) && record.IsActive); err != nil {
+		if err := a.syncWeavingUser(record, downstreamPassword, (allowWeaving || trialActive) && record.IsActive); err != nil {
 			return projectAccess{}, "", err
 		}
 	}
@@ -4661,6 +4673,13 @@ func isSecureRequest(r *http.Request) bool {
 		return true
 	}
 	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func setPrivatePageHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	w.Header().Set("Vary", "Cookie")
 }
 
 func respondJSON(w http.ResponseWriter, status int, data any) {

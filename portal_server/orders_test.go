@@ -389,6 +389,9 @@ func TestTrialLandingShowsWeavingAndCountdown(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: accessCookieName, Value: record.AccessToken})
 	rec := httptest.NewRecorder()
 	app.landing(rec, req)
+	if !strings.Contains(rec.Header().Get("Cache-Control"), "no-store") || rec.Header().Get("Vary") != "Cookie" {
+		t.Fatalf("customer-specific landing may be cached: %#v", rec.Header())
+	}
 	body := rec.Body.String()
 	for _, text := range []string{"ورود به بخش مالی", "ورود به بخش عملیاتی", "ورود به راندمان سالن بافت", "تست رایگان هر سه بخش", "روز باقی‌مانده"} {
 		if !strings.Contains(body, text) {
@@ -496,6 +499,62 @@ func TestStartupActivatesExistingOwnerWithoutAVisit(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].ID != owner.ID || !fullTrialActive(items[0]) || items[0].WeavingTenantID == "" {
 		t.Fatalf("startup did not activate the existing owner trial: %#v", items)
+	}
+}
+
+func TestLegacyOwnerTrialRepairsDownstreamAccessWithoutChangingCentralPassword(t *testing.T) {
+	app := newPurchaseOrderTestApp(t)
+	var operationalPassword string
+	var weavingPassword string
+	var syncedPassword string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode %s payload: %v", r.URL.Path, err)
+		}
+		switch r.URL.Path {
+		case "/api/portal/provision":
+			operationalPassword, _ = payload["password"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "company_id": 404})
+		case "/api/internal/provision":
+			weavingPassword, _ = payload["password"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"tenantId": "77777777-7777-4777-8777-777777777777"})
+		case "/api/internal/users/sync":
+			syncedPassword, _ = payload["password"].(string)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app.operationalAPI = server.URL
+	app.operationalSessionSecret = "legacy-operational-secret"
+	app.weavingAppURL = server.URL
+	app.weavingMonitorToken = "legacy-weaving-secret-that-is-long-enough"
+
+	legacy := projectAccess{
+		ID: 77, ProjectKey: "textile-erp", CompanyName: "Legacy Mill", ContactName: "Legacy Owner",
+		Username: "legacy-owner", FinancialCompanyID: 404, AccessRole: "owner", CanManageTeam: true,
+		AllowFinancial: true, ModuleAccessSet: true, AccessToken: "legacy-owner-token",
+		PasswordHash: "legacy-password-hash", PasswordEnc: "", IsActive: true,
+		ExpiresAt: time.Now().Add(24 * time.Hour), CreatedAt: time.Now().Add(-24 * time.Hour),
+	}
+	if err := writeAccesses(app.accessFile, []projectAccess{legacy}); err != nil {
+		t.Fatal(err)
+	}
+
+	started, err := app.startFullTrialOnFirstUse(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fullTrialActive(started) || started.WeavingTenantID == "" {
+		t.Fatalf("legacy trial was not fully provisioned: %#v", started)
+	}
+	if started.PasswordHash != legacy.PasswordHash || started.PasswordEnc != "" {
+		t.Fatal("repair changed the existing central login password")
+	}
+	if len(operationalPassword) < 16 || operationalPassword != weavingPassword || weavingPassword != syncedPassword {
+		t.Fatalf("downstream repair did not use one safe generated credential: op=%d weave=%d sync=%d", len(operationalPassword), len(weavingPassword), len(syncedPassword))
 	}
 }
 
