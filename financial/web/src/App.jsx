@@ -6,6 +6,7 @@ import { confirmMovementCounterparty, confirmedMovementCounterparty, movementNee
 import { isDateWithinInclusiveRange } from './dateRange.js';
 import { mapOperationalExpense, matchesExpenseFilters } from './expenseMapping.js';
 import { formatTableValue, toPersianDigits } from './localization.js';
+import { isMonetaryColumn, monetaryColumnTotals, parseLocalizedNumber } from './reportTotals.js';
 
 const FINANCIAL_DEV_ORIGIN = `${window.location.protocol}//${window.location.hostname}:5173`;
 const FINANCIAL_DEV_ORIGINS = new Set([
@@ -1032,7 +1033,59 @@ function printSection(title, html) {
 
   }));
 
-  win.document.write(`<!doctype html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><title>${escapePrintText(title)}</title><style>body{font-family:Tahoma;padding:24px;color:#111}table{width:100%;border-collapse:collapse;font-size:12px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:right}th{background:#e5e7eb}</style></head><body><h1>${escapePrintText(title)}</h1>${template.innerHTML}<script>window.addEventListener('load',function(){setTimeout(function(){window.print()},350)})</script></body></html>`);
+  template.content.querySelectorAll('table').forEach(table => {
+
+    if (table.querySelector('tfoot')) return;
+
+    const headers = [...table.querySelectorAll('thead tr:last-child th')];
+
+    const bodyRows = [...table.querySelectorAll('tbody tr')];
+
+    const lastRowFirstCell = bodyRows[bodyRows.length - 1]?.cells?.[0]?.textContent || '';
+
+    if (!headers.length || !bodyRows.length || /^\s*جمع/.test(lastRowFirstCell)) return;
+
+    const totals = headers.map((header, index) => {
+
+      if (!isMonetaryColumn(header.textContent)) return null;
+
+      const values = bodyRows.map(row => parseLocalizedNumber(row.cells[index]?.textContent)).filter(value => value !== null);
+
+      return values.length ? { index, total: values.reduce((sum, value) => sum + value, 0) } : null;
+
+    }).filter(Boolean);
+
+    if (!totals.length) return;
+
+    const totalIndexes = new Set(totals.map(item => item.index));
+
+    const labelIndex = headers.findIndex((_, index) => !totalIndexes.has(index));
+
+    const footer = document.createElement('tfoot');
+
+    const row = document.createElement('tr');
+
+    headers.forEach((_, index) => {
+
+      const cell = document.createElement('td');
+
+      const total = totals.find(item => item.index === index);
+
+      if (total) cell.textContent = money(total.total);
+
+      else if (index === (labelIndex >= 0 ? labelIndex : 0)) cell.textContent = 'جمع کل';
+
+      row.appendChild(cell);
+
+    });
+
+    footer.appendChild(row);
+
+    table.appendChild(footer);
+
+  });
+
+  win.document.write(`<!doctype html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><title>${escapePrintText(title)}</title><style>body{font-family:Tahoma;padding:24px;color:#111}table{width:100%;border-collapse:collapse;font-size:12px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:right}th{background:#e5e7eb}tfoot td{background:#dcfce7;font-weight:900;border-top:2px solid #166534}</style></head><body><h1>${escapePrintText(title)}</h1>${template.innerHTML}<script>window.addEventListener('load',function(){setTimeout(function(){window.print()},350)})</script></body></html>`);
 
   win.document.close();
 
@@ -1083,7 +1136,19 @@ function exportExcel(title, rows = [], columns = null, totals = null) {
 
   const body = safeRows.map(row => `<Row>${keys.map(([key]) => cell(row?.[key])).join('')}</Row>`).join('');
 
-  const totalRow = totals ? `<Row>${keys.map(([key], index) => index === 0 ? cell(totals.label || 'جمع') : cell(totals[key] ?? '')).join('')}</Row>` : '';
+  const automaticTotals = monetaryColumnTotals(safeRows, keys);
+
+  const automaticByKey = new Map(automaticTotals.map(item => [item.key, item.total]));
+
+  const shouldAddTotalRow = Boolean(totals) || automaticTotals.length > 0;
+
+  const totalValue = key => totals && Object.prototype.hasOwnProperty.call(totals, key) ? totals[key] : automaticByKey.get(key);
+
+  const totalKeys = new Set(keys.filter(([key]) => totalValue(key) !== undefined).map(([key]) => key));
+
+  const totalLabelIndex = Math.max(0, keys.findIndex(([key]) => !totalKeys.has(key)));
+
+  const totalRow = shouldAddTotalRow ? `<Row>${keys.map(([key], index) => totalKeys.has(key) ? cell(totalValue(key)) : index === totalLabelIndex ? cell(totals?.label || 'جمع کل') : cell('')).join('')}</Row>` : '';
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Styles><Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Horizontal="Right" ss:Vertical="Center"/><Font ss:FontName="Tahoma" ss:Size="11"/></Style><Style ss:ID="Header"><Font ss:FontName="Tahoma" ss:Size="11" ss:Bold="1"/><Interior ss:Color="#DDEBF7" ss:Pattern="Solid"/></Style></Styles><Worksheet ss:Name="${excelXMLText(String(title || 'گزارش').slice(0, 31))}"><Table>${header}${body}${totalRow}</Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><DisplayRightToLeft/></WorksheetOptions></Worksheet></Workbook>`;
 
@@ -4340,7 +4405,7 @@ function CostsPage({ finance, setFinance }) {
 
     const html = `<p>منبع: ${sourceFilter === 'all' ? 'همه' : sourceFilter} | گروه: ${categoryFilter === 'all' ? 'همه' : categoryFilter} | زیرگروه: ${subgroupFilter === 'all' ? 'همه' : subgroupFilter} | حساب: ${accountFilter === 'all' ? 'همه' : finance.accounts.find(a => a.id === accountFilter)?.name || '-'}</p><table><thead><tr><th>منبع</th><th>تاریخ</th><th>گروه</th><th>زیرگروه</th><th>مبلغ</th><th>توضیحات</th></tr></thead><tbody>${rows.map(x => `<tr><td>${x.source}</td><td>${toJalali(x.date) || ''}</td><td>${expenseGroup(x)}</td><td>${expenseSubgroup(x)}</td><td>${money(x.amount)}</td><td>${x.description || ''}</td></tr>`).join('')}</tbody></table>`;
 
-    printSection('گزارش هزينه ها', `<h2>جمع ستون مبلغ: ${money(total)} تومان</h2>${html}`);
+    printSection('گزارش هزينه ها', html);
 
   };
 
