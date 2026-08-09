@@ -1363,11 +1363,15 @@ function Salon({ lookups, notify }) {
 
         setPodOptions(options);
 
+        if (options.length === 0) setFormError('برای چله انتخاب‌شده هم‌بافت پود دارای مانده ثبت نشده است؛ ورود نخ سالن را کنترل کنید.');
+
         selectedHamPod = options.find(x => x.hambaft === form.ham_pod)?.hambaft || options[0]?.hambaft || '';
 
-      } catch {
+      } catch (err) {
 
         setPodOptions([]);
+
+        setFormError(err?.message || 'هم‌بافت‌های پود چله انتخاب‌شده خوانده نشد.');
 
       }
 
@@ -1634,9 +1638,11 @@ function Salon({ lookups, notify }) {
             setFormulaSource('');
           }} items={uniqueOptions(podOptions.map(x => ({ id: x.hambaft, name: `${x.hambaft}${x.yarn ? ` - ${x.yarn}` : ''} - مانده ${fmt(x.balance)} کیلو` })), form.ham_pod)} hint="فقط از نخ پود تخصیص‌یافته به همین ماشین و همین چله انتخاب می‌شود." />
 
-          <Select label="شماره چله فعال" value={form.chelle_id} onChange={async v => {
+          <Select label="چله تولید (یکی از دو چله آخر ماشین)" value={form.chelle_id} onChange={async v => {
 
             const chelleID = Number(v);
+
+            setFormError('');
 
             const row = recent.find(x => Number(x.chelle_id) === chelleID);
             const selectedHambaft = row?.hambaft || '';
@@ -1663,15 +1669,19 @@ function Salon({ lookups, notify }) {
 
                 setPodOptions(options);
 
+                if (options.length === 0) setFormError('برای چله انتخاب‌شده هم‌بافت پود دارای مانده ثبت نشده است؛ ورود نخ سالن را کنترل کنید.');
+
                 selectedHamPod = options.find(x => x.hambaft === form.ham_pod)?.hambaft || options[0]?.hambaft || '';
 
                 set('ham_pod', selectedHamPod);
 
-              } catch {
+              } catch (err) {
 
                 setPodOptions([]);
 
                 set('ham_pod', '');
+
+                setFormError(err?.message || 'هم‌بافت‌های پود چله انتخاب‌شده خوانده نشد.');
 
               }
 
