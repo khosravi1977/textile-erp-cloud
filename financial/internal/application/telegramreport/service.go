@@ -39,6 +39,7 @@ type Config struct {
 	APIBase     string
 	RelayURL    string
 	RelayToken  string
+	RelayMode   string
 }
 
 func ConfigFromEnv() Config {
@@ -49,6 +50,7 @@ func ConfigFromEnv() Config {
 		APIBase:     "https://api.telegram.org",
 		RelayURL:    strings.TrimSpace(os.Getenv("TEXTILE_TELEGRAM_RELAY_URL")),
 		RelayToken:  strings.TrimSpace(os.Getenv("TEXTILE_TELEGRAM_RELAY_TOKEN")),
+		RelayMode:   strings.TrimSpace(os.Getenv("TEXTILE_TELEGRAM_RELAY_MODE")),
 	}
 }
 
@@ -299,7 +301,7 @@ func (s *Service) getMe(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := s.call(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
+	if err := s.call(ctx, http.MethodGet, "getMe", nil, endpoint, nil, &response); err != nil {
 		return "", err
 	}
 	if !response.OK {
@@ -322,7 +324,7 @@ func (s *Service) deleteWebhook(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.call(ctx, http.MethodPost, endpoint, map[string]any{"drop_pending_updates": false}, &response); err != nil {
+	if err := s.call(ctx, http.MethodPost, "deleteWebhook", nil, endpoint, map[string]any{"drop_pending_updates": false}, &response); err != nil {
 		return err
 	}
 	if !response.OK || !response.Result {
@@ -711,7 +713,7 @@ func (s *Service) pollOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.call(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
+	if err := s.call(ctx, http.MethodGet, "getUpdates", query, endpoint, nil, &response); err != nil {
 		return err
 	}
 	for _, update := range response.Result {
@@ -1882,7 +1884,7 @@ func (s *Service) sendMessage(ctx context.Context, chatID, text string) (int64, 
 	if err != nil {
 		return 0, err
 	}
-	err = s.call(ctx, http.MethodPost, endpoint, map[string]any{
+	err = s.call(ctx, http.MethodPost, "sendMessage", nil, endpoint, map[string]any{
 		"chat_id": chatID, "text": text, "disable_web_page_preview": true,
 	}, &response)
 	if err != nil {
@@ -1894,23 +1896,36 @@ func (s *Service) sendMessage(ctx context.Context, chatID, text string) (int64, 
 	return response.Result.MessageID, nil
 }
 
-func (s *Service) call(ctx context.Context, method, endpoint string, body any, out any) error {
+func (s *Service) call(ctx context.Context, method, telegramMethod string, query url.Values, endpoint string, body any, out any) error {
+	requestMethod := method
+	requestBody := body
+	if s.relayMode() == "apps_script" {
+		requestMethod = http.MethodPost
+		requestBody = map[string]any{
+			"relayToken": s.cfg.RelayToken,
+			"botToken":   s.cfg.BotToken,
+			"method":     telegramMethod,
+			"httpMethod": method,
+			"query":      query,
+			"body":       body,
+		}
+	}
 	var reader io.Reader
-	if body != nil {
-		payload, err := json.Marshal(body)
+	if requestBody != nil {
+		payload, err := json.Marshal(requestBody)
 		if err != nil {
 			return err
 		}
 		reader = bytes.NewReader(payload)
 	}
-	request, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
+	request, err := http.NewRequestWithContext(ctx, requestMethod, endpoint, reader)
 	if err != nil {
 		return errors.New(s.redactToken(err.Error()))
 	}
-	if body != nil {
+	if requestBody != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	if strings.TrimSpace(s.cfg.RelayURL) != "" {
+	if strings.TrimSpace(s.cfg.RelayURL) != "" && s.relayMode() != "apps_script" {
 		request.Header.Set("Authorization", "Bearer "+s.cfg.RelayToken)
 		request.Header.Set("X-Telegram-Bot-Token", s.cfg.BotToken)
 	}
@@ -1949,9 +1964,27 @@ func (s *Service) telegramEndpoint(method string, query url.Values) (string, err
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", errors.New("telegram relay URL must be a clean HTTPS address")
 	}
+	if s.relayMode() == "apps_script" {
+		return parsed.String(), nil
+	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + method
 	parsed.RawQuery = query.Encode()
 	return parsed.String(), nil
+}
+
+func (s *Service) relayMode() string {
+	mode := strings.ToLower(strings.TrimSpace(s.cfg.RelayMode))
+	if mode != "" {
+		return mode
+	}
+	parsed, err := url.Parse(strings.TrimSpace(s.cfg.RelayURL))
+	if err == nil {
+		host := strings.ToLower(parsed.Hostname())
+		if host == "script.google.com" || host == "script.googleusercontent.com" {
+			return "apps_script"
+		}
+	}
+	return "standard"
 }
 
 func (s *Service) redactToken(value string) string {

@@ -434,6 +434,78 @@ func TestBootstrapUsesSecureRelayWithoutTokenInRequestURL(t *testing.T) {
 	}
 }
 
+func TestBootstrapUsesAppsScriptEnvelopeWithoutSecretsInURLOrHeaders(t *testing.T) {
+	const (
+		botToken   = "123456789:apps-script-bot-token-123456789012345"
+		relayToken = "apps-script-relay-access-token-12345678901234567890"
+	)
+	methods := make([]string, 0, 2)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("apps script relay must use POST, got %s", r.Method)
+		}
+		if strings.Contains(r.URL.RequestURI(), botToken) || strings.Contains(r.URL.RequestURI(), relayToken) {
+			t.Fatalf("relay secret leaked in request URL: %s", r.URL.RequestURI())
+		}
+		if r.Header.Get("Authorization") != "" || r.Header.Get("X-Telegram-Bot-Token") != "" {
+			t.Fatal("apps script secrets must be carried only inside the HTTPS JSON envelope")
+		}
+		var envelope struct {
+			RelayToken string         `json:"relayToken"`
+			BotToken   string         `json:"botToken"`
+			Method     string         `json:"method"`
+			HTTPMethod string         `json:"httpMethod"`
+			Body       map[string]any `json:"body"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode relay envelope: %v", err)
+		}
+		if envelope.RelayToken != relayToken || envelope.BotToken != botToken {
+			t.Fatal("apps script relay envelope did not carry the configured credentials")
+		}
+		methods = append(methods, envelope.HTTPMethod+" "+envelope.Method)
+		switch envelope.Method {
+		case "getMe":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":     true,
+				"result": map[string]any{"is_bot": true, "username": "textile_reports_bot"},
+			})
+		case "deleteWebhook":
+			if drop, ok := envelope.Body["drop_pending_updates"].(bool); !ok || drop {
+				t.Fatalf("unexpected deleteWebhook body: %#v", envelope.Body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	service := New(nil, Config{
+		Enabled:     true,
+		BotToken:    botToken,
+		BotUsername: "textile_reports_bot",
+		RelayURL:    server.URL,
+		RelayToken:  relayToken,
+		RelayMode:   "apps_script",
+	})
+	service.client = server.Client()
+	if err := service.bootstrap(context.Background()); err != nil {
+		t.Fatalf("bootstrap through apps script relay failed: %v", err)
+	}
+	expected := []string{"GET getMe", "POST deleteWebhook"}
+	if strings.Join(methods, "\n") != strings.Join(expected, "\n") {
+		t.Fatalf("unexpected apps script calls:\n%v", methods)
+	}
+}
+
+func TestRelayModeDetectsGoogleAppsScript(t *testing.T) {
+	service := New(nil, Config{RelayURL: "https://script.google.com/macros/s/example/exec"})
+	if got := service.relayMode(); got != "apps_script" {
+		t.Fatalf("expected apps_script relay mode, got %q", got)
+	}
+}
+
 func TestTelegramEndpointRejectsInsecureRelay(t *testing.T) {
 	service := New(nil, Config{
 		BotToken:   "123456789:test-token",
