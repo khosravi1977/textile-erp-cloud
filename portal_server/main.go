@@ -532,6 +532,7 @@ func main() {
 	mux.HandleFunc("/api/portal/team/", app.portalTeamByID)
 	mux.HandleFunc("/api/portal/executive-session", app.executiveSession)
 	mux.HandleFunc("/api/portal/executive-hall", app.executiveHallSummary)
+	mux.HandleFunc("/pwa/", app.modulePWAAsset)
 	mux.HandleFunc("/executive", app.executiveApp)
 	mux.HandleFunc("/executive/", app.executiveApp)
 	mux.Handle("/financial/", app.requireModuleAccess("financial", stripAndProxy("/financial", *financial)))
@@ -851,9 +852,8 @@ func (a *portalApp) landing(w http.ResponseWriter, r *http.Request) {
 		if effectiveAllowWeaving(record) {
 			cardParts = append(cardParts, `<a class="card weaving" href="/module-login?module=weaving">ورود به راندمان سالن بافت</a>`)
 		}
-		role := effectiveAccessRole(record)
-		if role == "owner" || role == "manager" {
-			cardParts = append(cardParts, `<a class="card executive" href="/executive/">مرکز فرمان مدیر نساجی</a>`)
+		if executiveAllowed(record) {
+			cardParts = append(cardParts, `<a class="card executive" href="/executive/">داشبورد قابل نصب نساجی</a>`)
 		}
 		if effectiveCanManageTeam(record) {
 			cardParts = append(cardParts, `<a class="card accent" href="/team">مدیریت کاربران و دسترسی‌ها</a>`)
@@ -1312,7 +1312,7 @@ func (a *portalApp) renderModuleLogin(w http.ResponseWriter, module, nextPath, e
 		errorHTML = `<div class="error">` + html.EscapeString(errMsg) + `</div>`
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(`<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ورود به ` + moduleTitle(module) + `</title><style>
+	_, _ = w.Write([]byte(`<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` + modulePWAHead(module) + `<title>ورود به ` + moduleTitle(module) + `</title><style>
 *{box-sizing:border-box}body{margin:0;min-height:100vh;background:#0b1322;color:#eef2ff;font-family:Tahoma,Arial;display:flex;align-items:center;justify-content:center;padding:20px}.panel{width:min(450px,96vw);background:#111c2e;border:1px solid #334155;border-radius:18px;padding:28px;box-shadow:0 24px 80px #0006}h1{margin:0 0 10px}.lead{color:#a8bad3;line-height:1.9}.badge{display:inline-block;margin-bottom:16px;border-radius:999px;background:#1d4ed8;padding:7px 12px;font-size:12px;font-weight:bold}form{display:grid;gap:12px;margin-top:20px}input{width:100%;border:1px solid #475569;border-radius:11px;padding:13px;background:#07101f;color:white}button{border:0;border-radius:11px;padding:13px;background:#2563eb;color:white;font-weight:bold;cursor:pointer}.error{margin-top:14px;border:1px solid #b91c1c;border-radius:11px;background:#7f1d1d;padding:11px;color:#fee2e2}.links{display:flex;justify-content:space-between;margin-top:18px;font-size:13px}.links a{color:#93c5fd;text-decoration:none}
 </style></head><body><main class="panel"><span class="badge">ورود مستقل و امن</span><h1>ورود به ` + moduleTitle(module) + `</h1><div class="lead">فقط کاربری که این بخش برای او فعال شده باشد می‌تواند وارد شود.</div>` + errorHTML + `<form method="post" action="/module-login?module=` + url.QueryEscape(module) + `"><input type="hidden" name="module" value="` + html.EscapeString(module) + `"><input type="hidden" name="next" value="` + html.EscapeString(nextPath) + `"><input name="username" placeholder="نام کاربری" autocomplete="username" required autofocus><input name="password" type="password" placeholder="رمز عبور" autocomplete="current-password" required><button type="submit">ورود به ` + moduleTitle(module) + `</button></form><div class="links"><a href="/">بازگشت به صفحه اصلی</a><a href="/team">مدیریت کاربران</a></div></main></body></html>`))
 }

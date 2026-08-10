@@ -45,7 +45,7 @@ func writeExecutiveTestAccess(t *testing.T, record projectAccess) string {
 	return file
 }
 
-func TestExecutiveAllowedRequiresManagerAndAnyPurchasedModule(t *testing.T) {
+func TestExecutiveAllowedUsesModulePermissionsForEveryRole(t *testing.T) {
 	t.Parallel()
 
 	record := executiveTestAccess()
@@ -53,18 +53,20 @@ func TestExecutiveAllowedRequiresManagerAndAnyPurchasedModule(t *testing.T) {
 		t.Fatal("manager with both module permissions should be allowed")
 	}
 	record.AccessRole = "accountant"
-	if executiveAllowed(record) {
-		t.Fatal("accountant should not be allowed into the executive center")
-	}
-	record.AccessRole = "manager"
 	record.AllowOperational = false
 	record.AllowWeaving = false
 	if !executiveAllowed(record) {
-		t.Fatal("manager with a financial-only purchase should be allowed")
+		t.Fatal("accountant with financial permission should see the financial dashboard")
 	}
+	record.AccessRole = "employee"
 	record.AllowFinancial = false
+	record.AllowWeaving = true
+	if !executiveAllowed(record) {
+		t.Fatal("employee with weaving permission should see the hall dashboard")
+	}
+	record.AllowWeaving = false
 	if executiveAllowed(record) {
-		t.Fatal("manager without any purchased module should not be allowed")
+		t.Fatal("user without any module permission should not be allowed")
 	}
 }
 
