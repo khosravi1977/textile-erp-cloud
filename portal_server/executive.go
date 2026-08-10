@@ -28,9 +28,7 @@ var executivePublicAssets = map[string]bool{
 }
 
 func executiveAllowed(record projectAccess) bool {
-	role := normalizeAccessRole(effectiveAccessRole(record))
 	return record.ProjectKey == "textile-erp" &&
-		(role == "owner" || role == "manager") &&
 		(effectiveAllowFinancial(record) || effectiveAllowOperational(record) || effectiveAllowWeaving(record)) &&
 		!record.MustChangePassword &&
 		!accessRequiresSetup(record)
@@ -69,7 +67,7 @@ func (a *portalApp) executiveApp(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>عدم دسترسی</title><style>body{font-family:Tahoma;background:#071416;color:#f5f7f2;display:grid;place-items:center;min-height:100vh;margin:0;padding:24px}.box{max-width:620px;border:1px solid #31555a;border-radius:20px;background:#0d2529;padding:28px;line-height:2}a{color:#f4c96b}</style><main class="box"><h1>مرکز فرمان فقط برای مدیر فعال است</h1><p>مدیر یا مالک شرکت با خرید حداقل یکی از بخش‌های مالی، عملیاتی یا راندمان سالن به این صفحه دسترسی دارد.</p><a href="/">بازگشت به درگاه نساجی</a></main></html>`))
+		_, _ = w.Write([]byte(`<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>عدم دسترسی</title><style>body{font-family:Tahoma;background:#071416;color:#f5f7f2;display:grid;place-items:center;min-height:100vh;margin:0;padding:24px}.box{max-width:620px;border:1px solid #31555a;border-radius:20px;background:#0d2529;padding:28px;line-height:2}a{color:#f4c96b}</style><main class="box"><h1>دسترسی این داشبورد فعال نیست</h1><p>مدیر شرکت باید حداقل یکی از بخش‌های مالی، عملیاتی یا راندمان سالن را برای این کاربر فعال کند.</p><a href="/">بازگشت به درگاه نساجی</a></main></html>`))
 		return
 	}
 
