@@ -23,6 +23,7 @@ func SetupRouter(services ...*telegramreport.Service) http.Handler {
 	mux.HandleFunc("/api/mobile/bootstrap", h.MobileBootstrap)
 	mux.HandleFunc("/api/mobile/settings", h.MobileSettings)
 	mux.HandleFunc("/api/mobile/transactions", h.MobileTransaction)
+	mux.HandleFunc("/api/mobile/payable-documents", h.MobilePayableDocument)
 	mux.HandleFunc("/api/production/orders", h.CreateProductionOrder)
 	mux.HandleFunc("/api/production/complete", h.CompleteProduction)
 	mux.HandleFunc("/api/settlements", h.CreateSettlement)

@@ -497,6 +497,147 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 	RespondError(w, http.StatusConflict, "Workspace changed; retry sync")
 }
 
+type mobilePayableDocumentRequest struct {
+	ExternalID  string `json:"external_id"`
+	Customer    string `json:"customer"`
+	Amount      int64  `json:"amount"`
+	CheckNo     string `json:"check_no"`
+	CheckNoAlt  string `json:"checkNo"`
+	Sayad       string `json:"sayad"`
+	SayadID     string `json:"sayad_id"`
+	DueJalali   string `json:"due_jalali"`
+	DueAlt      string `json:"dueJalali"`
+	Bank        string `json:"bank"`
+	Account     string `json:"account"`
+	Beneficiary string `json:"beneficiary"`
+	Status      string `json:"status"`
+	Source      string `json:"source"`
+	Description string `json:"description"`
+}
+
+func normalizeMobileDigits(value string) string {
+	var result strings.Builder
+	for _, char := range strings.TrimSpace(value) {
+		switch {
+		case char >= '\u06f0' && char <= '\u06f9':
+			result.WriteByte(byte('0' + char - '\u06f0'))
+		case char >= '\u0660' && char <= '\u0669':
+			result.WriteByte(byte('0' + char - '\u0660'))
+		case char >= '0' && char <= '9':
+			result.WriteRune(char)
+		}
+	}
+	return result.String()
+}
+
+func mobilePayableDocumentRow(req mobilePayableDocumentRequest, now time.Time) (map[string]any, error) {
+	externalID := strings.TrimSpace(req.ExternalID)
+	customer := strings.TrimSpace(req.Customer)
+	checkNo := strings.TrimSpace(req.CheckNo)
+	if checkNo == "" {
+		checkNo = strings.TrimSpace(req.CheckNoAlt)
+	}
+	sayadID := normalizeMobileDigits(req.SayadID)
+	if sayadID == "" {
+		sayadID = normalizeMobileDigits(req.Sayad)
+	}
+	dueJalali := strings.TrimSpace(req.DueJalali)
+	if dueJalali == "" {
+		dueJalali = strings.TrimSpace(req.DueAlt)
+	}
+	bank := strings.TrimSpace(req.Bank)
+	if externalID == "" || customer == "" || req.Amount <= 0 || checkNo == "" || dueJalali == "" || bank == "" {
+		return nil, errors.New("external_id, customer, amount, check_no, due_jalali and bank are required")
+	}
+	if len(sayadID) != 16 {
+		return nil, errors.New("Sayad identifier must contain exactly 16 digits")
+	}
+	status := strings.TrimSpace(req.Status)
+	if status == "" {
+		status = "open"
+	}
+	if status != "open" {
+		return nil, errors.New("new mobile payable document must have open status")
+	}
+	source := strings.TrimSpace(req.Source)
+	if source == "" {
+		source = "hesabyar"
+	}
+	return map[string]any{
+		"id": "pch-mobile-" + pairingHash(externalID)[:16], "externalId": externalID,
+		"customer": customer, "amount": req.Amount, "checkNo": checkNo, "sayadId": sayadID,
+		"dueJalali": dueJalali, "dueDate": mobileAccountingDate(dueJalali), "bank": bank,
+		"account": strings.TrimSpace(req.Account), "beneficiary": strings.TrimSpace(req.Beneficiary),
+		"status": status, "source": source, "source_type": "hesabyar_mobile", "sourceId": externalID,
+		"description": strings.TrimSpace(req.Description), "issuedAt": now.Format("2006-01-02"),
+		"createdAt": now.UTC().Format(time.RFC3339), "updatedAt": now.UTC().Format(time.RFC3339),
+	}, nil
+}
+
+func hasMobilePayableDocument(rows []map[string]any, externalID string) bool {
+	for _, row := range rows {
+		if stringValue(row["externalId"]) == externalID ||
+			(stringValue(row["source_type"]) == "hesabyar_mobile" && stringValue(row["sourceId"]) == externalID) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *APIHandler) MobilePayableDocument(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		RespondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	companyID := requestctx.CompanyID(r.Context())
+	if !h.mobileDeviceActive(r, companyID) {
+		RespondError(w, http.StatusUnauthorized, "Device is not paired")
+		return
+	}
+	var req mobilePayableDocumentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid payable document")
+		return
+	}
+	row, err := mobilePayableDocumentRow(req, time.Now())
+	if err != nil {
+		RespondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	externalID := stringValue(row["externalId"])
+	for attempt := 0; attempt < 3; attempt++ {
+		doc, loadErr := loadWorkspace(r, companyID)
+		if loadErr != nil {
+			RespondError(w, http.StatusInternalServerError, loadErr.Error())
+			return
+		}
+		state := decodeWorkspaceMap(doc.State)
+		if hasMobilePayableDocument(rowsFrom(state, "payableDocs"), externalID) {
+			RespondJSON(w, http.StatusOK, map[string]any{"status": "duplicate", "revision": doc.Revision})
+			return
+		}
+		state["payableDocs"] = append([]any{row}, anyRows(state, "payableDocs")...)
+		raw, _ := json.Marshal(state)
+		canonical, checksum, validationErr := validateWorkspaceState(raw)
+		if validationErr != nil {
+			RespondError(w, http.StatusBadRequest, validationErr.Error())
+			return
+		}
+		expected := doc.Revision
+		saved, saveErr := saveWorkspace(r, companyID, requestctx.UserID(r.Context()), &expected, canonical, checksum, nil)
+		if saveErr == nil {
+			RespondJSON(w, http.StatusCreated, map[string]any{"status": "synced", "id": row["id"], "revision": saved.Revision})
+			return
+		}
+		var conflict workspaceConflict
+		if !errors.As(saveErr, &conflict) {
+			RespondError(w, http.StatusInternalServerError, saveErr.Error())
+			return
+		}
+	}
+	RespondError(w, http.StatusConflict, "Workspace changed; retry sync")
+}
+
 func (h *APIHandler) deleteMobileTransaction(w http.ResponseWriter, r *http.Request) {
 	companyID := requestctx.CompanyID(r.Context())
 	if !h.mobileDeviceActive(r, companyID) {
