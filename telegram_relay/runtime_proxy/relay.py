@@ -12,6 +12,7 @@ import hmac
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -37,6 +38,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 LOGGER = logging.getLogger("viora-telegram-runtime")
 _get_me_cache: dict[str, Any] | None = None
 _get_me_cached_at = 0.0
+_next_poll_allowed_at = 0.0
+_poll_lock = threading.Lock()
+
+try:
+    POLL_MIN_INTERVAL_SECONDS = max(
+        5.0,
+        float(os.getenv("VIORA_RELAY_POLL_INTERVAL_SECONDS", "20")),
+    )
+except ValueError:
+    POLL_MIN_INTERVAL_SECONDS = 20.0
 
 
 def _upstream(method: str, http_method: str, query: dict[str, list[str]], body: Any) -> dict[str, Any]:
@@ -58,10 +69,10 @@ def _upstream(method: str, http_method: str, query: dict[str, list[str]], body: 
         method="POST",
         headers={"Content-Type": "application/json", "User-Agent": "Viora-Telegram-Runtime/1.0"},
     )
-    # The financial service uses a short polling deadline.  Return an empty
-    # successful poll before that deadline when Google is slow, otherwise one
-    # transient upstream delay incorrectly marks the bot as unavailable.
-    upstream_timeout = 3.0 if method == "getUpdates" else 8.0
+    # Telegram long polling currently waits for five seconds.  The upstream
+    # request needs enough time to finish so abandoned Apps Script executions
+    # do not continue in the background and consume the daily quota.
+    upstream_timeout = 12.0 if method == "getUpdates" else 8.0
     with urllib.request.urlopen(request, timeout=upstream_timeout) as response:
         raw = response.read(1024 * 1024 + 1)
     if len(raw) > 1024 * 1024:
@@ -73,9 +84,19 @@ def _upstream(method: str, http_method: str, query: dict[str, list[str]], body: 
 
 
 def call_with_fallback(method: str, http_method: str, query: dict[str, list[str]], body: Any) -> dict[str, Any]:
-    global _get_me_cache, _get_me_cached_at
+    global _get_me_cache, _get_me_cached_at, _next_poll_allowed_at
     if method == "getMe" and _get_me_cache and time.monotonic() - _get_me_cached_at < 3600:
         return _get_me_cache
+
+    if method == "getUpdates":
+        now = time.monotonic()
+        with _poll_lock:
+            if now < _next_poll_allowed_at:
+                return {"ok": True, "result": []}
+            # Reserve the next polling slot before contacting the upstream.
+            # This also prevents concurrent financial workers from multiplying
+            # the number of Apps Script executions.
+            _next_poll_allowed_at = now + POLL_MIN_INTERVAL_SECONDS
 
     attempts = ALLOWED[method][1]
     last_error: Exception | None = None
@@ -123,10 +144,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def _handle(self) -> None:
+        parsed = urlsplit(self.path)
+        if self.command == "GET" and parsed.path == "/health":
+            self._json(200, {"ok": True, "service": "telegram-runtime"})
+            return
         if not self._authorized():
             self._json(401, {"ok": False, "description": "unauthorized"})
             return
-        parsed = urlsplit(self.path)
         method = parsed.path.strip("/")
         rule = ALLOWED.get(method)
         if not rule or self.command != rule[0]:
