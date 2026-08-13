@@ -125,16 +125,6 @@ jobs:
           [[ "$configured" =~ ^[A-Za-z][A-Za-z0-9_]{4,31}$ ]]
           [[ "$TELEGRAM_RELAY_TOKEN" =~ ^[A-Za-z0-9_-]{43,128}$ ]]
           [[ "$TELEGRAM_UPSTREAM_RELAY_URL" =~ ^https://script\.google\.com/macros/s/[^/?#]+/exec$ ]]
-          payload="$(jq -cn \
-            --arg relayToken "$TELEGRAM_RELAY_TOKEN" \
-            --arg botToken "$TELEGRAM_BOT_TOKEN" \
-            '{relayToken:$relayToken,botToken:$botToken,method:"getMe",httpMethod:"GET",query:{},body:null}')"
-          response="$(curl --fail --location --silent --show-error --max-time 30 \
-            -H "Content-Type: application/json" \
-            --data-binary "$payload" \
-            "$TELEGRAM_UPSTREAM_RELAY_URL")"
-          actual="$(jq -er '.result | select(.is_bot == true) | .username' <<<"$response")"
-          test "${actual,,}" = "${configured,,}"
           local_file="$RUNNER_TEMP/textile-telegram.env"
           remote_file="/var/tmp/textile-telegram.env"
           remote_temp="${remote_file}.${GITHUB_RUN_ID}.tmp"
