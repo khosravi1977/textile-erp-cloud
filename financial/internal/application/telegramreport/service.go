@@ -30,6 +30,7 @@ import (
 const (
 	pairingTTL                 = 10 * time.Minute
 	telegramPollTimeoutSeconds = 5
+	telegramPollCyclePause     = 20 * time.Second
 )
 
 type Config struct {
@@ -681,6 +682,14 @@ func (s *Service) pollLoop(ctx context.Context) {
 			continue
 		}
 		s.setAvailable(true)
+		// Apps Script has a daily outbound-request quota.  A short pause after
+		// each successful poll keeps pairing responsive while preventing an
+		// always-on financial service from exhausting that quota.
+		select {
+		case <-time.After(telegramPollCyclePause):
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 

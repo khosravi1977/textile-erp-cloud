@@ -50,7 +50,13 @@ function doPost(event) {
       return relayError("method not allowed");
     }
 
-    const query = pickQuery(input.query, rule.query);
+    const queryInput = copyObject(input.query);
+    if (method === "getUpdates") {
+      // Apps Script web requests have a shorter practical response window than
+      // Telegram long polling. Short polls keep the relay reliably JSON-only.
+      queryInput.timeout = "5";
+    }
+    const query = pickQuery(queryInput, rule.query);
     const body = pickBody(input.body, rule.body);
     const endpoint =
       "https://api.telegram.org/bot" +
@@ -176,6 +182,18 @@ function requireObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("object required");
   }
+}
+
+function copyObject(value) {
+  if (value == null) {
+    return {};
+  }
+  requireObject(value);
+  const result = {};
+  Object.keys(value).forEach(function (key) {
+    result[key] = value[key];
+  });
+  return result;
 }
 
 function relayError(message) {

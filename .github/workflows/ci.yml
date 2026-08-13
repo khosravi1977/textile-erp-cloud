@@ -67,6 +67,9 @@ jobs:
       - name: Telegram relay security tests and production build
         run: npm ci && npm test
         working-directory: telegram_relay
+      - name: Telegram runtime proxy tests
+        run: python3 -m unittest relay_test -v
+        working-directory: telegram_relay/runtime_proxy
       - name: Docker compose config
         run: docker compose -f docker-compose.prod.yml config
         working-directory: financial

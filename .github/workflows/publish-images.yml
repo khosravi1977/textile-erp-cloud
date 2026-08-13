@@ -71,6 +71,8 @@ jobs:
           cache-dependency-path: telegram_relay/package-lock.json
       - run: npm ci && npm test
         working-directory: telegram_relay
+      - run: python3 -m unittest relay_test -v
+        working-directory: telegram_relay/runtime_proxy
 
   images:
     if: github.event_name != 'pull_request'
