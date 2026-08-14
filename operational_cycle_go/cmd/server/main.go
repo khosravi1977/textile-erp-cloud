@@ -468,6 +468,7 @@ func (a *app) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/production-waste/", a.requireMenu("consumption", a.productionWasteByID))
 	mux.HandleFunc("/api/advisor", a.requireMenu("advisor", a.managementReport))
 	mux.HandleFunc("/api/management-report", a.requireMenu("reports", a.managementReport))
+	mux.HandleFunc("/api/management-lineage", a.requireMenu("reports", a.managementLineage))
 	mux.HandleFunc("/api/reset-cycle", a.requireMenu("initial", a.resetCycle))
 	mux.HandleFunc("/", staticHandler())
 }
@@ -5248,6 +5249,124 @@ func (a *app) managementReport(w http.ResponseWriter, r *http.Request) {
 		"notifications":    a.notifications(),
 		"data_quality":     a.operationalDataQuality(),
 	})
+}
+
+func (a *app) managementLineage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	detailedInvoices, invoiceErr := a.managementOutInvoices(200)
+	warps, warpErr := a.managementWarps(200)
+	productionUnits, productionErr := a.managementProductionUnits(200)
+	orders, orderErr := a.managementOrders(r, 200)
+	if errors.Join(invoiceErr, warpErr, productionErr, orderErr) != nil {
+		fail(w, http.StatusInternalServerError, "داده پیوند مدیریتی در دسترس نیست")
+		return
+	}
+	writeJSON(w, record{
+		"detailedInvoices":     detailedInvoices,
+		"warps":                warps,
+		"productionUnits":      productionUnits,
+		"orders":               orders,
+		"commitmentsSupported": true,
+	})
+}
+
+func (a *app) managementOutInvoices(limit int) ([]record, error) {
+	codeList := "GROUP_CONCAT(f.taghe_cod_f_khor)"
+	if a.dialect == "postgres" {
+		codeList = "STRING_AGG(f.taghe_cod_f_khor, ',' ORDER BY f.id_f_khor)"
+	}
+	rows, err := a.query(`SELECT f.shom_f_khor, MIN(f.tarikh_f_khor), MIN(f.mosh_f_khor), MIN(f.shomare_sanad), MIN(COALESCE(f.kala_name_f_khor,'')), COUNT(*), COALESCE(SUM(s.metr_salon),0), COALESCE(SUM(s.w_salon),0), `+codeList+`
+		FROM f_khor f LEFT JOIN salon s ON s.id_salon=CAST(f.taghe_cod_f_khor AS INTEGER)
+		GROUP BY f.shom_f_khor ORDER BY MAX(f.id_f_khor) DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []record{}
+	for rows.Next() {
+		var no, date, customer, documentNo, product, codes string
+		var count int64
+		var meters, weight float64
+		if rows.Scan(&no, &date, &customer, &documentNo, &product, &count, &meters, &weight, &codes) == nil {
+			items = append(items, record{"id": no, "invoice_no": no, "tarikh": date, "mosh": customer, "sanad": documentNo, "kala": product, "taghe_count": count, "metr": meters, "weight": weight, "codes": codes})
+		}
+	}
+	return items, rows.Err()
+}
+
+func (a *app) managementWarps(limit int) ([]record, error) {
+	rows, err := a.query(`SELECT id_chelle,COALESCE(tarikh_chelle,''),COALESCE(shom_chelle,''),COALESCE(nakh_chelle,''),COALESCE(w_chelle,0),COALESCE(pich_chelle,''),COALESCE(mosh_chelle,''),COALESCE(hambaft_chelle,''),COALESCE(codnavard_chelle,''),COALESCE(machin_chelle,'') FROM chelle ORDER BY id_chelle DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []record{}
+	for rows.Next() {
+		var id int64
+		var date, warp, yarn, warper, customer, batch, beam, machine string
+		var weight float64
+		if rows.Scan(&id, &date, &warp, &yarn, &weight, &warper, &customer, &batch, &beam, &machine) == nil {
+			items = append(items, record{"id": id, "tarikh": date, "shom_chelle": warp, "nakh": yarn, "weight": weight, "pich": warper, "mosh": customer, "hambaft": batch, "kod_navard": beam, "machine": machine})
+		}
+	}
+	return items, rows.Err()
+}
+
+func (a *app) managementProductionUnits(limit int) ([]record, error) {
+	rows, err := a.query(`SELECT id_salon,COALESCE(tarikh_salon,''),COALESCE(metr_salon,0),COALESCE(w_salon,0),COALESCE(machin_salon,''),COALESCE(user_salon,''),COALESCE(kala_salon,''),COALESCE(ham_pod_salon,''),COALESCE(ham_chelle_salon,''),COALESCE(shom_chelle_salon,'') FROM salon ORDER BY id_salon DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []record{}
+	for rows.Next() {
+		var id int64
+		var date, machine, operator, product, weftBatch, warpBatch, warp string
+		var meters, weight float64
+		if rows.Scan(&id, &date, &meters, &weight, &machine, &operator, &product, &weftBatch, &warpBatch, &warp) == nil {
+			items = append(items, record{"id": id, "tarikh": date, "metr": meters, "weight": weight, "machine": machine, "user": operator, "kala": product, "ham_pod": weftBatch, "ham_chelle": warpBatch, "shom_chelle": warp})
+		}
+	}
+	return items, rows.Err()
+}
+
+func (a *app) managementOrders(r *http.Request, limit int) ([]record, error) {
+	if a.dialect != "postgres" {
+		return []record{}, nil
+	}
+	session, ok := a.currentSession(r)
+	if !ok || session.CompanyID <= 0 {
+		return nil, errors.New("management session is unavailable")
+	}
+	rows, err := a.query(`SELECT o.id,o.order_no,o.customer_party_id,COALESCE(c.name,''),o.product_item_id,COALESCE(i.name,''),COALESCE(o.status,''),o.commitment_date,COALESCE(o.total_yarn_input,0),COALESCE(o.total_fabric_output,0)
+		FROM public.production_orders o
+		LEFT JOIN public.parties c ON c.id=o.customer_party_id AND c.company_id=o.company_id
+		LEFT JOIN public.items i ON i.id=o.product_item_id AND i.company_id=o.company_id
+		WHERE o.company_id=? ORDER BY o.created_at DESC LIMIT ?`, session.CompanyID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []record{}
+	for rows.Next() {
+		var id, customerID, productID int64
+		var orderNo, customer, product, status string
+		var commitmentDate sql.NullTime
+		var yarnInput, fabricOutput float64
+		if rows.Scan(&id, &orderNo, &customerID, &customer, &productID, &product, &status, &commitmentDate, &yarnInput, &fabricOutput) != nil {
+			continue
+		}
+		item := record{"id": id, "order_no": orderNo, "customer_id": customerID, "customer_name": customer, "product_id": productID, "product": product, "status": status, "yarn_input": yarnInput, "produced_quantity": fabricOutput}
+		if commitmentDate.Valid {
+			item["commitment_date"] = commitmentDate.Time.UTC().Format(time.RFC3339)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (a *app) tagheInfo(w http.ResponseWriter, code string) {
