@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { transformFinancialApp } from '../auditAppTransform.js';
 
 const fixture = `
+import { isMonetaryColumn, monetaryColumnTotals, parseLocalizedNumber } from './reportTotals.js';
+{currentPage === 'financialHealth' && <FinancialHealthPage finance={safeFinance} />}
 { period: 'سررسید گذشته ۶۱ تا ۹۰ روز', min: 31, max: 60, amount: 0, customers: new Set() },
 const a = x.status !== 'cleared' && x.status !== 'assigned';
 const b = x.status !== 'cleared' && x.status !== 'assigned';
@@ -17,6 +19,8 @@ const purchases = finance.incomingInvoices.filter(x => inRange(x.date));
 
 test('applies all accounting audit UI corrections', () => {
   const out = transformFinancialApp(fixture);
+  assert.match(out, /LedgerFinancialHealthPage/);
+  assert.doesNotMatch(out, /<FinancialHealthPage finance=/);
   assert.match(out, /۳۱ تا ۶۰/);
   assert.equal((out.match(/x\.status === 'open'/g) || []).length, 4);
   assert.match(out, /setTermCashPercent\(100 - v\)/);
