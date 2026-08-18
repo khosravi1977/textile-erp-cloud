@@ -57,6 +57,24 @@ func TestWorkspaceSummaryUsesCOGSNotPurchasesForGrossMargin(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSummaryExcludesOutputVATFromRevenue(t *testing.T) {
+	state := map[string]any{
+		"invoices": []any{
+			map[string]any{"id": "sale-vat", "total": 1100.0, "taxAmount": 100.0, "costAmount": 400.0},
+		},
+	}
+	summary := buildWorkspaceSummaryAccurate(state, 3, time.Now())
+	if got := summary["total_sales"]; got != 1100.0 {
+		t.Fatalf("gross invoice sales = %v, want 1100", got)
+	}
+	if got := summary["sales_revenue"]; got != 1000.0 {
+		t.Fatalf("net sales revenue = %v, want 1000", got)
+	}
+	if got := summary["gross_margin"]; got != 600.0 {
+		t.Fatalf("gross margin = %v, want 600", got)
+	}
+}
+
 func TestWorkspaceSummaryExcludesNonFinancialIncomingFromPurchases(t *testing.T) {
 	state := map[string]any{
 		"incomingInvoices": []any{
@@ -64,7 +82,7 @@ func TestWorkspaceSummaryExcludesNonFinancialIncomingFromPurchases(t *testing.T)
 			map[string]any{"amount": 700.0, "nonFinancial": true},
 		},
 	}
-	summary := buildWorkspaceSummaryAccurate(state, 3, time.Now())
+	summary := buildWorkspaceSummaryAccurate(state, 4, time.Now())
 	if got := summary["total_purchases"]; got != 300.0 {
 		t.Fatalf("financial purchase total = %v, want 300", got)
 	}
@@ -79,7 +97,7 @@ func TestWorkspaceSummaryExcludesAssignedChecksFromReceivableAssets(t *testing.T
 			map[string]any{"amount": 400.0, "status": "cleared"},
 		},
 	}
-	summary := buildWorkspaceSummaryAccurate(state, 4, time.Now())
+	summary := buildWorkspaceSummaryAccurate(state, 5, time.Now())
 	if got := summary["open_receivables"]; got != 300.0 {
 		t.Fatalf("open receivable assets = %v, want 300", got)
 	}
