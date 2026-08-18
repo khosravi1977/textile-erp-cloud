@@ -44,12 +44,19 @@ export function transformFinancialAppSource(input) {
     "const netExposure = Math.max(0, financial.debt + futureChecks - ownedYarn - ownedFabric);",
     'credit exposure calculation');
 
+  // The available workspace does not persist depreciation/amortization nor an
+  // approved budget. Do not present net/operating profit as EBITDA and do not
+  // imply that an empty variance table is a calculated budget comparison.
+  source = source.replace('label="EBITDA"', 'label="سود عملیاتی ثبت‌شده"');
+  source = source.replace('>تحليل انحرافات بودجه</h3>', '>انحراف بودجه (نیازمند بودجه مصوب)</h3>');
+
   const forbidden = [
     "const allowed = Array.isArray(list) && list.length ? list.filter(item => fullPageAccess.includes(item)) : fullPageAccess;",
     "portalRole: sessionData.portalRole || claims.portal_role || claims.role || 'owner',",
     'function buildFinancialHealth(finance) {',
     "const purchases = finance.incomingInvoices.filter(x => inRange(x.date));",
     "const netExposure = financial.debt - futureChecks - ownedYarn - ownedFabric;",
+    'label="EBITDA"',
   ];
   for (const pattern of forbidden) if (source.includes(pattern)) throw new Error(`financial integrity transform left legacy pattern: ${pattern}`);
   if (!source.includes('const normalizeAccessList = normalizeAccessListStrict;') || !source.includes('const buildFinancialHealth = buildFinancialHealthAccurate;')) throw new Error('financial integrity transform did not activate audited helpers');
