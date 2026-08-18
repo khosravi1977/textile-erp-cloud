@@ -227,7 +227,12 @@ func saveWorkspace(r *http.Request, companyID, userID int64, expectedRevision *i
 		if err != nil {
 			return err
 		}
-		if err := validateWorkspaceAccountingChanges(decodeWorkspaceMap(current.State), decodeWorkspaceMap(state)); err != nil {
+		oldAccountingState := decodeWorkspaceMap(current.State)
+		newAccountingState := decodeWorkspaceMap(state)
+		if err := validateWorkspaceAuditSafetyChanges(oldAccountingState, newAccountingState); err != nil {
+			return err
+		}
+		if err := validateWorkspaceAccountingChanges(oldAccountingState, newAccountingState); err != nil {
 			return err
 		}
 		if current.Revision > 0 && current.Checksum == checksum {
@@ -262,9 +267,51 @@ func saveWorkspace(r *http.Request, companyID, userID int64, expectedRevision *i
 		if err != nil {
 			return err
 		}
-		return syncWorkspaceLedger(r.Context(), tx, companyID, userID, saved.Revision, decodeWorkspaceMap(current.State), decodeWorkspaceMap(saved.State))
+		return syncWorkspaceLedger(r.Context(), tx, companyID, userID, saved.Revision, oldAccountingState, decodeWorkspaceMap(saved.State))
 	})
 	return saved, err
+}
+
+func validateWorkspaceAuditSafetyChanges(oldState, newState map[string]any) error {
+	changedRows := func(key string) []map[string]any {
+		oldRows := map[string][]byte{}
+		for index, row := range rowsFrom(oldState, key) {
+			identity := accountingRowIdentity(key, row, index)
+			encoded, _ := json.Marshal(row)
+			oldRows[identity] = encoded
+		}
+		rows := make([]map[string]any, 0)
+		for index, row := range rowsFrom(newState, key) {
+			identity := accountingRowIdentity(key, row, index)
+			encoded, _ := json.Marshal(row)
+			if previous, exists := oldRows[identity]; !exists || string(previous) != string(encoded) {
+				rows = append(rows, row)
+			}
+		}
+		return rows
+	}
+
+	for _, row := range changedRows("movements") {
+		if stringValue(row["transactionType"]) != "transfer" {
+			continue
+		}
+		if stringValue(row["direction"]) != "out" {
+			return fmt.Errorf("انتقال بین حساب‌ها باید از حساب مبدأ به حساب مقصد ثبت شود؛ جهت انتقال نامعتبر است")
+		}
+		if strings.TrimSpace(stringValue(row["accountId"])) == "" || strings.TrimSpace(stringValue(row["counterAccountId"])) == "" || stringValue(row["accountId"]) == stringValue(row["counterAccountId"]) {
+			return fmt.Errorf("برای انتقال بین حساب‌ها، حساب مبدأ و مقصد متفاوت الزامی است")
+		}
+	}
+
+	for _, row := range changedRows("invoices") {
+		if stringValue(row["pricingMode"]) != "sale" {
+			continue
+		}
+		if number(row["quantity"]) > 0 && number(row["total"]) > 0 && number(row["costAmount"]) <= 0 {
+			return fmt.Errorf("برای فروش موجودی ملکی، بهای تمام‌شده معتبر الزامی است")
+		}
+	}
+	return nil
 }
 
 func annotateAccountingProcessing(currentRaw, proposedRaw json.RawMessage, userID int64, processedAt time.Time) (json.RawMessage, string, error) {
@@ -276,7 +323,6 @@ func annotateAccountingProcessing(currentRaw, proposedRaw json.RawMessage, userI
 			if key := accountingSourceKey(field, row); key != "" {
 				existing[key] = struct{}{}
 			}
-		}
 		rows := rowsFrom(proposed, field)
 		for _, row := range rows {
 			key := accountingSourceKey(field, row)
