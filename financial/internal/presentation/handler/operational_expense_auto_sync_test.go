@@ -83,6 +83,30 @@ func TestOperationalExpenseEditUpdatesFinancialRecordAndPreservesAccountOverride
 	}
 }
 
+func TestOperationalExpenseAutoSyncAdoptsLegacyManualMovementInsteadOfDuplicating(t *testing.T) {
+	state := map[string]any{
+		"accounts": []any{map[string]any{"id": "cash-main"}},
+		"expenses": []any{map[string]any{
+			"id": "legacy-exp", "source_type": "operational_expense", "sourceId": "12", "accountId": "cash-main", "date": "2026-08-18", "amount": 90.0,
+		}},
+		// Old UI created the movement with sourceExpense, but without source_type/sourceId.
+		"movements": []any{map[string]any{
+			"id": "legacy-mov", "sourceExpense": "legacy-exp", "accountId": "cash-main", "date": "2026-08-18", "direction": "out", "transactionType": "expense", "amount": 90.0,
+		}},
+	}
+	source := []operationalbridge.ExpenseRow{{ID: 12, Date: "2026-08-18", Title: "سرویس", Amount: 90}}
+	if !mergeOperationalExpensesIntoState(state, source, "cash-main", time.Now()) {
+		t.Fatal("legacy manual posting was not adopted/tagged")
+	}
+	movements := rowsFrom(state, "movements")
+	if len(movements) != 1 {
+		t.Fatalf("legacy migration duplicated cash movement: got %d movements", len(movements))
+	}
+	if stringValue(movements[0]["id"]) != "legacy-mov" || stringValue(movements[0]["source_type"]) != "operational_expense" || stringValue(movements[0]["sourceId"]) != "12" {
+		t.Fatalf("legacy linked movement was not adopted correctly: %#v", movements[0])
+	}
+}
+
 func TestOperationalExpenseAccountResolutionUsesConfiguredDefault(t *testing.T) {
 	state := map[string]any{
 		"accounts": []any{map[string]any{"id": "first"}, map[string]any{"id": "configured"}},
