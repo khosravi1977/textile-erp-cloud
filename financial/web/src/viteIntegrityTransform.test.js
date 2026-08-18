@@ -14,6 +14,10 @@ test('financial integrity transform hardens the real App source', () => {
   assert.match(transformed, /const normalizeAccessList = normalizeAccessListStrict;/);
   assert.match(transformed, /!x\.nonFinancial && inRange\(x\.date\)/);
   assert.match(transformed, /financial\.debt \+ futureChecks - ownedYarn - ownedFabric/);
+  assert.match(transformed, /receivableDocs\.filter\(x => x\.status === 'open'/);
+  assert.match(transformed, /doc\.status === 'open'/);
+  assert.match(transformed, /const candidates = \(finance\.receivableDocs \|\| \[\]\)\.filter/);
+  assert.match(transformed, /selectedId = assignForm\.docId/);
   assert.match(transformed, /سود عملیاتی ثبت‌شده/);
   assert.match(transformed, /انحراف بودجه \(نیازمند بودجه مصوب\)/);
   assert.doesNotMatch(transformed, /function buildFinancialHealth\(finance\)/);
