@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -68,6 +69,45 @@ func (h *APIHandler) WorkspaceRootAudited(w http.ResponseWriter, r *http.Request
 	h.WorkspaceRoot(w, r)
 }
 
+type receivableAssignmentRef struct {
+	InvoiceID string
+	Party     string
+	DocID     string
+	Amount    float64
+}
+
+func (r receivableAssignmentRef) signature() string {
+	return fmt.Sprintf("%s|%s|%s|%.2f", r.InvoiceID, r.Party, r.DocID, moneyRound(r.Amount))
+}
+
+func collectReceivableAssignments(state map[string]any) (map[string][]receivableAssignmentRef, map[string]bool, error) {
+	byDoc := map[string][]receivableAssignmentRef{}
+	signatures := map[string]bool{}
+	for _, invoice := range rowsFrom(state, "incomingInvoices") {
+		invoiceID := firstText(invoice, "id", "sourceId")
+		party := strings.TrimSpace(stringValue(invoice["customer"]))
+		for _, payment := range rowsFrom(invoice, "payments") {
+			if stringValue(payment["type"]) != "assign_receivable" {
+				continue
+			}
+			docID := strings.TrimSpace(stringValue(payment["docId"]))
+			if docID == "" {
+				return nil, nil, errors.New("واگذاری چک دریافتی بدون شناسه سند مجاز نیست")
+			}
+			ref := receivableAssignmentRef{InvoiceID: invoiceID, Party: party, DocID: docID, Amount: number(payment["amount"])}
+			byDoc[docID] = append(byDoc[docID], ref)
+			signatures[ref.signature()] = true
+		}
+	}
+	return byDoc, signatures, nil
+}
+
+func lifecycleRowChanged(oldRow, newRow map[string]any) bool {
+	oldPayload, _ := json.Marshal(oldRow)
+	newPayload, _ := json.Marshal(newRow)
+	return !bytes.Equal(oldPayload, newPayload)
+}
+
 func validateWorkspaceLifecycleChanges(oldState, newState map[string]any) error {
 	oldDocs := make(map[string]map[string]any)
 	for _, doc := range rowsFrom(oldState, "receivableDocs") {
@@ -82,38 +122,54 @@ func validateWorkspaceLifecycleChanges(oldState, newState map[string]any) error 
 		}
 	}
 
-	assignmentReferences := make(map[string]int)
-	for _, invoice := range rowsFrom(newState, "incomingInvoices") {
-		invoiceID := firstText(invoice, "id", "sourceId")
-		party := strings.TrimSpace(stringValue(invoice["customer"]))
-		for _, payment := range rowsFrom(invoice, "payments") {
-			if stringValue(payment["type"]) != "assign_receivable" {
+	oldAssignments, oldSignatures, err := collectReceivableAssignments(oldState)
+	if err != nil {
+		// Legacy malformed references are tolerated until they are changed; they
+		// must not prevent an unrelated production workspace update.
+		oldAssignments = map[string][]receivableAssignmentRef{}
+		oldSignatures = map[string]bool{}
+	}
+	newAssignments, _, err := collectReceivableAssignments(newState)
+	if err != nil {
+		return err
+	}
+
+	for docID, refs := range newAssignments {
+		if len(refs) > 1 && len(oldAssignments[docID]) <= 1 {
+			return errors.New("یک چک دریافتی نمی‌تواند هم‌زمان به بیش از یک فاکتور واگذار شود")
+		}
+		doc, ok := newDocs[docID]
+		if !ok {
+			return errors.New("چک دریافتی انتخاب‌شده برای واگذاری پیدا نشد")
+		}
+		docChanged := lifecycleRowChanged(oldDocs[docID], doc)
+		for _, ref := range refs {
+			if oldSignatures[ref.signature()] && !docChanged {
 				continue
-			}
-			docID := strings.TrimSpace(stringValue(payment["docId"]))
-			if docID == "" {
-				return errors.New("واگذاری چک دریافتی بدون شناسه سند مجاز نیست")
-			}
-			doc, ok := newDocs[docID]
-			if !ok {
-				return errors.New("چک دریافتی انتخاب‌شده برای واگذاری پیدا نشد")
 			}
 			if strings.ToLower(strings.TrimSpace(stringValue(doc["status"]))) != "assigned" {
 				return errors.New("چک واگذار‌شده باید در وضعیت assigned ثبت شود")
 			}
-			if strings.TrimSpace(stringValue(doc["assignedIncomingInvoice"])) != invoiceID {
+			if strings.TrimSpace(stringValue(doc["assignedIncomingInvoice"])) != ref.InvoiceID {
 				return errors.New("ارتباط چک واگذار‌شده با فاکتور خرید یکسان نیست")
 			}
-			if !strings.EqualFold(strings.TrimSpace(stringValue(doc["assignedTo"])), party) {
+			if !strings.EqualFold(strings.TrimSpace(stringValue(doc["assignedTo"])), ref.Party) {
 				return errors.New("طرف حساب چک واگذار‌شده با فروشنده فاکتور یکسان نیست")
 			}
-			if !amountsEqual(number(payment["amount"]), number(doc["amount"])) {
+			if !amountsEqual(ref.Amount, number(doc["amount"])) {
 				return errors.New("مبلغ واگذاری باید با مبلغ چک دریافتی یکسان باشد")
 			}
-			assignmentReferences[docID]++
-			if assignmentReferences[docID] > 1 {
-				return errors.New("یک چک دریافتی نمی‌تواند هم‌زمان به بیش از یک فاکتور واگذار شود")
-			}
+		}
+	}
+
+	// Removing a purchase assignment must also release the check. This catches
+	// orphaned assigned checks while preserving unchanged legacy data.
+	for docID, oldRefs := range oldAssignments {
+		if len(oldRefs) == 0 || len(newAssignments[docID]) != 0 {
+			continue
+		}
+		if doc, ok := newDocs[docID]; ok && strings.ToLower(strings.TrimSpace(stringValue(doc["status"]))) == "assigned" && strings.TrimSpace(stringValue(doc["assignedIncomingInvoice"])) != "" {
+			return errors.New("با حذف تسویه فاکتور خرید، چک واگذار‌شده نیز باید آزاد و به وضعیت باز برگردد")
 		}
 	}
 
@@ -123,6 +179,9 @@ func validateWorkspaceLifecycleChanges(oldState, newState map[string]any) error 
 			continue
 		}
 		previous, existed := oldDocs[id]
+		if existed && !lifecycleRowChanged(previous, doc) {
+			continue
+		}
 		previousStatus := strings.ToLower(strings.TrimSpace(stringValue(previous["status"])))
 		if !existed {
 			return errors.New("سند دریافتی جدید باید ابتدا با وضعیت باز ثبت شود و سپس واگذار شود")
@@ -136,7 +195,7 @@ func validateWorkspaceLifecycleChanges(oldState, newState map[string]any) error 
 		}
 		linkedInvoice := strings.TrimSpace(stringValue(doc["assignedIncomingInvoice"]))
 		if linkedInvoice != "" {
-			if assignmentReferences[id] != 1 {
+			if len(newAssignments[id]) != 1 {
 				return errors.New("چک واگذار‌شده باید دقیقاً به یک فاکتور خرید متصل باشد")
 			}
 		} else if !knownSupplierParty(newState, assignedTo) {
