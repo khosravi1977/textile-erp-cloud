@@ -12,6 +12,20 @@ export function transformFinancialApp(source) {
 
   code = replaceExact(
     code,
+    "import { isMonetaryColumn, monetaryColumnTotals, parseLocalizedNumber } from './reportTotals.js';",
+    "import { isMonetaryColumn, monetaryColumnTotals, parseLocalizedNumber } from './reportTotals.js';\nimport LedgerFinancialHealthPage from './LedgerFinancialHealthPage.jsx';",
+    'ledger health component import',
+  );
+
+  code = replaceExact(
+    code,
+    "{currentPage === 'financialHealth' && <FinancialHealthPage finance={safeFinance} />}",
+    "{currentPage === 'financialHealth' && <LedgerFinancialHealthPage />}",
+    'ledger-backed financial health page',
+  );
+
+  code = replaceExact(
+    code,
     "{ period: 'سررسید گذشته ۶۱ تا ۹۰ روز', min: 31, max: 60, amount: 0, customers: new Set() },",
     "{ period: 'سررسید گذشته ۳۱ تا ۶۰ روز', min: 31, max: 60, amount: 0, customers: new Set() },",
     'aging 31-60 label',
@@ -61,7 +75,8 @@ export function accountingAuditAppTransformPlugin() {
     name: 'viora-accounting-audit-app-transform',
     enforce: 'pre',
     transform(code, id) {
-      if (!id.replaceAll('\\\\', '/').endsWith('/financial/web/src/App.jsx')) return null;
+      const normalizedId = id.replace(/\\/g, '/');
+      if (!normalizedId.endsWith('/financial/web/src/App.jsx')) return null;
       return { code: transformFinancialApp(code), map: null };
     },
   };
