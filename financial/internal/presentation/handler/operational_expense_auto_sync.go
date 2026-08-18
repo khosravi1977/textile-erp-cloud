@@ -207,10 +207,25 @@ func mergeOperationalExpensesIntoState(state map[string]any, source []operationa
 			changed = true
 		}
 
+		movementPos := -1
+		if index, ok := movementIndex[sourceID]; ok {
+			movementPos = index
+		} else {
+			// Older versions created the linked movement manually and did not copy
+			// source_type/sourceId onto it. Adopt that movement instead of creating
+			// a second cash withdrawal during migration to automatic posting.
+			for index, movement := range movements {
+				if strings.TrimSpace(stringValue(movement["sourceExpense"])) == expenseID {
+					movementPos = index
+					break
+				}
+			}
+		}
+
 		movementID := "mov-operational-expense-" + sourceID
 		existingMovement := map[string]any{}
-		if index, ok := movementIndex[sourceID]; ok {
-			existingMovement = cloneOperationalSyncMap(movements[index])
+		if movementPos >= 0 {
+			existingMovement = cloneOperationalSyncMap(movements[movementPos])
 			if id := strings.TrimSpace(stringValue(existingMovement["id"])); id != "" {
 				movementID = id
 			}
@@ -230,11 +245,12 @@ func mergeOperationalExpensesIntoState(state map[string]any, source []operationa
 		desiredMovement["approvalRequired"] = false
 		desiredMovement["syncedAt"] = syncedAt.Format(time.RFC3339Nano)
 
-		if index, ok := movementIndex[sourceID]; ok {
-			if !operationalSyncMapsEqual(movements[index], desiredMovement) {
-				movements[index] = desiredMovement
+		if movementPos >= 0 {
+			if !operationalSyncMapsEqual(movements[movementPos], desiredMovement) {
+				movements[movementPos] = desiredMovement
 				changed = true
 			}
+			movementIndex[sourceID] = movementPos
 		} else {
 			movementIndex[sourceID] = len(movements)
 			movements = append(movements, desiredMovement)
