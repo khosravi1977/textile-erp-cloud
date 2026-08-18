@@ -63,6 +63,18 @@ Status: **FIXED IN BRANCH / LIVE RETEST REQUIRED**
 - Editing check percentage clamps it to 0..100 and automatically sets cash percentage to `100 - check`.
 - Existing cash edit already performed the reverse normalization.
 
+### SEC-001 — stored employee passwords visible/recoverable
+Status: **FIXED IN PRODUCTION DOCKER BUILD PATH / LIVE RETEST REQUIRED**
+
+- Root cause remains in the large legacy `portal_server/main.go`: list/metadata responses could recover the encrypted current password and management UI could prefill/display it.
+- A fail-closed build hardening package was added at `portal_server/internal/auditpatch`.
+- Production `portal_server/Dockerfile` now runs `go run ./tools/auditpatch` before compiling the portal binary.
+- The transform removes password recovery from `accessResponse`, prevents admin password prefill and changes team-management guidance so saved passwords are not advertised as recoverable.
+- The transform verifies its expected source patterns and is idempotent; if the legacy source structure changes unexpectedly, the production Docker build fails rather than silently producing an unhardened binary.
+- Portal regression tests verify the production hardening transform and idempotency.
+
+Important: this does **not** mean the currently deployed Production portal is fixed. The hardened Docker artifact still needs a successful build/deploy and `/team` live retest. Also, a developer who bypasses Docker and runs raw `go run .` would still run the untransformed legacy source; a later refactor should move the fix directly into source and remove this temporary build transform.
+
 ## Emergency database/source-history guards implemented
 
 ### ACC-012 / ACC-013 — hard delete of posted/source documents
@@ -117,8 +129,8 @@ File: `financial/internal/presentation/handler/accounting_audit_regression_test.
 ### Portal security regression tests
 File: `portal_server/password_visibility_test.go`
 
-- stored passwords must not be recovered into metadata responses;
-- a newly-issued password may be returned once.
+- production build hardening removes credential-recovery patterns;
+- the hardening transform is idempotent.
 
 ### JavaScript tests executed independently
 
@@ -128,12 +140,7 @@ File: `portal_server/password_visibility_test.go`
 
 Total independently executed JS audit tests in this pass: **7 passed / 0 failed**.
 
-## Verified but not yet fixed
-
-### SEC-001 — stored passwords visible/recoverable
-Status: **OPEN P0**
-
-Regression tests exist, but `portal_server/main.go` still decrypts stored employee passwords for list responses. Do not mark this fixed until source is changed and the `/team` page no longer reveals current passwords.
+## Verified but not yet fully resolved
 
 ### ACC-007 — aging due date
 Status: **OPEN P1**
@@ -165,7 +172,7 @@ Keep PR #65 Draft and do not deploy this branch until:
 
 1. changed Go source is compiled/tested in a working runner;
 2. migrations 020/021 are tested against a disposable PostgreSQL copy;
-3. portal password exposure is fixed;
+3. production Docker builds for financial/portal succeed, including portal credential hardening;
 4. `AGENT_TEST_` live scenarios run on `paregol` after deployment;
 5. source → settlement → ledger → trial balance → report reconciliation passes;
 6. human owner/service-account identities are verified in Production.
