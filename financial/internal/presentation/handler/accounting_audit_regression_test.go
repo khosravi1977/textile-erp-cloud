@@ -2,7 +2,7 @@ package handler
 
 import "testing"
 
-func TestAuditTransferPostsFromSourceToDestination(t *testing.T) {
+func TestAuditRejectsInvertedTransferDirection(t *testing.T) {
 	state := testWorkspace(t, `{
 		"accounts":[
 			{"id":"source","name":"بانک مبدأ","type":"بانک","opening":0},
@@ -14,7 +14,27 @@ func TestAuditTransferPostsFromSourceToDestination(t *testing.T) {
 		}]
 	}`)
 
-	entry := mustLedgerEntry(t, state, "movement:transfer-1")
+	if err := validateWorkspaceAuditSafetyChanges(map[string]any{}, state); err == nil {
+		t.Fatal("an inverted source→destination transfer must be rejected before persistence")
+	}
+}
+
+func TestAuditTransferPostsFromSourceToDestination(t *testing.T) {
+	state := testWorkspace(t, `{
+		"accounts":[
+			{"id":"source","name":"بانک مبدأ","type":"بانک","opening":0},
+			{"id":"destination","name":"بانک مقصد","type":"بانک","opening":0}
+		],
+		"movements":[{
+			"id":"transfer-2","date":"2026-08-18","transactionType":"transfer",
+			"direction":"out","accountId":"source","counterAccountId":"destination","amount":1000
+		}]
+	}`)
+
+	if err := validateWorkspaceAuditSafetyChanges(map[string]any{}, state); err != nil {
+		t.Fatalf("valid source→destination transfer rejected: %v", err)
+	}
+	entry := mustLedgerEntry(t, state, "movement:transfer-2")
 	accounts := workspaceCashAccounts(state)
 	source := accounts["source"]
 	destination := accounts["destination"]
@@ -55,7 +75,7 @@ func TestAuditSaleWithInventoryCostCannotOmitCOGS(t *testing.T) {
 		}]
 	}`)
 
-	if err := validateWorkspaceAccounting(state); err == nil {
+	if err := validateWorkspaceAuditSafetyChanges(map[string]any{}, state); err == nil {
 		t.Fatal("owned inventory sale without COGS must be rejected")
 	}
 }
