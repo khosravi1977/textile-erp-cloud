@@ -1,0 +1,115 @@
+name: accounting-audit-security-fix
+
+on:
+  push:
+    branches:
+      - accounting-audit-fixes
+
+permissions:
+  contents: write
+
+jobs:
+  harden-portal-credentials:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: accounting-audit-fixes
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Apply credential visibility fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('portal_server/main.go')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  '''\tif accessRequiresSetup(record) {\n\t\trawPassword = ""\n\t} else if rawPassword == "" {\n\t\trawPassword = a.portalAccessPassword(record)\n\t}\n''',
+                  '''\tif accessRequiresSetup(record) {\n\t\trawPassword = ""\n\t}\n''',
+                  'accessResponse must not recover stored password',
+              ),
+              (
+                  'row := a.accessResponse(item, a.mustDecryptPassword(item))',
+                  'row := a.accessResponse(item, "")',
+                  'team list must not decrypt stored passwords',
+              ),
+              (
+                  'out = append(out, a.accessResponse(item, a.mustDecryptPassword(item)))',
+                  'out = append(out, a.accessResponse(item, ""))',
+                  'admin list must not decrypt stored passwords',
+              ),
+              (
+                  'access, rawPassword, err := a.updateManagedAccess(id, target.ProjectKey, target.CompanyName, req.ContactName, req.Username, req.Password, target.FinancialCompanyID, expiresAt, target.TrialEndsAt, req.Notes, role, req.Permissions, canManage, false, allowFinancial, allowOperational, allowWeaving)',
+                  'access, _, err := a.updateManagedAccess(id, target.ProjectKey, target.CompanyName, req.ContactName, req.Username, req.Password, target.FinancialCompanyID, expiresAt, target.TrialEndsAt, req.Notes, role, req.Permissions, canManage, false, allowFinancial, allowOperational, allowWeaving)',
+                  'team update must not return recovered current password',
+              ),
+              (
+                  'respondJSON(w, http.StatusOK, a.accessResponse(access, rawPassword))\n\t\treturn\n\t}\n\n\tif len(parts) == 2 && parts[1] == "toggle"',
+                  'respondJSON(w, http.StatusOK, a.accessResponse(access, strings.TrimSpace(req.Password)))\n\t\treturn\n\t}\n\n\tif len(parts) == 2 && parts[1] == "toggle"',
+                  'team update response returns only explicitly supplied new password',
+              ),
+              (
+                  'access, rawPassword, err := a.updateManagedAccess(id, req.ProjectKey, req.CompanyName, req.ContactName, req.Username, req.Password, req.FinancialCompanyID, expiresAt, time.Time{}, req.Notes, accessRole, req.Permissions, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving)',
+                  'access, _, err := a.updateManagedAccess(id, req.ProjectKey, req.CompanyName, req.ContactName, req.Username, req.Password, req.FinancialCompanyID, expiresAt, time.Time{}, req.Notes, accessRole, req.Permissions, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving)',
+                  'admin update must not return recovered current password',
+              ),
+              (
+                  'respondJSON(w, http.StatusOK, a.accessResponse(access, rawPassword))\n\t\treturn\n\t}\n\tif len(parts) == 2 && parts[1] == "toggle"',
+                  'respondJSON(w, http.StatusOK, a.accessResponse(access, strings.TrimSpace(req.Password)))\n\t\treturn\n\t}\n\tif len(parts) == 2 && parts[1] == "toggle"',
+                  'admin update response returns only explicitly supplied new password',
+              ),
+              (
+                  'access, rawPassword, err := a.grantFullTrial(id, body.Days)',
+                  'access, _, err := a.grantFullTrial(id, body.Days)',
+                  'trial action must not expose existing password',
+              ),
+              (
+                  'respondJSON(w, http.StatusOK, a.accessResponse(access, rawPassword))\n\t\treturn\n\t}\n\thttp.NotFound(w, r)',
+                  'respondJSON(w, http.StatusOK, a.accessResponse(access, ""))\n\t\treturn\n\t}\n\thttp.NotFound(w, r)',
+                  'trial response must not expose existing password',
+              ),
+              (
+                  "form.password.value = row.password || '';",
+                  "form.password.value = '';",
+                  'admin edit form must never prefill a stored password',
+              ),
+              (
+                  'نام، نقش و بخش‌های مجاز را انتخاب کنید؛ سپس نام کاربری و رمز را با دکمه کپی برای کارمند بفرستید.',
+                  'نام، نقش و بخش‌های مجاز را انتخاب کنید. رمز فعلی پس از ثبت قابل مشاهده نیست؛ برای تغییر رمز، کاربر را ویرایش و رمز جدید وارد کنید.',
+                  'team page security guidance',
+              ),
+          ]
+
+          for old, new, label in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          gofmt -w portal_server/main.go portal_server/password_visibility_test.go
+
+      - name: Run portal tests
+        working-directory: portal_server
+        run: go test ./...
+
+      - name: Commit audited fix
+        run: |
+          if git diff --quiet; then
+            echo 'No changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add portal_server/main.go portal_server/password_visibility_test.go
+          git commit -m 'fix(portal): stop exposing stored user passwords'
+          git push origin HEAD:accounting-audit-fixes
