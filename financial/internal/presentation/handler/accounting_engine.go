@@ -871,7 +871,9 @@ func debitCredit(debitAccount, creditAccount glAccount, amount float64, descript
 
 func reverseLedgerEntry(entry ledgerEntry) ledgerEntry {
 	result := entry
-	result.Date = time.Now().Format("2006-01-02")
+	// A correction belongs to the accounting period of the source transaction.
+	// Posting the reversal on "today" shifts historical revenue/cost between periods.
+	result.Date = entry.Date
 	result.Description = "برگشت: " + entry.Description
 	for index := range result.Lines {
 		result.Lines[index].Debit, result.Lines[index].Credit = result.Lines[index].Credit, result.Lines[index].Debit
