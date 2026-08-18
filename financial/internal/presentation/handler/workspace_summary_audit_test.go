@@ -69,3 +69,18 @@ func TestWorkspaceSummaryExcludesNonFinancialIncomingFromPurchases(t *testing.T)
 		t.Fatalf("financial purchase total = %v, want 300", got)
 	}
 }
+
+func TestWorkspaceSummaryExcludesAssignedChecksFromReceivableAssets(t *testing.T) {
+	state := map[string]any{
+		"receivableDocs": []any{
+			map[string]any{"amount": 100.0, "status": "open"},
+			map[string]any{"amount": 200.0, "status": "bounced"},
+			map[string]any{"amount": 300.0, "status": "assigned"},
+			map[string]any{"amount": 400.0, "status": "cleared"},
+		},
+	}
+	summary := buildWorkspaceSummaryAccurate(state, 4, time.Now())
+	if got := summary["open_receivables"]; got != 300.0 {
+		t.Fatalf("open receivable assets = %v, want 300", got)
+	}
+}
