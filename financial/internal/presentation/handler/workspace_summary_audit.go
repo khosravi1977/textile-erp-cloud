@@ -10,7 +10,8 @@ import (
 
 // GetWorkspaceSummaryAccurate returns accounting-safe management KPIs.
 // It intentionally keeps the legacy response keys while fixing integrity
-// problems in liquidity, inventory-cost recognition and check assignment.
+// problems in liquidity, inventory-cost recognition, tax presentation and
+// check assignment.
 func (h *APIHandler) GetWorkspaceSummaryAccurate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		RespondError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -35,7 +36,23 @@ func buildWorkspaceSummaryAccurate(state map[string]any, revision int64, updated
 	accounts := rowsFrom(state, "accounts")
 	movements := rowsFrom(state, "movements")
 
+	// totalSales is the customer-facing invoice gross amount (including output
+	// VAT). Revenue used for profitability excludes output VAT because tax
+	// collected on behalf of the government is a liability, not income.
 	totalSales := sumField(invoices, "total")
+	salesRevenue := 0.0
+	for _, row := range invoices {
+		gross := number(row["total"])
+		tax := number(row["taxAmount"])
+		if tax < 0 {
+			tax = 0
+		}
+		if tax > gross {
+			tax = gross
+		}
+		salesRevenue += gross - tax
+	}
+
 	yarnSales := 0.0
 	totalCOGS := sumField(invoices, "costAmount")
 	for _, row := range yarnOut {
@@ -47,7 +64,7 @@ func buildWorkspaceSummaryAccurate(state map[string]any, revision int64, updated
 			}
 		}
 	}
-	totalRevenue := totalSales + yarnSales
+	totalRevenue := salesRevenue + yarnSales
 	totalPurchases := sumFiltered(incoming, "amount", func(row map[string]any) bool {
 		return !boolValue(row["nonFinancial"])
 	})
@@ -72,7 +89,7 @@ func buildWorkspaceSummaryAccurate(state map[string]any, revision int64, updated
 
 	return map[string]any{
 		"revision": revision, "updated_at": updatedAt,
-		"total_sales": totalSales, "yarn_sales": yarnSales, "total_revenue": totalRevenue,
+		"total_sales": totalSales, "sales_revenue": salesRevenue, "yarn_sales": yarnSales, "total_revenue": totalRevenue,
 		"total_purchases": totalPurchases, "total_cogs": totalCOGS, "total_expenses": totalExpenses,
 		"gross_margin": grossMargin, "operating_profit": operatingProfit,
 		"open_receivables": openReceivables, "open_payables": openPayables, "cash_balance": cashBalance,
