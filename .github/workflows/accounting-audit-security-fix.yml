@@ -1,9 +1,9 @@
 name: accounting-audit-security-fix
 
 on:
-  push:
+  pull_request:
     branches:
-      - accounting-audit-fixes
+      - main
 
 permissions:
   contents: write
