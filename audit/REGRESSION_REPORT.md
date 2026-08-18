@@ -47,7 +47,9 @@
 - a new check cannot bypass the open state and be created directly as assigned;
 - manual assignment to an unknown/non-supplier party is rejected;
 - manual assignment to a known supplier is allowed;
-- assigned payment/check amount mismatch is rejected.
+- assigned payment/check amount mismatch is rejected;
+- removing a purchase assignment cannot leave an orphaned linked assigned check;
+- unchanged legacy assigned rows do not block an unrelated save.
 
 `financial/internal/presentation/handler/legacy_integrity_guard_test.go`
 - legacy profitability rejects missing revenue;
@@ -85,6 +87,12 @@ Results:
   - internal transfer liquidity
   - COGS gross-margin calculation
   - historical reversal date and debit/credit swap
+- Go lifecycle/period harness: **PASS**
+  - valid single receivable-check assignment
+  - duplicate check assignment rejection
+  - Closed→Open fiscal-period rejection
+  - Open→Closed transition
+  - transfer source/destination and total-liquidity invariant
 - Node syntax/transform harness: **PASS**
   - build transform syntax
   - deterministic transformation behavior
@@ -94,7 +102,7 @@ Results:
   - COGS/revenue financial-health math
   - check asset treatment
 
-These are targeted validations, not a substitute for repository-wide CI or production E2E. New repository lifecycle/period/alert tests are committed and wired into the normal Go test suite but await an actually executing CI runner.
+These are targeted validations, not a substitute for repository-wide CI or production E2E. The complete repository lifecycle/period/alert tests are committed and wired into the normal Go test suite but await an actually executing CI runner.
 
 ## Repository CI status
 The existing CI workflow is configured to execute:
@@ -108,7 +116,7 @@ The existing CI workflow is configured to execute:
 8. Docker Compose config;
 9. Kustomize render.
 
-During this audit GitHub Actions runs repeatedly ended before any recorded step. Job metadata returned an empty/null step list and job logs were unavailable. A failed run was retried and exhibited the same infrastructure behavior. Therefore:
+During this audit GitHub Actions runs repeatedly ended before any recorded step. Job metadata returned an empty/null step list and job logs were unavailable. The latest failed run was explicitly retried and again completed with `steps: null`. Therefore:
 
 **CI RESULT: BLOCKED — runner/account infrastructure did not execute the test steps.**
 
