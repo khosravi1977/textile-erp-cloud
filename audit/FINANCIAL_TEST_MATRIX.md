@@ -27,6 +27,10 @@ Status legend:
 | Yarn out | Owned yarn sale/barter | Revenue + COGS/inventory reduction | CODE PASS | LIVE BLOCKED |
 | Yarn out | Amanat yarn | No owned-inventory COGS recognition | CODE PASS | LIVE BLOCKED |
 | Expense | Manual financial expense | Dr operating expense / Cr selected bank/cash | CODE PASS | LIVE BLOCKED |
+| Expense / Operational | Employee-entered operational expense | Automatically upsert expense + linked cash movement; no second accountant approval | CODE PASS | LIVE BLOCKED |
+| Expense / Operational | Repeated source sync | Same source ID is idempotent; no duplicate financial expense or movement | CODE PASS | LIVE BLOCKED |
+| Expense / Operational | Employee edits source expense | Amount/date/category/description update automatically while finance account override is preserved | CODE PASS | LIVE BLOCKED |
+| Expense / HesabYar | Mobile expense upload | Mobile API directly creates expense + linked movement with `mobile_sms` source identity; no second accountant approval | CODE REVIEWED | LIVE BLOCKED |
 | Bank/Cash | Internal transfer | Source decreases, destination increases, total liquidity unchanged | CODE PASS / TARGETED PASS | LIVE BLOCKED |
 | Bank/Cash | Transfer alerts | Valid two-sided transfer does not create false negative-balance alert | CODE PASS | LIVE BLOCKED |
 | Bank/Cash | Other income/capital/customer receipt/supplier payment | Counter-account chosen by transaction nature | CODE PASS | LIVE BLOCKED |
@@ -71,7 +75,9 @@ Use only `AGENT_TEST_` records and reconcile each case across UI, workspace/API 
 4. receivable check lifecycle open → assigned/cleared/returned/bounced plus duplicate/invalid assignment rejection;
 5. payable check lifecycle open → paid/returned/bounced;
 6. expense create/edit/delete and linked movement reversal;
-7. owned yarn sale with COGS and amanat yarn without COGS;
-8. historical edit in an open period, attempted edit in a closed period, and attempted Closed→Open transition;
-9. owner/manager/accountant/viewer UI/API permission matrix;
-10. PDF/Excel totals against source report totals.
+7. operational expense auto-post: create/update/repeat source sync, no duplicate, no accountant approval, correct default/override account;
+8. HesabYar expense upload: direct expense + movement posting, no accountant approval, no duplicate on repeated external ID;
+9. owned yarn sale with COGS and amanat yarn without COGS;
+10. historical edit in an open period, attempted edit in a closed period, and attempted Closed→Open transition;
+11. owner/manager/accountant/viewer UI/API permission matrix;
+12. PDF/Excel totals against source report totals.
