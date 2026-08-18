@@ -43,6 +43,60 @@ export function transformFinancialAppSource(input) {
     "const netExposure = financial.debt - futureChecks - ownedYarn - ownedFabric;",
     "const netExposure = Math.max(0, financial.debt + futureChecks - ownedYarn - ownedFabric);",
     'credit exposure calculation');
+  source = replaceRequired(source,
+    "? receivableDocs.filter(x => String(x.checkNo || '').includes(typedNo))",
+    "? receivableDocs.filter(x => x.status === 'open' && String(x.checkNo || '').includes(typedNo))",
+    'incoming invoice receivable-check assignment availability');
+  source = replaceRequired(source,
+    "const matchingChecks = isReceivable && assignForm.checkNo ? finance.receivableDocs.filter(doc => String(doc.checkNo || '').includes(String(assignForm.checkNo))) : [];",
+    "const matchingChecks = isReceivable && assignForm.checkNo ? finance.receivableDocs.filter(doc => doc.status === 'open' && String(doc.checkNo || '').includes(String(assignForm.checkNo))) : [];",
+    'manual receivable-check assignment availability');
+  source = replaceRequired(source,
+    "const totalOpen = rows.filter(x => x.status !== 'cleared' && x.status !== 'paid').reduce((s, x) => s + Number(x.amount || 0), 0);",
+    "const totalOpen = rows.filter(x => isReceivable ? !['cleared', 'assigned'].includes(x.status) : x.status !== 'paid').reduce((s, x) => s + Number(x.amount || 0), 0);",
+    'check open total lifecycle');
+
+  if (source.includes('  const assignCheck = e => {')) {
+    source = replaceSection(
+      source,
+      '  const assignCheck = e => {',
+      '\n\n  const printDocs = () => {',
+      `  const assignCheck = e => {
+
+    e.preventDefault();
+
+    if (!assignForm.checkNo || !assignForm.assignedTo) return;
+
+    const candidates = (finance.receivableDocs || []).filter(doc => doc.status === 'open' && String(doc.checkNo || '') === String(assignForm.checkNo || ''));
+
+    const selectedId = assignForm.docId || (candidates.length === 1 ? candidates[0].id : '');
+
+    if (!selectedId || !candidates.some(doc => doc.id === selectedId)) {
+
+      setActionMessage(candidates.length > 1 ? 'برای شماره چک تکراری، ابتدا یک چک مشخص را از فهرست انتخاب کنید.' : 'فقط چک دریافتی با وضعیت باز قابل واگذاری است.');
+
+      return;
+
+    }
+
+    setFinance(prev => ({
+
+      ...prev,
+
+      receivableDocs: prev.receivableDocs.map(doc => doc.id === selectedId
+
+        ? { ...doc, status: 'assigned', assignedTo: assignForm.assignedTo, assignedAt: today() }
+
+        : doc),
+
+    }));
+
+    setAssignForm({ checkNo: '', assignedTo: '', docId: '' });
+
+  };`,
+      'manual check assignment exact target',
+    );
+  }
 
   // The available workspace does not persist depreciation/amortization nor an
   // approved budget. Do not present net/operating profit as EBITDA and do not
@@ -56,6 +110,8 @@ export function transformFinancialAppSource(input) {
     'function buildFinancialHealth(finance) {',
     "const purchases = finance.incomingInvoices.filter(x => inRange(x.date));",
     "const netExposure = financial.debt - futureChecks - ownedYarn - ownedFabric;",
+    "? receivableDocs.filter(x => String(x.checkNo || '').includes(typedNo))",
+    "finance.receivableDocs.filter(doc => String(doc.checkNo || '').includes(String(assignForm.checkNo)))",
     'label="EBITDA"',
   ];
   for (const pattern of forbidden) if (source.includes(pattern)) throw new Error(`financial integrity transform left legacy pattern: ${pattern}`);
