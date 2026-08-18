@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/erpsystem/textile-portal/internal/auditpatch"
+	"textile_erp_portal/internal/auditpatch"
 )
 
 func main() {
