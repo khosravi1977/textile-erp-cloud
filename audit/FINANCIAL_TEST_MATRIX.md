@@ -22,20 +22,29 @@ Status legend:
 | Purchase | Non-financial operational incoming | Excluded from financial purchase KPI/tax purchase set | CODE PASS | LIVE BLOCKED |
 | Purchase | Cash/bank payment | Dr payable / Cr cash/bank | CODE PASS | LIVE BLOCKED |
 | Purchase | Assigned receivable check | Dr payable / Cr receivable-check asset | CODE PASS | LIVE BLOCKED |
+| Purchase | Same receivable check assigned twice | API rejects duplicate settlement reference | CODE PASS | LIVE BLOCKED |
+| Purchase | Assigned check supplier/amount mismatch | API rejects inconsistent assignment | CODE PASS | LIVE BLOCKED |
 | Yarn out | Owned yarn sale/barter | Revenue + COGS/inventory reduction | CODE PASS | LIVE BLOCKED |
 | Yarn out | Amanat yarn | No owned-inventory COGS recognition | CODE PASS | LIVE BLOCKED |
 | Expense | Manual financial expense | Dr operating expense / Cr selected bank/cash | CODE PASS | LIVE BLOCKED |
 | Bank/Cash | Internal transfer | Source decreases, destination increases, total liquidity unchanged | CODE PASS / TARGETED PASS | LIVE BLOCKED |
+| Bank/Cash | Transfer alerts | Valid two-sided transfer does not create false negative-balance alert | CODE PASS | LIVE BLOCKED |
 | Bank/Cash | Other income/capital/customer receipt/supplier payment | Counter-account chosen by transaction nature | CODE PASS | LIVE BLOCKED |
 | Checks | Receivable open | Remains receivable-check asset | CODE PASS | LIVE BLOCKED |
 | Checks | Receivable assigned | Removed from receivable-check asset | CODE PASS / TARGETED PASS | LIVE BLOCKED |
+| Checks | Assign cleared/bounced/returned check | API rejects non-open assignment | CODE PASS | LIVE BLOCKED |
+| Checks | New check created directly assigned | API rejects lifecycle bypass | CODE PASS | LIVE BLOCKED |
+| Checks | Manual assignment to unknown party | API rejects; known supplier/payable party required | CODE PASS | LIVE BLOCKED |
 | Checks | Receivable cleared | Dr bank / Cr receivable-check asset | CODE PASS | LIVE BLOCKED |
 | Checks | Receivable returned/bounced | Recreate customer receivable / remove check asset | CODE PASS | LIVE BLOCKED |
+| Checks | Assigned/cleared overdue alerts | No ordinary overdue alert | CODE PASS | LIVE BLOCKED |
+| Checks | Bounced/returned alert | Dedicated critical returned-check alert | CODE PASS | LIVE BLOCKED |
 | Checks | Payable paid | Dr checks payable / Cr bank | CODE PASS | LIVE BLOCKED |
 | Checks | Payable returned/bounced | Remove checks payable / recreate supplier payable | CODE PASS | LIVE BLOCKED |
 | Accounting | Manual journal | Minimum two lines, exactly one debit/credit side per line, balanced total | CODE PASS | LIVE BLOCKED |
 | Accounting | Edit historical source | Reversal stays in original accounting date/period | CODE PASS / TARGETED PASS | LIVE BLOCKED |
-| Accounting | Closed period | Posting/change rejected for closed fiscal period | CODE PASS | LIVE BLOCKED |
+| Accounting | Closed period posting/change | Posting/change rejected for closed fiscal period | CODE PASS | LIVE BLOCKED |
+| Accounting | Reopen closed period | Normal API rejects Closed→Open; adjustment must use open period | CODE PASS | LIVE BLOCKED |
 | Accounting | Duplicate invoice/check identifiers | Duplicate controls present | CODE PASS | LIVE BLOCKED |
 | Dashboard | Cash balance | Includes both sides of transfer | CODE PASS / TARGETED PASS | LIVE BLOCKED |
 | Dashboard | Gross margin | Revenue net of output VAT minus COGS, not purchases | CODE PASS / TARGETED PASS | LIVE BLOCKED |
@@ -46,7 +55,7 @@ Status legend:
 | Tax | Output VAT | Excluded from management revenue; retained as tax liability/report VAT | CODE PASS / TARGETED PASS | LIVE BLOCKED |
 | Tax | Non-financial incoming | Excluded from tax purchase population | CODE PASS | LIVE BLOCKED |
 | Credit | Open receivable checks | Added to exposure, not subtracted twice from invoice debt | CODE PASS | LIVE BLOCKED |
-| Credit | Assigned/cleared/returned checks | Only genuinely open checks reduce/alter current collection view as intended | CODE PASS | LIVE BLOCKED |
+| Credit | Assigned/cleared/returned checks | Only genuinely open checks alter current check-exposure calculation | CODE PASS | LIVE BLOCKED |
 | Advisor legacy API | Missing real credit profile | Fails honestly instead of returning hard-coded risk/profile | CODE PASS | LIVE BLOCKED |
 | Profitability legacy API | Missing revenue input | Rejects request instead of using fixed fabricated revenue | CODE PASS | LIVE BLOCKED |
 | Reports | Trial balance / GL / P&L / BS | Derived from posted vouchers and balanced entries | CODE REVIEWED | LIVE BLOCKED |
@@ -59,10 +68,10 @@ Use only `AGENT_TEST_` records and reconcile each case across UI, workspace/API 
 1. taxable sale: cash / credit / check / mixed settlement;
 2. taxable purchase: cash / credit / payable check / assigned receivable check;
 3. internal transfer between two bank/cash accounts;
-4. receivable check lifecycle open → assigned/cleared/returned/bounced;
+4. receivable check lifecycle open → assigned/cleared/returned/bounced plus duplicate/invalid assignment rejection;
 5. payable check lifecycle open → paid/returned/bounced;
 6. expense create/edit/delete and linked movement reversal;
 7. owned yarn sale with COGS and amanat yarn without COGS;
-8. historical edit in an open period and attempted edit in a closed period;
+8. historical edit in an open period, attempted edit in a closed period, and attempted Closed→Open transition;
 9. owner/manager/accountant/viewer UI/API permission matrix;
 10. PDF/Excel totals against source report totals.
