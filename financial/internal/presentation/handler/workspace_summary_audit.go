@@ -9,9 +9,8 @@ import (
 )
 
 // GetWorkspaceSummaryAccurate returns accounting-safe management KPIs.
-// It intentionally keeps the legacy response keys while fixing two integrity
-// problems: internal transfers must not change total liquidity, and inventory
-// purchases must not be treated as cost of goods sold.
+// It intentionally keeps the legacy response keys while fixing integrity
+// problems in liquidity, inventory-cost recognition and check assignment.
 func (h *APIHandler) GetWorkspaceSummaryAccurate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		RespondError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -57,7 +56,10 @@ func buildWorkspaceSummaryAccurate(state map[string]any, revision int64, updated
 	operatingProfit := grossMargin - totalExpenses
 
 	openReceivables := sumFiltered(receivables, "amount", func(row map[string]any) bool {
-		return !statusClosed(row, "cleared")
+		status := strings.ToLower(strings.TrimSpace(stringValue(row["status"])))
+		// Assigned checks have already left the company's receivable assets and
+		// have been used to settle a supplier liability.
+		return status != "cleared" && status != "assigned"
 	})
 	openPayables := sumFiltered(payables, "amount", func(row map[string]any) bool {
 		return !statusClosed(row, "paid")
