@@ -1,8 +1,8 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"reflect"
@@ -14,14 +14,15 @@ import (
 	"github.com/erpsystem/textile-erp/internal/platform/requestctx"
 )
 
-// WorkspaceRootAutomated keeps the financial workspace synchronized with
-// employee-entered operational expenses before returning the workspace.
-// HesabYar mobile expenses are already written directly by MobileTransaction.
+// WorkspaceRootAutomated synchronizes employee-entered operational expenses
+// before returning the financial workspace. HesabYar expenses already use the
+// same no-approval model: MobileTransaction writes expense + movement directly.
 func (h *APIHandler) WorkspaceRootAutomated(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		if err := h.syncOperationalExpenses(r); err != nil {
-			// Operational synchronization must never make the financial workspace
-			// unavailable. Keep the error server-side and serve the last good state.
+			// Never make the financial workspace unavailable because the operational
+			// bridge is temporarily down. Serve the last good state and keep the error
+			// in server logs.
 			log.Printf("operational expense auto-sync skipped: %v", err)
 		}
 	}
@@ -42,12 +43,9 @@ func (h *APIHandler) syncOperationalExpenses(r *http.Request) error {
 	}
 	defer cleanup()
 
-	rows, err := bridge.Expenses(10000)
-	if err != nil {
+	sourceRows, err := bridge.Expenses(10000)
+	if err != nil || len(sourceRows) == 0 {
 		return err
-	}
-	if len(rows) == 0 {
-		return nil
 	}
 
 	for attempt := 0; attempt < 3; attempt++ {
@@ -60,10 +58,14 @@ func (h *APIHandler) syncOperationalExpenses(r *http.Request) error {
 		if accountID == "" {
 			return errors.New("no financial cash/bank account is available for automatic operational expense posting")
 		}
-		if !mergeOperationalExpensesIntoState(state, rows, accountID, time.Now().UTC()) {
+		if !mergeOperationalExpensesIntoState(state, sourceRows, accountID, time.Now().UTC()) {
 			return nil
 		}
-		payload, checksum, err := validateWorkspaceState(mustJSON(state))
+		raw, err := json.Marshal(state)
+		if err != nil {
+			return err
+		}
+		payload, checksum, err := validateWorkspaceState(raw)
 		if err != nil {
 			return err
 		}
@@ -71,7 +73,7 @@ func (h *APIHandler) syncOperationalExpenses(r *http.Request) error {
 		_, err = saveWorkspace(
 			r,
 			companyID,
-			0, // system-originated sync, not a second accountant approval
+			0, // system-originated sync; no second accountant approval/actor
 			&revision,
 			payload,
 			checksum,
@@ -88,38 +90,6 @@ func (h *APIHandler) syncOperationalExpenses(r *http.Request) error {
 	return errors.New("workspace changed repeatedly while operational expenses were being synchronized")
 }
 
-func mustJSON(state map[string]any) []byte {
-	payload, _, err := validateWorkspaceStateFromMap(state)
-	if err != nil {
-		return []byte(`{}`)
-	}
-	return payload
-}
-
-func validateWorkspaceStateFromMap(state map[string]any) ([]byte, string, error) {
-	// Reuse the canonical workspace validator without introducing a second JSON
-	// normalization implementation.
-	payload := []byte("{}")
-	if state != nil {
-		var err error
-		payload, err = marshalWorkspaceState(state)
-		if err != nil {
-			return nil, "", err
-		}
-	}
-	return validateWorkspaceState(payload)
-}
-
-func marshalWorkspaceState(state map[string]any) ([]byte, error) {
-	return jsonMarshal(state)
-}
-
-// Indirection keeps tests deterministic and allows this file to avoid touching
-// persistence internals merely to encode the workspace document.
-var jsonMarshal = func(value any) ([]byte, error) {
-	return json.Marshal(value)
-}
-
 func resolveOperationalExpenseAccountID(state map[string]any) string {
 	accounts := rowsFrom(state, "accounts")
 	if len(accounts) == 0 {
@@ -131,6 +101,9 @@ func resolveOperationalExpenseAccountID(state map[string]any) string {
 			valid[id] = true
 		}
 	}
+
+	// A manager can configure the default once. This avoids asking an accountant
+	// to approve every single employee-entered expense.
 	if settings, ok := state["accountingSettings"].(map[string]any); ok {
 		for _, key := range []string{"operationalExpenseAccountId", "defaultExpenseAccountId"} {
 			id := strings.TrimSpace(stringValue(settings[key]))
@@ -146,12 +119,16 @@ func resolveOperationalExpenseAccountID(state map[string]any) string {
 			}
 		}
 	}
-	// Backward-compatible behavior: the old manual form preselected the first
-	// financial account and required an accountant to click Save. Auto-posting
-	// keeps that same default but removes the redundant per-expense approval.
+
+	// Backward compatibility: the previous manual form preselected the first
+	// account and only waited for a redundant Save click. Keep the same default
+	// while removing that per-record approval step.
 	return strings.TrimSpace(stringValue(accounts[0]["id"]))
 }
 
+// mergeOperationalExpensesIntoState performs an idempotent upsert. If an
+// employee edits the source expense, financial amount/date/category/description
+// are updated automatically. A finance-side account override is preserved.
 func mergeOperationalExpensesIntoState(state map[string]any, source []operationalbridge.ExpenseRow, defaultAccountID string, syncedAt time.Time) bool {
 	if state == nil || strings.TrimSpace(defaultAccountID) == "" {
 		return false
@@ -194,7 +171,7 @@ func mergeOperationalExpensesIntoState(state map[string]any, source []operationa
 		accountID := defaultAccountID
 		existingExpense := map[string]any{}
 		if index, ok := expenseIndex[sourceID]; ok {
-			existingExpense = cloneMap(expenses[index])
+			existingExpense = cloneOperationalSyncMap(expenses[index])
 			if id := strings.TrimSpace(stringValue(existingExpense["id"])); id != "" {
 				expenseID = id
 			}
@@ -202,7 +179,7 @@ func mergeOperationalExpensesIntoState(state map[string]any, source []operationa
 				accountID = id
 			}
 		}
-		desiredExpense := cloneMap(existingExpense)
+		desiredExpense := cloneOperationalSyncMap(existingExpense)
 		desiredExpense["id"] = expenseID
 		desiredExpense["date"] = date
 		desiredExpense["operationalDate"] = row.Date
@@ -220,25 +197,25 @@ func mergeOperationalExpensesIntoState(state map[string]any, source []operationa
 		desiredExpense["syncedAt"] = syncedAt.Format(time.RFC3339Nano)
 
 		if index, ok := expenseIndex[sourceID]; ok {
-			if !mapsEqualIgnoringSyncTime(expenses[index], desiredExpense) {
+			if !operationalSyncMapsEqual(expenses[index], desiredExpense) {
 				expenses[index] = desiredExpense
 				changed = true
 			}
 		} else {
-			expenses = append([]map[string]any{desiredExpense}, expenses...)
-			expenseIndex[sourceID] = 0
+			expenseIndex[sourceID] = len(expenses)
+			expenses = append(expenses, desiredExpense)
 			changed = true
 		}
 
 		movementID := "mov-operational-expense-" + sourceID
 		existingMovement := map[string]any{}
 		if index, ok := movementIndex[sourceID]; ok {
-			existingMovement = cloneMap(movements[index])
+			existingMovement = cloneOperationalSyncMap(movements[index])
 			if id := strings.TrimSpace(stringValue(existingMovement["id"])); id != "" {
 				movementID = id
 			}
 		}
-		desiredMovement := cloneMap(existingMovement)
+		desiredMovement := cloneOperationalSyncMap(existingMovement)
 		desiredMovement["id"] = movementID
 		desiredMovement["accountId"] = accountID
 		desiredMovement["date"] = date
@@ -254,24 +231,24 @@ func mergeOperationalExpensesIntoState(state map[string]any, source []operationa
 		desiredMovement["syncedAt"] = syncedAt.Format(time.RFC3339Nano)
 
 		if index, ok := movementIndex[sourceID]; ok {
-			if !mapsEqualIgnoringSyncTime(movements[index], desiredMovement) {
+			if !operationalSyncMapsEqual(movements[index], desiredMovement) {
 				movements[index] = desiredMovement
 				changed = true
 			}
 		} else {
-			movements = append([]map[string]any{desiredMovement}, movements...)
-			movementIndex[sourceID] = 0
+			movementIndex[sourceID] = len(movements)
+			movements = append(movements, desiredMovement)
 			changed = true
 		}
 	}
 	if changed {
-		state["expenses"] = mapRowsToAny(expenses)
-		state["movements"] = mapRowsToAny(movements)
+		state["expenses"] = operationalSyncRowsToAny(expenses)
+		state["movements"] = operationalSyncRowsToAny(movements)
 	}
 	return changed
 }
 
-func cloneMap(input map[string]any) map[string]any {
+func cloneOperationalSyncMap(input map[string]any) map[string]any {
 	out := make(map[string]any, len(input)+8)
 	for key, value := range input {
 		out[key] = value
@@ -279,22 +256,18 @@ func cloneMap(input map[string]any) map[string]any {
 	return out
 }
 
-func mapsEqualIgnoringSyncTime(left, right map[string]any) bool {
-	a := cloneMap(left)
-	b := cloneMap(right)
+func operationalSyncMapsEqual(left, right map[string]any) bool {
+	a := cloneOperationalSyncMap(left)
+	b := cloneOperationalSyncMap(right)
 	delete(a, "syncedAt")
 	delete(b, "syncedAt")
 	return reflect.DeepEqual(a, b)
 }
 
-func mapRowsToAny(rows []map[string]any) []any {
+func operationalSyncRowsToAny(rows []map[string]any) []any {
 	out := make([]any, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, row)
 	}
 	return out
-}
-
-func operationalExpenseSourceKey(row operationalbridge.ExpenseRow) string {
-	return fmt.Sprintf("operational_expense:%d", row.ID)
 }
