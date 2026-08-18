@@ -95,6 +95,26 @@ BEGIN
         RAISE EXCEPTION 'حذف یا تغییر شماره فاکتور مالی ثبت‌شده مجاز نیست (%). از جریان ابطال/اصلاح استفاده کنید.', missing;
     END IF;
 
+    missing := financial_workspace_missing_identity(OLD.state, NEW.state, 'incomingInvoices', 'id', 'sourceId');
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'حذف فاکتور ورود ثبت‌شده مجاز نیست (%). از جریان ابطال/اصلاح استفاده کنید.', missing;
+    END IF;
+
+    missing := financial_workspace_missing_identity(OLD.state, NEW.state, 'yarnOutInvoices', 'id', 'sourceId');
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'حذف خروج مالی نخ ثبت‌شده مجاز نیست (%). از جریان ابطال/اصلاح استفاده کنید.', missing;
+    END IF;
+
+    missing := financial_workspace_missing_identity(OLD.state, NEW.state, 'expenses', 'id', 'sourceId');
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'حذف هزینه ثبت‌شده مجاز نیست (%). از جریان ابطال/اصلاح استفاده کنید.', missing;
+    END IF;
+
+    missing := financial_workspace_missing_identity(OLD.state, NEW.state, 'openingBalances', 'id', NULL);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'حذف مانده افتتاحیه ثبت‌شده مجاز نیست (%). از جریان اصلاح افتتاحیه استفاده کنید.', missing;
+    END IF;
+
     missing := financial_workspace_missing_identity(OLD.state, NEW.state, 'receivableDocs', 'id', 'checkNo');
     IF missing IS NOT NULL THEN
         RAISE EXCEPTION 'حذف سند دریافتنی ثبت‌شده مجاز نیست (%). وضعیت سند را با جریان ابطال/برگشت تغییر دهید.', missing;
