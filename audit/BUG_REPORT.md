@@ -53,6 +53,20 @@
 
 **Fix:** reversal remains on the source accounting date. Closed-period protection can therefore reject changes to closed historical periods instead of silently moving the reversal into today.
 
+### P1 / High — Closed fiscal periods could be reopened through the normal API
+**Root cause:** the fiscal-period handler accepted both `Open` and `Closed` as update targets without validating the current state transition.
+
+**Risk:** a previously locked accounting period could be reopened and historical source transactions changed, weakening audit immutability.
+
+**Fix:** period updates are row-locked and `Closed → Open` is rejected. Corrections after close must be posted through a controlled adjustment in an open period. Regression tests cover close, idempotent closed state and prohibited reopening.
+
+### P1 / High — Receivable checks could be assigned outside a valid lifecycle
+**Root cause:** workspace updates validated payment shape but did not compare the previous and proposed check lifecycle. UI matching could also include non-open checks and duplicate numbers could be assigned ambiguously.
+
+**Risk:** a cleared/bounced/returned check could be reassigned, a check could settle multiple purchases, or an assignment could point to a mismatched supplier/amount.
+
+**Fix:** `/api/workspace` now passes through a lifecycle guard before persistence. Only an existing open check can become assigned; linked purchase, supplier and amount must match; a check cannot settle more than one purchase; manual assignment requires a known supplier/payable party. The production Vite transform also restricts UI selection to exact open checks and rejects ambiguous duplicate-number assignment.
+
 ### P1 / High — Management revenue included output VAT
 **Root cause:** invoice `total` was treated as revenue.
 
@@ -80,6 +94,13 @@
 **Risk:** a check already assigned to a supplier could remain in receivable assets after being used to settle a liability.
 
 **Fix:** both `cleared` and `assigned` are excluded; bounced/open states remain collectible exposure as appropriate.
+
+### P2 / Medium — Check and cash alerts used inconsistent lifecycle/balance rules
+**Root cause:** workspace alerts used one-sided cash balance logic and classified assigned/cleared/bounced checks using generic overdue logic.
+
+**Risk:** valid internal transfers could create false negative-balance alerts; assigned checks could be reported overdue; bounced checks could be double-classified as ordinary overdue instead of explicitly returned.
+
+**Fix:** alerts reuse transfer-aware account balances, skip assigned/cleared receivable checks and paid payable checks, and emit a dedicated critical returned/bounced-check alert. Regression tests cover each case.
 
 ### P2 / Medium — Credit exposure double-reduced open checks
 **Root cause:** invoice debt was already reduced when a check was accepted, then `futureChecks` was subtracted again from exposure. Returned/bounced checks could also be treated like good future checks.
