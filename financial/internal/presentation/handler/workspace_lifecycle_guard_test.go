@@ -129,3 +129,35 @@ func TestWorkspaceLifecycleRejectsAssignedAmountMismatch(t *testing.T) {
 		t.Fatal("partial/mismatched check assignment was allowed")
 	}
 }
+
+func TestWorkspaceLifecycleRejectsOrphanedAssignedCheckWhenPurchaseLinkRemoved(t *testing.T) {
+	oldState := map[string]any{
+		"receivableDocs": []any{
+			map[string]any{"id": "rch-1", "checkNo": "1001", "amount": 500.0, "status": "assigned", "assignedTo": "Supplier", "assignedIncomingInvoice": "pinv-1"},
+		},
+		"incomingInvoices": []any{
+			map[string]any{"id": "pinv-1", "customer": "Supplier", "payments": []any{map[string]any{"type": "assign_receivable", "docId": "rch-1", "amount": 500.0}}},
+		},
+	}
+	newState := map[string]any{
+		"receivableDocs": []any{
+			map[string]any{"id": "rch-1", "checkNo": "1001", "amount": 500.0, "status": "assigned", "assignedTo": "Supplier", "assignedIncomingInvoice": "pinv-1"},
+		},
+		"incomingInvoices": []any{},
+	}
+	if err := validateWorkspaceLifecycleChanges(oldState, newState); err == nil {
+		t.Fatal("orphaned assigned check was allowed after purchase link removal")
+	}
+}
+
+func TestWorkspaceLifecycleDoesNotBlockUnchangedLegacyAssignedDocument(t *testing.T) {
+	legacy := map[string]any{
+		"receivableDocs": []any{
+			map[string]any{"id": "legacy-1", "checkNo": "L1", "amount": 100.0, "status": "assigned", "assignedTo": "Legacy Unknown"},
+		},
+		"accounts": []any{map[string]any{"id": "cash-1", "opening": 0.0}},
+	}
+	if err := validateWorkspaceLifecycleChanges(legacy, legacy); err != nil {
+		t.Fatalf("unchanged legacy assignment blocked unrelated save: %v", err)
+	}
+}
