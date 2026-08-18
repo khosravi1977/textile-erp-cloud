@@ -36,7 +36,7 @@ jobs:
         run: bash deploy/production/validate-compose.sh
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.21"
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
