@@ -9,9 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
-
 	"github.com/erpsystem/textile-erp/internal/infrastructure/persistence/postgres"
+	"github.com/lib/pq"
 )
 
 type ManagementFabricLine struct {
@@ -89,10 +88,10 @@ type ManagementReport struct {
 		Rate   float64 `json:"rate"`
 	} `json:"waste"`
 
-	Debtors       []ManagementPartyBalance `json:"debtors"`
-	DebtorsTotal  float64                  `json:"debtors_total"`
-	Creditors     []ManagementPartyBalance `json:"creditors"`
-	CreditorsTotal float64                 `json:"creditors_total"`
+	Debtors        []ManagementPartyBalance `json:"debtors"`
+	DebtorsTotal   float64                  `json:"debtors_total"`
+	Creditors      []ManagementPartyBalance `json:"creditors"`
+	CreditorsTotal float64                  `json:"creditors_total"`
 
 	PayableChecksThisMonth    []ManagementCheck `json:"payable_checks_this_month"`
 	PayableChecksNextMonth    []ManagementCheck `json:"payable_checks_next_month"`
@@ -104,11 +103,11 @@ type ManagementReport struct {
 	ReceivableThisMonthTotal float64 `json:"receivable_this_month_total"`
 	ReceivableNextMonthTotal float64 `json:"receivable_next_month_total"`
 
-	Accounts      []ManagementAccount `json:"accounts"`
-	BankBalance   float64             `json:"bank_balance"`
-	CashBalance   float64             `json:"cash_balance"`
-	LiquidityGross    float64         `json:"liquidity_gross"`
-	LiquidityAdjusted float64         `json:"liquidity_adjusted"`
+	Accounts          []ManagementAccount `json:"accounts"`
+	BankBalance       float64             `json:"bank_balance"`
+	CashBalance       float64             `json:"cash_balance"`
+	LiquidityGross    float64             `json:"liquidity_gross"`
+	LiquidityAdjusted float64             `json:"liquidity_adjusted"`
 
 	Alerts []string `json:"alerts"`
 	Text   string   `json:"text"`
@@ -120,32 +119,28 @@ func (s *Service) ResolveCompanyID(ctx context.Context, name string) (int64, err
 	}
 	var id int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id FROM companies
-		WHERE LOWER(TRIM(name))=LOWER(TRIM($1))
-		ORDER BY id
-		LIMIT 1
-	`, strings.TrimSpace(name)).Scan(&id)
-	if err != nil {
-		return 0, err
-	}
-	return id, nil
+        SELECT id
+        FROM companies
+        WHERE LOWER(TRIM(name))=LOWER(TRIM($1))
+        ORDER BY id
+        LIMIT 1
+    `, strings.TrimSpace(name)).Scan(&id)
+	return id, err
 }
 
 func (s *Service) BuildManagementReport(ctx context.Context, companyID int64, period string, now time.Time) (ManagementReport, error) {
 	var report ManagementReport
-	period = strings.ToLower(strings.TrimSpace(period))
-	if period != "weekly" && period != "monthly" {
-		period = "daily"
-	}
+	period = normalizeManagementPeriod(period)
+
 	loc, err := time.LoadLocation("Asia/Tehran")
 	if err != nil {
 		loc = time.FixedZone("Asia/Tehran", 3*60*60+30*60)
 	}
 	local := now.In(loc)
 	start, end := managementPeriod(local, period)
-	settings, settingsErr := s.GetSettings(ctx, companyID)
+
 	accountingSLADays := 2
-	if settingsErr == nil && settings.AccountingSLADays > 0 {
+	if settings, settingsErr := s.GetSettings(ctx, companyID); settingsErr == nil && settings.AccountingSLADays > 0 {
 		accountingSLADays = settings.AccountingSLADays
 	}
 	snapshot, err := s.collectPeriod(ctx, companyID, start, end, accountingSLADays)
@@ -188,25 +183,39 @@ func (s *Service) BuildManagementReport(ctx context.Context, companyID int64, pe
 		report.Waste.Rate = snapshot.ScrapWeight * 100 / total
 	}
 
-	workspaceState, err := s.managementWorkspaceState(ctx, companyID)
+	state, err := s.managementWorkspaceState(ctx, companyID)
 	if err != nil {
 		return report, err
 	}
-	collectManagementFinancials(&report, workspaceState, local)
-	if produced, stocked, breakdownErr := s.collectFabricBreakdowns(ctx, companyID, start, end); breakdownErr == nil {
+	collectManagementFinancials(&report, state, local)
+
+	produced, stocked, err := s.collectFabricBreakdowns(ctx, companyID, start, end)
+	if err == nil {
 		report.Production.ByFabric = produced
 		report.Inventory.ByFabric = stocked
 	}
+
 	buildManagementAlerts(&report, local)
 	report.Text = formatManagementReport(report)
 	return report, nil
+}
+
+func normalizeManagementPeriod(period string) string {
+	switch strings.ToLower(strings.TrimSpace(period)) {
+	case "weekly":
+		return "weekly"
+	case "monthly":
+		return "monthly"
+	default:
+		return "daily"
+	}
 }
 
 func managementPeriod(local time.Time, period string) (time.Time, time.Time) {
 	end := local
 	switch period {
 	case "weekly":
-		// Reports are sent on Thursday; the requested business week is Friday through Thursday.
+		// Business week requested by the user: Friday through Thursday.
 		return end.AddDate(0, 0, -6), end
 	case "monthly":
 		return time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, local.Location()), end
@@ -236,23 +245,25 @@ func (s *Service) managementWorkspaceState(ctx context.Context, companyID int64)
 }
 
 func collectManagementFinancials(report *ManagementReport, state map[string]any, local time.Time) {
+	collectPartyBalances(report, state)
+	collectChecks(report, state, local)
+	collectAccounts(report, state)
+	report.LiquidityGross = report.BankBalance - report.PayableThisMonthTotal
+	report.LiquidityAdjusted = report.BankBalance + report.ReceivableThisMonthTotal - report.PayableThisMonthTotal
+}
+
+func collectPartyBalances(report *ManagementReport, state map[string]any) {
 	debtors := map[string]float64{}
 	creditors := map[string]float64{}
 
 	for _, row := range objectList(state["invoices"]) {
-		name := strings.TrimSpace(stringValue(first(row, "customer", "party", "name")))
-		if name == "" {
-			name = "نامشخص"
-		}
+		name := managementPartyName(row, "customer", "party", "name")
 		if amount := outstandingDocument(row); amount > 0 {
 			debtors[name] += amount
 		}
 	}
 	for _, row := range objectList(state["incomingInvoices"]) {
-		name := strings.TrimSpace(stringValue(first(row, "customer", "supplier", "party", "name")))
-		if name == "" {
-			name = "نامشخص"
-		}
+		name := managementPartyName(row, "customer", "supplier", "party", "name")
 		if amount := outstandingDocument(row); amount > 0 {
 			creditors[name] += amount
 		}
@@ -270,6 +281,7 @@ func collectManagementFinancials(report *ManagementReport, state map[string]any,
 			creditors[name] += amount
 		}
 	}
+
 	report.Debtors = sortedPartyBalances(debtors)
 	report.Creditors = sortedPartyBalances(creditors)
 	for _, row := range report.Debtors {
@@ -278,9 +290,20 @@ func collectManagementFinancials(report *ManagementReport, state map[string]any,
 	for _, row := range report.Creditors {
 		report.CreditorsTotal += row.Amount
 	}
+}
 
+func managementPartyName(row map[string]any, keys ...string) string {
+	name := strings.TrimSpace(stringValue(first(row, keys...)))
+	if name == "" {
+		return "نامشخص"
+	}
+	return name
+}
+
+func collectChecks(report *ManagementReport, state map[string]any, local time.Time) {
 	thisYear, thisMonth := local.Year(), local.Month()
 	next := local.AddDate(0, 1, 0)
+
 	for _, row := range objectList(state["payableDocs"]) {
 		status := strings.ToLower(strings.TrimSpace(stringValue(row["status"])))
 		if status == "paid" || status == "cleared" || status == "cancelled" {
@@ -298,6 +321,7 @@ func collectManagementFinancials(report *ManagementReport, state map[string]any,
 			report.PayableNextMonthTotal += check.Amount
 		}
 	}
+
 	for _, row := range objectList(state["receivableDocs"]) {
 		status := strings.ToLower(strings.TrimSpace(stringValue(row["status"])))
 		if status == "cleared" || status == "assigned" || status == "cancelled" {
@@ -315,17 +339,21 @@ func collectManagementFinancials(report *ManagementReport, state map[string]any,
 			report.ReceivableNextMonthTotal += check.Amount
 		}
 	}
+
 	sortChecks(report.PayableChecksThisMonth)
 	sortChecks(report.PayableChecksNextMonth)
 	sortChecks(report.ReceivableChecksThisMonth)
 	sortChecks(report.ReceivableChecksNextMonth)
+}
 
+func collectAccounts(report *ManagementReport, state map[string]any) {
 	movements := objectList(state["movements"])
 	for _, account := range objectList(state["accounts"]) {
 		id := strings.TrimSpace(stringValue(account["id"]))
 		name := strings.TrimSpace(stringValue(account["name"]))
 		kind := strings.TrimSpace(stringValue(account["type"]))
 		balance := numberValue(first(account, "opening", "balance"))
+
 		for _, movement := range movements {
 			amount := numberValue(movement["amount"])
 			direction := strings.ToLower(strings.TrimSpace(stringValue(movement["direction"])))
@@ -345,8 +373,8 @@ func collectManagementFinancials(report *ManagementReport, state map[string]any,
 				}
 			}
 		}
-		item := ManagementAccount{Name: name, Type: kind, Balance: balance}
-		report.Accounts = append(report.Accounts, item)
+
+		report.Accounts = append(report.Accounts, ManagementAccount{Name: name, Type: kind, Balance: balance})
 		if strings.Contains(kind, "بانک") || strings.EqualFold(kind, "bank") {
 			report.BankBalance += balance
 		} else if strings.Contains(kind, "صندوق") || strings.EqualFold(kind, "cash") {
@@ -354,8 +382,6 @@ func collectManagementFinancials(report *ManagementReport, state map[string]any,
 		}
 	}
 	sort.Slice(report.Accounts, func(i, j int) bool { return report.Accounts[i].Name < report.Accounts[j].Name })
-	report.LiquidityGross = report.BankBalance - report.PayableThisMonthTotal
-	report.LiquidityAdjusted = report.BankBalance + report.ReceivableThisMonthTotal - report.PayableThisMonthTotal
 }
 
 func outstandingDocument(row map[string]any) float64 {
@@ -421,49 +447,42 @@ func sortChecks(rows []ManagementCheck) {
 func (s *Service) collectFabricBreakdowns(ctx context.Context, companyID int64, start, end time.Time) ([]ManagementFabricLine, []ManagementFabricLine, error) {
 	var schemaName string
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT schema_name FROM public.operational_tenants
-		WHERE external_company_id=$1 AND active=1
-		ORDER BY id DESC LIMIT 1
-	`, companyID).Scan(&schemaName); err != nil {
+        SELECT schema_name
+        FROM public.operational_tenants
+        WHERE external_company_id=$1 AND active=1
+        ORDER BY id DESC
+        LIMIT 1
+    `, companyID).Scan(&schemaName); err != nil {
 		return nil, nil, err
 	}
-	schemaName = strings.TrimSpace(schemaName)
-	schema := pq.QuoteIdentifier(schemaName)
-	columns, err := s.tableColumns(ctx, schemaName, "salon")
-	if err != nil {
-		return nil, nil, err
-	}
-	nameExpr := "'نامشخص'::text"
-	for _, candidate := range []string{"noe_salon", "jens_salon", "name_kala_salon", "kala_name", "item_name", "product_type", "noe_kala", "name_kala"} {
-		if columns[candidate] {
-			nameExpr = fmt.Sprintf("COALESCE(NULLIF(TRIM(s.%s::text),''),'نامشخص')", pq.QuoteIdentifier(candidate))
-			break
-		}
-	}
+
+	schema := pq.QuoteIdentifier(strings.TrimSpace(schemaName))
 	query := fmt.Sprintf(`
-		SELECT %s AS fabric_name,
-		       COALESCE(s.tarikh_salon,'')::text,
-		       COALESCE(s.metr_salon,0)::double precision,
-		       COALESCE(s.w_salon,0)::double precision,
-		       s.id_salon::text,
-		       EXISTS (
-			SELECT 1 FROM %s.f_khor f
-			WHERE TRIM(COALESCE(f.taghe_cod_f_khor,''))=s.id_salon::text
-		) AS is_out
-		FROM %s.salon s
-	`, nameExpr, schema, schema)
+        SELECT COALESCE(NULLIF(TRIM(s.kala_salon),''),'نامشخص') AS fabric_name,
+               COALESCE(s.tarikh_salon,'')::text,
+               COALESCE(s.metr_salon,0)::double precision,
+               COALESCE(s.w_salon,0)::double precision,
+               EXISTS (
+                   SELECT 1
+                   FROM %[1]s.f_khor f
+                   WHERE TRIM(COALESCE(f.taghe_cod_f_khor,''))=s.id_salon::text
+               ) AS is_out
+        FROM %[1]s.salon s
+    `, schema)
+
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer rows.Close()
+
 	produced := map[string]*ManagementFabricLine{}
 	stocked := map[string]*ManagementFabricLine{}
 	for rows.Next() {
-		var name, dateText, id string
+		var name, dateText string
 		var meters, weight float64
 		var isOut bool
-		if err := rows.Scan(&name, &dateText, &meters, &weight, &id, &isOut); err != nil {
+		if err := rows.Scan(&name, &dateText, &meters, &weight, &isOut); err != nil {
 			return nil, nil, err
 		}
 		name = strings.TrimSpace(name)
@@ -471,26 +490,11 @@ func (s *Service) collectFabricBreakdowns(ctx context.Context, companyID int64, 
 			name = "نامشخص"
 		}
 		if date, ok := parseAccountingDate(dateText); ok && dateWithinPeriod(date, start, end) {
-			line := produced[name]
-			if line == nil {
-				line = &ManagementFabricLine{Name: name}
-				produced[name] = line
-			}
-			line.Pieces++
-			line.Meters += meters
-			line.Weight += weight
+			addFabricLine(produced, name, meters, weight)
 		}
 		if !isOut {
-			line := stocked[name]
-			if line == nil {
-				line = &ManagementFabricLine{Name: name}
-				stocked[name] = line
-			}
-			line.Pieces++
-			line.Meters += meters
-			line.Weight += weight
+			addFabricLine(stocked, name, meters, weight)
 		}
-		_ = id
 	}
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
@@ -498,25 +502,15 @@ func (s *Service) collectFabricBreakdowns(ctx context.Context, companyID int64, 
 	return fabricLines(produced), fabricLines(stocked), nil
 }
 
-func (s *Service) tableColumns(ctx context.Context, schema, table string) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT LOWER(column_name)
-		FROM information_schema.columns
-		WHERE table_schema=$1 AND table_name=$2
-	`, schema, table)
-	if err != nil {
-		return nil, err
+func addFabricLine(values map[string]*ManagementFabricLine, name string, meters, weight float64) {
+	line := values[name]
+	if line == nil {
+		line = &ManagementFabricLine{Name: name}
+		values[name] = line
 	}
-	defer rows.Close()
-	result := map[string]bool{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		result[name] = true
-	}
-	return result, rows.Err()
+	line.Pieces++
+	line.Meters += meters
+	line.Weight += weight
 }
 
 func fabricLines(values map[string]*ManagementFabricLine) []ManagementFabricLine {
@@ -549,10 +543,11 @@ func buildManagementAlerts(report *ManagementReport, local time.Time) {
 	if report.Waste.Rate >= 3 {
 		report.Alerts = append(report.Alerts, fmt.Sprintf("نرخ ضایعات %s درصد است و نیاز به بررسی دارد", formatNumber(report.Waste.Rate)))
 	}
+
 	today := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, local.Location())
 	for _, check := range report.PayableChecksThisMonth {
 		if due, ok := parseAccountingDate(check.DueDate); ok && due.Before(today) {
-			report.Alerts = append(report.Alerts, fmt.Sprintf("چک پرداختی سررسیدگذشته: %s، %s تومان، %s", check.DueDate, formatNumber(check.Amount), check.Customer))
+			report.Alerts = append(report.Alerts, fmt.Sprintf("چک پرداختی سررسیدگذشته: %s، %s تومان، %s", check.DueDate, formatNumber(check.Amount), fallback(check.Customer, "طرف حساب نامشخص")))
 		}
 	}
 	if len(report.Alerts) == 0 {
@@ -571,11 +566,13 @@ func formatManagementReport(r ManagementReport) string {
 		title = "🗓 گزارش ماهانه تولید، عملیات و مالی"
 		periodLabel = r.PeriodStart + " تا " + r.PeriodEnd
 	}
+
 	avgMeters, avgWeight := 0.0, 0.0
 	if r.Production.ActiveDays > 0 {
 		avgMeters = r.Production.Meters / float64(r.Production.ActiveDays)
 		avgWeight = r.Production.Weight / float64(r.Production.ActiveDays)
 	}
+
 	fmt.Fprintf(&b, "%s\n🏢 %s\n📅 %s\n🕒 %s به وقت تهران\n\n", title, fallback(r.Company, "paregol"), periodLabel, r.GeneratedAt.Format("15:04"))
 	fmt.Fprintf(&b, "🏭 تولید پارچه\n• تعداد طاقه تولیدشده: %s\n• کل متراژ تولید: %s متر\n• کل وزن تولید: %s کیلو\n", formatNumber(float64(r.Production.Pieces)), formatNumber(r.Production.Meters), formatNumber(r.Production.Weight))
 	for _, row := range r.Production.ByFabric {
@@ -595,12 +592,14 @@ func formatManagementReport(r ManagementReport) string {
 	} else {
 		fmt.Fprintf(&b, "• موجودی محاسبه‌شده نخ: %s کیلو\n\n", formatNumber(r.Inventory.YarnWeight))
 	}
+
 	fmt.Fprintf(&b, "♻️ ضایعات تولید\n• وزن ضایعات: %s کیلو\n• نرخ ضایعات: %s درصد\n\n", formatNumber(r.Waste.Weight), formatNumber(r.Waste.Rate))
 
-	fmt.Fprintf(&b, "💳 مشتریان بدهکار\n")
+	b.WriteString("💳 مشتریان بدهکار\n")
 	writePartyLines(&b, r.Debtors)
 	fmt.Fprintf(&b, "• جمع بدهکاران: %s تومان\n\n", formatNumber(r.DebtorsTotal))
-	fmt.Fprintf(&b, "💚 بستانکاران / طلبکاران از شرکت\n")
+
+	b.WriteString("💚 بستانکاران / طلبکاران از شرکت\n")
 	writePartyLines(&b, r.Creditors)
 	fmt.Fprintf(&b, "• جمع بستانکاران: %s تومان\n\n", formatNumber(r.CreditorsTotal))
 
@@ -609,14 +608,18 @@ func formatManagementReport(r ManagementReport) string {
 	writeCheckSection(&b, "💰 چک‌های دریافتی این ماه", r.ReceivableChecksThisMonth, r.ReceivableThisMonthTotal)
 	writeCheckSection(&b, "💰 چک‌های دریافتی ماه آینده", r.ReceivableChecksNextMonth, r.ReceivableNextMonthTotal)
 
-	fmt.Fprintf(&b, "🏦 موجودی بانک‌ها و صندوق\n")
+	b.WriteString("🏦 موجودی بانک‌ها و صندوق\n")
+	if len(r.Accounts) == 0 {
+		b.WriteString("• حساب بانکی/صندوقی ثبت نشده است.\n")
+	}
 	for _, account := range r.Accounts {
-		fmt.Fprintf(&b, "• %s (%s): %s تومان\n", account.Name, account.Type, formatNumber(account.Balance))
+		fmt.Fprintf(&b, "• %s (%s): %s تومان\n", fallback(account.Name, "بدون نام"), fallback(account.Type, "نامشخص"), formatNumber(account.Balance))
 	}
 	fmt.Fprintf(&b, "• جمع بانک‌ها: %s تومان\n• جمع صندوق: %s تومان\n\n", formatNumber(r.BankBalance), formatNumber(r.CashBalance))
+
 	fmt.Fprintf(&b, "⚖️ پوشش چک‌های این ماه\n• مازاد/کسری ناخالص بانک: %s تومان\n• مازاد/کسری با احتساب چک‌های دریافتی این ماه: %s تومان\n\n", formatSigned(r.LiquidityGross), formatSigned(r.LiquidityAdjusted))
 
-	fmt.Fprintf(&b, "🚨 هشدارها و نکات مدیریتی\n")
+	b.WriteString("🚨 هشدارها و نکات مدیریتی\n")
 	for _, alert := range r.Alerts {
 		fmt.Fprintf(&b, "• %s\n", alert)
 	}
