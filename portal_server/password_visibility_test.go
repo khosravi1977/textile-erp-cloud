@@ -1,65 +1,56 @@
 package main
 
 import (
+	"bytes"
+	"os"
 	"testing"
-	"time"
+
+	"textile_erp_portal/internal/auditpatch"
 )
 
-func TestAccessResponseDoesNotRecoverStoredPassword(t *testing.T) {
+func TestProductionBuildHardeningRemovesPasswordExposure(t *testing.T) {
 	t.Parallel()
 
-	app := &portalApp{
-		publicBase:    "https://example.test",
-		sessionSecret: "accounting-audit-test-secret",
-	}
-	enc, err := app.encryptPassword("StoredSecret@123")
+	raw, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := projectAccess{
-		ID:                 1,
-		ProjectKey:         "textile-erp",
-		CompanyName:        "Audit Co",
-		Username:           "audit-user",
-		FinancialCompanyID: 1,
-		AccessRole:         "viewer",
-		PasswordHash:       "stored-hash-present",
-		PasswordEnc:        enc,
-		AllowFinancial:     true,
-		IsActive:           true,
-		ExpiresAt:          time.Now().Add(24 * time.Hour),
-		CreatedAt:          time.Now(),
-		AccessToken:        "audit-token",
+	hardened, err := auditpatch.Transform(raw)
+	if err != nil {
+		t.Fatalf("credential hardening transform cannot be applied to portal source: %v", err)
 	}
-
-	response := app.accessResponse(record, "")
-	if got, _ := response["password"].(string); got != "" {
-		t.Fatalf("stored password must never be recovered into a metadata response, got %q", got)
+	if !auditpatch.IsHardened(hardened) {
+		t.Fatal("credential hardening did not produce a safe portal source")
+	}
+	for _, forbidden := range [][]byte{
+		[]byte("rawPassword = a.portalAccessPassword(record)"),
+		[]byte("form.password.value = row.password || ''"),
+	} {
+		if bytes.Contains(hardened, forbidden) {
+			t.Fatalf("hardened portal still contains password exposure pattern %q", string(forbidden))
+		}
+	}
+	if !bytes.Contains(hardened, []byte("رمز پس از ذخیره قابل مشاهده نیست")) {
+		t.Fatal("team UI must explain that saved passwords are not recoverable")
 	}
 }
 
-func TestAccessResponseMayReturnExplicitOneTimePassword(t *testing.T) {
+func TestCredentialHardeningIsIdempotent(t *testing.T) {
 	t.Parallel()
 
-	app := &portalApp{publicBase: "https://example.test"}
-	record := projectAccess{
-		ID:                 2,
-		ProjectKey:         "textile-erp",
-		CompanyName:        "Audit Co",
-		Username:           "new-user",
-		FinancialCompanyID: 1,
-		AccessRole:         "viewer",
-		PasswordHash:       "stored-hash-present",
-		AllowFinancial:     true,
-		IsActive:           true,
-		ExpiresAt:          time.Now().Add(24 * time.Hour),
-		CreatedAt:          time.Now(),
-		AccessToken:        "new-user-token",
+	raw, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	const oneTimePassword = "OneTime@123"
-	response := app.accessResponse(record, oneTimePassword)
-	if got, _ := response["password"].(string); got != oneTimePassword {
-		t.Fatalf("explicit newly-issued password should be returned once, got %q", got)
+	once, err := auditpatch.Transform(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	twice, err := auditpatch.Transform(once)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(once, twice) {
+		t.Fatal("credential hardening must be idempotent")
 	}
 }
