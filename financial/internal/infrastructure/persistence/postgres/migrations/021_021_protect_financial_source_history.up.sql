@@ -13,6 +13,23 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
+CREATE OR REPLACE FUNCTION financial_workspace_material_row_count(state JSONB)
+RETURNS INTEGER AS $$
+BEGIN
+    RETURN
+        jsonb_array_length(financial_workspace_array(state -> 'invoices')) +
+        jsonb_array_length(financial_workspace_array(state -> 'incomingInvoices')) +
+        jsonb_array_length(financial_workspace_array(state -> 'yarnOutInvoices')) +
+        jsonb_array_length(financial_workspace_array(state -> 'expenses')) +
+        jsonb_array_length(financial_workspace_array(state -> 'receivableDocs')) +
+        jsonb_array_length(financial_workspace_array(state -> 'payableDocs')) +
+        jsonb_array_length(financial_workspace_array(state -> 'accounts')) +
+        jsonb_array_length(financial_workspace_array(state -> 'openingBalances')) +
+        jsonb_array_length(financial_workspace_array(state -> 'ownedInventory')) +
+        jsonb_array_length(financial_workspace_array(state -> 'journalEntries'));
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
 CREATE OR REPLACE FUNCTION financial_workspace_missing_identity(
     old_state JSONB,
     new_state JSONB,
@@ -57,7 +74,19 @@ CREATE OR REPLACE FUNCTION protect_financial_workspace_source_history()
 RETURNS TRIGGER AS $$
 DECLARE
     missing TEXT;
+    old_material_rows INTEGER;
+    new_material_rows INTEGER;
 BEGIN
+    old_material_rows := financial_workspace_material_row_count(OLD.state);
+    new_material_rows := financial_workspace_material_row_count(NEW.state);
+
+    -- The normal production UI must never be able to replace an established
+    -- financial workspace with an empty one. A future controlled maintenance
+    -- endpoint should use an archival procedure, not disable this trigger.
+    IF old_material_rows > 0 AND new_material_rows = 0 THEN
+        RAISE EXCEPTION 'پاک‌کردن کامل اطلاعات مالی در محیط عملیاتی مجاز نیست. ابتدا از جریان آرشیو/پشتیبان مدیریتی استفاده کنید.';
+    END IF;
+
     -- Invoice number is the current human/business stable key. This also blocks
     -- unsafe invoice renumbering until the application has a stable immutable ID
     -- migration and an audited renumbering workflow.
