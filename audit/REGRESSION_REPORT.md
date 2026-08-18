@@ -30,6 +30,25 @@
 - reversal keeps original accounting date;
 - debit and credit sides are reversed correctly.
 
+`financial/internal/presentation/handler/accounting_period_guard_test.go`
+- Open→Closed is allowed;
+- Closed→Closed is idempotent;
+- Closed→Open is rejected.
+
+`financial/internal/presentation/handler/workspace_alerts_audit_test.go`
+- a valid internal transfer does not create a false negative-balance alert;
+- assigned receivable checks do not produce ordinary overdue alerts;
+- bounced checks produce a dedicated returned-check alert and are not double-classified as ordinary overdue.
+
+`financial/internal/presentation/handler/workspace_lifecycle_guard_test.go`
+- valid open-check assignment to one matching purchase succeeds;
+- the same check cannot settle two purchases;
+- a cleared check cannot become assigned;
+- a new check cannot bypass the open state and be created directly as assigned;
+- manual assignment to an unknown/non-supplier party is rejected;
+- manual assignment to a known supplier is allowed;
+- assigned payment/check amount mismatch is rejected.
+
 `financial/internal/presentation/handler/legacy_integrity_guard_test.go`
 - legacy profitability rejects missing revenue;
 - legacy credit report does not return a fabricated fixed profile;
@@ -51,6 +70,7 @@
 - verifies old fail-open permission and legacy Financial Health implementation are removed from built source;
 - verifies non-financial purchases are excluded from tax report population;
 - verifies corrected credit exposure formula;
+- verifies check lookup/assignment is open-only and exact rather than ambiguous by duplicate number;
 - verifies misleading EBITDA/budget labels are removed;
 - verifies transform idempotence.
 
@@ -74,7 +94,7 @@ Results:
   - COGS/revenue financial-health math
   - check asset treatment
 
-These are targeted validations, not a substitute for repository-wide CI or production E2E.
+These are targeted validations, not a substitute for repository-wide CI or production E2E. New repository lifecycle/period/alert tests are committed and wired into the normal Go test suite but await an actually executing CI runner.
 
 ## Repository CI status
 The existing CI workflow is configured to execute:
@@ -88,7 +108,7 @@ The existing CI workflow is configured to execute:
 8. Docker Compose config;
 9. Kustomize render.
 
-During this audit GitHub Actions runs repeatedly ended before any recorded step. Job metadata returned an empty/null step list and job logs were unavailable. Therefore:
+During this audit GitHub Actions runs repeatedly ended before any recorded step. Job metadata returned an empty/null step list and job logs were unavailable. A failed run was retried and exhibited the same infrastructure behavior. Therefore:
 
 **CI RESULT: BLOCKED — runner/account infrastructure did not execute the test steps.**
 
