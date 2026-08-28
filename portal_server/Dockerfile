@@ -4,6 +4,10 @@ WORKDIR /app
 COPY go.mod ./
 RUN go mod download
 COPY . .
+# Apply deterministic security/RBAC hardening inside the build context. The
+# transformer fails the build if an expected source anchor drifts, so a future
+# refactor cannot silently restore password exposure or role escalation.
+RUN go run ./tools/hardener -file main.go && gofmt -w main.go
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/textile-erp-portal .
 
 FROM alpine:3.22

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/erpsystem/textile-erp/internal/application/financecore"
 	"github.com/erpsystem/textile-erp/internal/application/telegramreport"
 	"github.com/erpsystem/textile-erp/internal/application/usecase"
 	"github.com/erpsystem/textile-erp/internal/domain/entity"
@@ -29,6 +30,7 @@ type APIHandler struct {
 	costService  *service.CostService
 	inventorySvc *service.InventoryService
 	invoiceSvc   *service.InvoiceService
+	financeCoreService *financecore.Service
 	operational  *operationalbridge.Bridge
 	telegram     *telegramreport.Service
 	cache        *cache.Client
@@ -551,12 +553,7 @@ func (h *APIHandler) GetOperationalCustomers(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer cleanup()
-	rows, err := bridge.Customers()
-	if err != nil {
-		RespondError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	RespondJSON(w, http.StatusOK, map[string]interface{}{"success": true, "rows": rows, "total": len(rows)})
+	h.handleOperationalLookup(w, r, "customers", bridge.Customers, bridge.CreateCustomer)
 }
 
 func (h *APIHandler) GetOperationalKalaItems(w http.ResponseWriter, r *http.Request) {
@@ -565,12 +562,7 @@ func (h *APIHandler) GetOperationalKalaItems(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer cleanup()
-	rows, err := bridge.KalaItems()
-	if err != nil {
-		RespondError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	RespondJSON(w, http.StatusOK, map[string]interface{}{"success": true, "rows": rows, "total": len(rows)})
+	h.handleOperationalLookup(w, r, "kala-items", bridge.KalaItems, bridge.CreateKalaItem)
 }
 
 func (h *APIHandler) GetOperationalYarnItems(w http.ResponseWriter, r *http.Request) {
@@ -579,12 +571,47 @@ func (h *APIHandler) GetOperationalYarnItems(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer cleanup()
-	rows, err := bridge.YarnItems()
-	if err != nil {
-		RespondError(w, http.StatusInternalServerError, err.Error())
-		return
+	h.handleOperationalLookup(w, r, "yarn-items", bridge.YarnItems, bridge.CreateYarnItem)
+}
+
+func (h *APIHandler) handleOperationalLookup(
+	w http.ResponseWriter,
+	r *http.Request,
+	name string,
+	list func() ([]operationalbridge.LookupRow, error),
+	create func(string) (operationalbridge.LookupRow, error),
+) {
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := list()
+		if err != nil {
+			RespondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		RespondJSON(w, http.StatusOK, map[string]interface{}{"success": true, "rows": rows, "total": len(rows)})
+	case http.MethodPost:
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			RespondError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
+		itemName := strings.TrimSpace(req.Name)
+		if itemName == "" {
+			RespondError(w, http.StatusBadRequest, "Name is required")
+			return
+		}
+		row, err := create(itemName)
+		if err != nil {
+			RespondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		RespondJSON(w, http.StatusCreated, map[string]interface{}{"success": true, "item": row, "lookup": name})
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		RespondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
-	RespondJSON(w, http.StatusOK, map[string]interface{}{"success": true, "rows": rows, "total": len(rows)})
 }
 
 func (h *APIHandler) GetOperationalOutInvoices(w http.ResponseWriter, r *http.Request) {
@@ -683,6 +710,65 @@ func (h *APIHandler) GetOperationalSparePartsInventory(w http.ResponseWriter, r 
 		return
 	}
 	RespondJSON(w, http.StatusOK, map[string]interface{}{"success": true, "rows": rows, "total": len(rows)})
+}
+
+func (h *APIHandler) ReportOperationalMismatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		RespondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	bridge, cleanup := h.requireOperational(w, r)
+	if bridge == nil {
+		return
+	}
+	defer cleanup()
+	var req struct {
+		SourceType  string `json:"source_type"`
+		SourceID    string `json:"source_id"`
+		InvoiceNo   string `json:"invoice_no"`
+		InvoiceKind string `json:"invoice_kind"`
+		Title       string `json:"title"`
+		Message     string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid mismatch report payload")
+		return
+	}
+	req.SourceType = strings.TrimSpace(req.SourceType)
+	req.SourceID = strings.TrimSpace(req.SourceID)
+	req.InvoiceNo = strings.TrimSpace(req.InvoiceNo)
+	req.InvoiceKind = strings.TrimSpace(req.InvoiceKind)
+	req.Title = strings.TrimSpace(req.Title)
+	req.Message = strings.TrimSpace(req.Message)
+	if req.SourceType == "" || !strings.HasPrefix(req.SourceType, "operational") || req.SourceID == "" || req.Message == "" {
+		RespondError(w, http.StatusBadRequest, "Operational source and mismatch message are required")
+		return
+	}
+	if req.Title == "" {
+		req.Title = "گزارش مغایرت مالی"
+	}
+	if req.InvoiceKind == "" {
+		req.InvoiceKind = "فاکتور عملیاتی"
+	}
+	if len([]rune(req.Message)) > 1200 {
+		runes := []rune(req.Message)
+		req.Message = string(runes[:1200])
+	}
+	reportedBy := fmt.Sprintf("user:%d", requestctx.UserID(r.Context()))
+	if err := bridge.ReportFinancialMismatch(operationalbridge.FinancialMismatchReport{
+		SourceType:  req.SourceType,
+		SourceID:    req.SourceID,
+		InvoiceNo:   req.InvoiceNo,
+		InvoiceKind: req.InvoiceKind,
+		Title:       req.Title,
+		Message:     req.Message,
+		ReportedBy:  reportedBy,
+	}); err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	RespondJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 
 func parseLimit(r *http.Request, fallback int) int {

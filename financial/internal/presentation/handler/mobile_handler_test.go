@@ -91,3 +91,42 @@ func TestMobilePayableDuplicateUsesExternalID(t *testing.T) {
 		t.Fatal("unrelated mobile payable document was treated as duplicate")
 	}
 }
+
+func TestMobileAccountingDateHandlesClockSuffix(t *testing.T) {
+	if got := mobileAccountingDate("۱۴۰۵/۰۶/۰۴ ۱۵:۴۹"); got != "2026-08-26" {
+		t.Fatalf("stamped Jalali should convert to occurrence date, got %s", got)
+	}
+	if got := mobileAccountingDate("1405/06/04 15:49"); got != "2026-08-26" {
+		t.Fatalf("ASCII stamped Jalali should convert to occurrence date, got %s", got)
+	}
+	if got := mobileAccountingDate("2026-08-26 15:49"); got != "2026-08-26" {
+		t.Fatalf("stamped ISO should convert to occurrence date, got %s", got)
+	}
+}
+
+func TestLegacyStateMappingForTypedTypes(t *testing.T) {
+	cases := map[string]string{
+		"CUSTOMER_RECEIPT":     "customer_receipt",
+		"SUPPLIER_PAYMENT":     "supplier_payment",
+		"INTERNAL_TRANSFER":    "transfer",
+		"PETTY_CASH_FUNDING":   "expense",
+		"PAYROLL_PAYMENT":      "expense",
+		"OWNER_DEPOSIT":        "other_income",
+		"CHECK_RECEIPT":        "other_income",
+	}
+	for typed, legacy := range cases {
+		if got := legacyStateTypeForTyped(typed); got != legacy {
+			t.Fatalf("legacyStateTypeForTyped(%s)=%s want %s", typed, got, legacy)
+		}
+	}
+	expenseLike := map[string]bool{
+		"DIRECT_EXPENSE": true, "PAYROLL_PAYMENT": true, "BANK_FEE": true,
+		"ASSET_PURCHASE": false, "PETTY_CASH_FUNDING": false, "OWNER_WITHDRAWAL": false,
+		"LOAN_REPAYMENT": false, "CHECK_PAYMENT": false,
+	}
+	for typed, want := range expenseLike {
+		if got := typedExpenseLike(typed); got != want {
+			t.Fatalf("typedExpenseLike(%s)=%v want %v", typed, got, want)
+		}
+	}
+}

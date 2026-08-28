@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/erpsystem/textile-erp/internal/application/financecore"
 	"github.com/erpsystem/textile-erp/internal/infrastructure/persistence/postgres"
 	"github.com/erpsystem/textile-erp/internal/platform/requestctx"
 	"github.com/erpsystem/textile-erp/internal/presentation/middleware"
@@ -107,8 +108,9 @@ func setUnconfirmedCounterparty(row map[string]any, candidate string) {
 }
 
 // mobileAccountingDate accepts ISO dates and the yyyy/mm/dd Jalali dates sent by
-// the offline Android application. The original Jalali value is retained on the
-// workspace row; this conversion provides a valid Gregorian posting date.
+// the offline Android application, including values with a trailing clock time
+// (۱۴۰۵/۰۶/۰۴ ۱۵:۴۹). The original Jalali value is retained on the workspace
+// row; this conversion provides a valid Gregorian posting date.
 func mobileAccountingDate(value string) string {
 	value = strings.TrimSpace(strings.NewReplacer(
 		"۰", "0", "۱", "1", "۲", "2", "۳", "3", "۴", "4",
@@ -118,6 +120,12 @@ func mobileAccountingDate(value string) string {
 	).Replace(value))
 	if parsed, err := time.Parse("2006-01-02", value); err == nil {
 		return parsed.Format("2006-01-02")
+	}
+	if space := strings.IndexByte(value, ' '); space > 0 {
+		value = strings.TrimSpace(value[:space])
+		if parsed, err := time.Parse("2006-01-02", value); err == nil {
+			return parsed.Format("2006-01-02")
+		}
 	}
 	parts := strings.FieldsFunc(value, func(r rune) bool { return r == '/' || r == '-' || r == '.' })
 	if len(parts) != 3 {
@@ -350,26 +358,7 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 		RespondError(w, http.StatusUnauthorized, "Device is not paired")
 		return
 	}
-	var req struct {
-		ExternalID      string           `json:"external_id"`
-		Title           string           `json:"title"`
-		Direction       string           `json:"direction"`
-		AccountID       string           `json:"account_id"`
-		Group           string           `json:"group"`
-		Subgroup        string           `json:"subgroup"`
-		Customer        string           `json:"customer"`
-		TransactionType string           `json:"transaction_type"`
-		Bank            string           `json:"bank"`
-		Sender          string           `json:"sender"`
-		Description     string           `json:"description"`
-		OccurredJalali  string           `json:"occurred_jalali"`
-		Amount          int64            `json:"amount"`
-		ReportedBalance *int64           `json:"reported_balance"`
-		TrackingNo      string           `json:"tracking_no"`
-		CounterAccount  string           `json:"counter_account"`
-		Groups          []map[string]any `json:"groups"`
-		BankRules       []map[string]any `json:"bank_rules"`
-	}
+	var req mobileTransactionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.ExternalID) == "" || req.Amount <= 0 {
 		RespondError(w, http.StatusBadRequest, "Invalid transaction")
 		return
@@ -379,18 +368,95 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 		RespondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	var saved workspaceDocument
+	// Post the canonical typed record first: it is idempotent by
+	// external_transaction_id, so an HesabYar retry after a workspace
+	// conflict can never double-post. The ledger voucher stays with the
+	// workspace sync to avoid double-counting in the general ledger.
+	if service := h.financeCore(); service != nil {
+		if err := h.postLegacyTypedTransaction(r, companyID, req, transactionType); err != nil {
+			RespondError(w, http.StatusBadRequest, "typed posting failed: "+err.Error())
+			return
+		}
+	}
+	result, detail, err := h.persistMobileTransactionState(r, companyID, req, transactionType, nil)
+	switch result {
+	case mobileStateSaved:
+		RespondJSON(w, http.StatusCreated, map[string]any{"status": "synced"})
+	case mobileStateDuplicate:
+		RespondJSON(w, http.StatusOK, map[string]any{"status": "duplicate"})
+	case mobileStateInvalid:
+		RespondError(w, http.StatusBadRequest, detail)
+	case mobileStateConflict:
+		RespondError(w, http.StatusConflict, "Workspace changed; retry sync")
+	default:
+		RespondError(w, http.StatusInternalServerError, err.Error())
+	}
+}
+
+// typedStateMeta decorates workspace rows written for a typed HesabYar post
+// (v1 app) so the UI can show the canonical nature and the ERP-confirmed
+// party without asking the accountant to pick it again.
+type typedStateMeta struct {
+	TypedType   string
+	PartyName   string // confirmed ERP party display name (empty if none)
+	ExpenseLike bool   // create a workspace expense row for this type
+}
+
+type mobileStateResult int
+
+const (
+	mobileStateErr mobileStateResult = iota
+	mobileStateSaved
+	mobileStateDuplicate
+	mobileStateConflict
+	mobileStateInvalid
+)
+
+// legacyStateTypeForTyped maps a canonical transaction type to the legacy
+// workspace movement vocabulary. Only INTERNAL_TRANSFER gets the transfer
+// semantics (counter bank account); petty-cash types deliberately do not,
+// because their counterparty is a person, not a bank account.
+func legacyStateTypeForTyped(typedType string) string {
+	switch typedType {
+	case "CUSTOMER_RECEIPT":
+		return "customer_receipt"
+	case "SUPPLIER_PAYMENT":
+		return "supplier_payment"
+	case "INTERNAL_TRANSFER":
+		return "transfer"
+	case "OTHER_RECEIPT", "LOAN_RECEIPT", "OWNER_DEPOSIT", "CHECK_RECEIPT", "REFUND":
+		return "other_income"
+	default:
+		return "expense"
+	}
+}
+
+// typedExpenseLike reports whether a typed transaction must surface in the
+// workspace expenses tab. Asset, loan, owner and petty-cash movements are
+// balance-sheet events and must not become operating expenses.
+func typedExpenseLike(typedType string) bool {
+	switch typedType {
+	case "DIRECT_EXPENSE", "PAYROLL_PAYMENT", "BANK_FEE":
+		return true
+	default:
+		return false
+	}
+}
+
+// persistMobileTransactionState writes the workspace state rows for one
+// HesabYar transaction with optimistic-revision retry. It is shared by the
+// legacy /mobile/transactions path and the typed /mobile/financial-transactions
+// path so both surface identically in the bank & cash and expenses tabs.
+func (h *APIHandler) persistMobileTransactionState(r *http.Request, companyID int64, req mobileTransactionRequest, transactionType string, typed *typedStateMeta) (mobileStateResult, string, error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		doc, err := loadWorkspace(r, companyID)
 		if err != nil {
-			RespondError(w, http.StatusInternalServerError, err.Error())
-			return
+			return mobileStateErr, "", err
 		}
 		state := decodeWorkspaceMap(doc.State)
 		for _, row := range rowsFrom(state, "mobileTransactions") {
 			if stringValue(row["externalId"]) == req.ExternalID {
-				RespondJSON(w, http.StatusOK, map[string]any{"status": "duplicate", "revision": doc.Revision})
-				return
+				return mobileStateDuplicate, "", nil
 			}
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -450,12 +516,27 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 		}
 		state["accounts"] = mapsToAny(accounts)
 		customer := strings.TrimSpace(req.Customer)
-		if transactionType == "expense" || transactionType == "transfer" || transactionType == "other_income" {
+		if typed == nil {
+			if transactionType == "expense" || transactionType == "transfer" || transactionType == "other_income" {
+				customer = ""
+			}
+		} else if typed.PartyName == "" {
 			customer = ""
+		} else {
+			customer = typed.PartyName
 		}
 		counterparty := strings.Trim(strings.TrimSpace(req.Group+" / "+req.Subgroup), " /")
+		if typed != nil && typed.PartyName != "" {
+			counterparty = typed.PartyName
+		}
 		mobileRow := map[string]any{"id": "sms-" + req.ExternalID, "externalId": req.ExternalID, "title": req.Title, "amount": req.Amount, "direction": req.Direction, "transactionType": transactionType, "transactionTypeExplicit": strings.TrimSpace(req.TransactionType) != "", "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "counterAccount": req.CounterAccount, "group": req.Group, "subgroup": req.Subgroup, "reportedCustomer": req.Customer, "counterparty": counterparty, "bank": accountName, "sender": req.Sender, "trackingNo": req.TrackingNo, "reportedBalance": req.ReportedBalance, "occurredAt": occurred, "occurredJalali": occurredJalali, "syncedAt": now}
 		setUnconfirmedCounterparty(mobileRow, customer)
+		if typed != nil {
+			mobileRow["typedType"] = typed.TypedType
+			if typed.PartyName != "" {
+				applyConfirmedCounterparty(mobileRow, typed.PartyName)
+			}
+		}
 		state["mobileTransactions"] = append([]any{mobileRow}, anyRows(state, "mobileTransactions")...)
 		trackingNo := strings.TrimSpace(req.TrackingNo)
 		if trackingNo == "" {
@@ -463,9 +544,19 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 		}
 		movement := map[string]any{"id": "mov-sms-" + req.ExternalID, "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "date": occurred, "occurredJalali": occurredJalali, "direction": req.Direction, "transactionType": transactionType, "amount": req.Amount, "counterparty": counterparty, "trackingNo": trackingNo, "description": req.Description, "sourceMobileTransaction": req.ExternalID, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName, "group": req.Group, "subgroup": req.Subgroup}
 		setUnconfirmedCounterparty(movement, customer)
-		if transactionType == "expense" {
+		if typed != nil {
+			movement["typedType"] = typed.TypedType
+			if typed.PartyName != "" {
+				applyConfirmedCounterparty(movement, typed.PartyName)
+			}
+		}
+		createExpense := transactionType == "expense" && (typed == nil || typed.ExpenseLike)
+		if createExpense {
 			expenseID := "exp-sms-" + req.ExternalID
 			expense := map[string]any{"id": expenseID, "date": occurred, "occurredJalali": occurredJalali, "group": req.Group, "subgroup": req.Subgroup, "amount": req.Amount, "description": req.Description, "accountId": resolvedAccountID, "counterparty": counterparty, "reportedCustomer": req.Customer, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName}
+			if typed != nil {
+				expense["typedType"] = typed.TypedType
+			}
 			state["expenses"] = append([]any{expense}, anyRows(state, "expenses")...)
 			movement["sourceExpense"] = expenseID
 		}
@@ -479,22 +570,31 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 		raw, _ := json.Marshal(state)
 		canonical, checksum, err := validateWorkspaceState(raw)
 		if err != nil {
-			RespondError(w, http.StatusBadRequest, err.Error())
-			return
+			return mobileStateInvalid, err.Error(), nil
 		}
 		expected := doc.Revision
-		saved, err = saveWorkspace(r, companyID, requestctx.UserID(r.Context()), &expected, canonical, checksum, nil)
+		_, err = saveWorkspace(r, companyID, requestctx.UserID(r.Context()), &expected, canonical, checksum, nil)
 		if err == nil {
-			RespondJSON(w, http.StatusCreated, map[string]any{"status": "synced", "revision": saved.Revision})
-			return
+			return mobileStateSaved, "", nil
 		}
 		var conflict workspaceConflict
 		if !errors.As(err, &conflict) {
-			RespondError(w, http.StatusInternalServerError, err.Error())
-			return
+			return mobileStateErr, "", err
 		}
 	}
-	RespondError(w, http.StatusConflict, "Workspace changed; retry sync")
+	return mobileStateConflict, "", nil
+}
+
+// applyConfirmedCounterparty marks a row's counterparty as confirmed upstream
+// by the ERP itself (party_id from HesabYar), so the accountant never has to
+// pick the same party twice.
+func applyConfirmedCounterparty(row map[string]any, name string) {
+	row["payer"] = name
+	row["customer"] = name
+	row["counterpartyCandidate"] = name
+	row["counterpartyConfirmed"] = true
+	row["counterpartyConfirmedAt"] = time.Now().UTC().Format("2006-01-02")
+	row["counterpartySource"] = "erp_party_id"
 }
 
 type mobilePayableDocumentRequest struct {
@@ -513,6 +613,105 @@ type mobilePayableDocumentRequest struct {
 	Status      string `json:"status"`
 	Source      string `json:"source"`
 	Description string `json:"description"`
+}
+
+type mobileTransactionRequest struct {
+	ExternalID      string           `json:"external_id"`
+	Title           string           `json:"title"`
+	Direction       string           `json:"direction"`
+	AccountID       string           `json:"account_id"`
+	Group           string           `json:"group"`
+	Subgroup        string           `json:"subgroup"`
+	Customer        string           `json:"customer"`
+	TransactionType string           `json:"transaction_type"`
+	Bank            string           `json:"bank"`
+	Sender          string           `json:"sender"`
+	Description     string           `json:"description"`
+	OccurredJalali  string           `json:"occurred_jalali"`
+	Amount          int64            `json:"amount"`
+	ReportedBalance *int64           `json:"reported_balance"`
+	TrackingNo      string           `json:"tracking_no"`
+	CounterAccount  string           `json:"counter_account"`
+	Groups          []map[string]any `json:"groups"`
+	BankRules       []map[string]any `json:"bank_rules"`
+}
+
+// legacyTypeMapping maps the historic five-way mobile classification onto
+// the typed posting enum.
+var legacyTypeMapping = map[string]string{
+	"customer_receipt": "CUSTOMER_RECEIPT",
+	"supplier_payment": "SUPPLIER_PAYMENT",
+	"expense":          "DIRECT_EXPENSE",
+	"transfer":         "INTERNAL_TRANSFER",
+	"other_income":     "OTHER_RECEIPT",
+}
+
+// postLegacyTypedTransaction mirrors a legacy SMS sync into the typed
+// bank_transactions core without a second ledger voucher (the workspace
+// accounting engine already posts the movement). Party resolution is
+// name-exact; unmatched party-required types land in NEEDS_REVIEW.
+func (h *APIHandler) postLegacyTypedTransaction(r *http.Request, companyID int64, req mobileTransactionRequest, legacyType string) error {
+	service := h.financeCore()
+	mapped := legacyTypeMapping[legacyType]
+	if mapped == "" {
+		return nil
+	}
+	partyID := int64(0)
+	partyRequired := legacyType == "customer_receipt" || legacyType == "supplier_payment"
+	if strings.TrimSpace(req.Customer) != "" {
+		if resolved, found, err := service.ResolvePartyByName(r.Context(), companyID, req.Customer); err != nil {
+			return err
+		} else if found {
+			partyID = resolved
+		}
+	}
+	if partyRequired && partyID == 0 {
+		// Never post a party-required event against a guessed counterparty:
+		// park it in the review queue for manual matching.
+		return service.QueueReviewEntry(r.Context(), companyID, "HY-"+req.ExternalID,
+			"legacy party unmatched: "+firstNonEmpty(req.Customer, "-"), map[string]any{
+				"external_id": req.ExternalID, "legacy_type": legacyType,
+				"amount": req.Amount, "customer": req.Customer,
+				"direction": req.Direction, "occurred_jalali": req.OccurredJalali,
+				"bank": req.Bank, "title": req.Title,
+			})
+	}
+	direction := strings.ToUpper(strings.TrimSpace(req.Direction))
+	if direction != "IN" && direction != "OUT" {
+		direction = "OUT"
+	}
+	typed := financecore.TransactionRequest{
+		ExternalTransactionID: "HY-" + req.ExternalID,
+		BankAccountName:       mobileCanonicalBankName(req.Bank),
+		Direction:             direction,
+		Amount:                req.Amount,
+		TransactionDate:       req.OccurredJalali,
+		TransactionType:       mapped,
+		PartyID:               partyID,
+		CounterAccountName:    strings.TrimSpace(req.CounterAccount),
+		Description:           firstNonEmpty(req.Description, req.Title, req.TrackingNo),
+		BankReference:         req.TrackingNo,
+		Source:                financecore.SourceHesabyar,
+		RawSourceReference:    strings.TrimSpace(req.Customer),
+	}
+	if typed.BankAccountName == "" {
+		typed.BankAccountName = mobileCanonicalBankName(req.AccountID)
+	}
+	result, err := service.PostTransaction(r.Context(), companyID, requestctx.UserID(r.Context()), typed, false)
+	if err != nil {
+		return err
+	}
+	_ = result
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func normalizeMobileDigits(value string) string {

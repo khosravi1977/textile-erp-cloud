@@ -60,6 +60,8 @@ const tabs = [
 
   ['reports', 'گزارشات'],
 
+  ['v-kh-moto', 'ورودی/خروجی متفرقه'],
+
   ['yarn-out', 'خروج نخ'],
 
   ['empty-beam-out', 'خروج نورد خالی'],
@@ -100,6 +102,8 @@ const basicDefs = [
 
 ];
 
+const basicTitleByKind = Object.fromEntries(basicDefs);
+
 
 
 const sidebarTabs = [
@@ -134,6 +138,8 @@ const sidebarTabs = [
 
   ['reports', 'گزارشات'],
 
+  ['v-kh-moto', 'ورودی/خروجی متفرقه'],
+
   ['database', 'مدیریت دیتابیس'],
 
   ['machinery-services', 'خدمات ماشین‌آلات'],
@@ -158,6 +164,8 @@ function App() {
 
   const [error, setError] = useState('');
 
+  const [operationalAlerts, setOperationalAlerts] = useState([]);
+
   const [status, setStatus] = useState({ go: false, db: false, message: 'در حال بررسی ارتباط...' });
 
   const [authBooting, setAuthBooting] = useState(Boolean(PORTAL_OPERATIONAL_SESSION || localStorage.getItem('operationalUser')));
@@ -174,14 +182,31 @@ function App() {
 
     try {
 
-      setLookups(await api('/lookups'));
+      const data = await api('/lookups');
+
+      setLookups(data);
 
       setError('');
+
+      return data;
 
     } catch (err) {
 
       setError(err.message);
 
+      return null;
+
+    }
+
+  };
+
+  const refreshOperationalAlerts = async () => {
+
+    try {
+      const data = await api('/dashboard');
+      setOperationalAlerts((data.notifications || []).filter(item => String(item.code || '').startsWith('financial-mismatch')).slice(0, 5));
+    } catch {
+      setOperationalAlerts([]);
     }
 
   };
@@ -193,13 +218,20 @@ function App() {
     if (session) {
 
       refreshLookups();
+      refreshOperationalAlerts();
 
       return;
 
     }
 
     setLookups({});
+    setOperationalAlerts([]);
 
+  }, [session]);
+  useEffect(() => {
+    if (!session) return;
+    const timer = setInterval(refreshOperationalAlerts, 30000);
+    return () => clearInterval(timer);
   }, [session]);
 
   useEffect(() => {
@@ -480,6 +512,14 @@ function App() {
 
         {toast && <div className="toast">{toast}</div>}
 
+        {!!operationalAlerts.length && <section className="financial-alerts">
+          <div className="financial-alerts-head"><strong>اعلان مغایرت مالی</strong><button onClick={refreshOperationalAlerts}>بروزرسانی</button></div>
+          {operationalAlerts.map(item => <div className="financial-alert" key={item.code}>
+            <div><b>{item.title}</b><span>{item.message}</span></div>
+            <button onClick={() => setTab(tabForAlertPath(item.path))}>مشاهده مبدا</button>
+          </div>)}
+        </section>}
+
         <ActiveTab tab={tab} lookups={lookups} notify={notify} refreshLookups={refreshLookups} />
 
       </main>
@@ -500,15 +540,15 @@ function ActiveTab({ tab, lookups, notify, refreshLookups }) {
 
     case 'initial': return <InitialData lookups={lookups} refresh={refreshLookups} notify={notify} />;
 
-    case 'nakh-vor': return <NakhVor lookups={lookups} notify={notify} />;
+    case 'nakh-vor': return <NakhVor lookups={lookups} notify={notify} refreshLookups={refreshLookups} />;
 
-    case 'chelle': return <Chelle lookups={lookups} notify={notify} />;
+    case 'chelle': return <Chelle lookups={lookups} notify={notify} refreshLookups={refreshLookups} />;
 
-    case 'gere': return <Gere lookups={lookups} notify={notify} />;
+    case 'gere': return <Gere lookups={lookups} notify={notify} refreshLookups={refreshLookups} />;
 
-    case 'nakh-salon': return <NakhSalon lookups={lookups} notify={notify} />;
+    case 'nakh-salon': return <NakhSalon lookups={lookups} notify={notify} refreshLookups={refreshLookups} />;
 
-    case 'salon': return <Salon lookups={lookups} notify={notify} />;
+    case 'salon': return <Salon lookups={lookups} notify={notify} refreshLookups={refreshLookups} />;
 
     case 'formulas': return <MachineFormulas notify={notify} />;
 
@@ -516,13 +556,15 @@ function ActiveTab({ tab, lookups, notify, refreshLookups }) {
 
     case 'reports': return <ReportsPro2 lookups={lookups} />;
 
-    case 'yarn-out': return <YarnOut lookups={lookups} notify={notify} />;
+    case 'v-kh-moto': return <MiscMovement lookups={lookups} notify={notify} refreshLookups={refreshLookups} />;
 
-    case 'empty-beam-out': return <EmptyBeamOut lookups={lookups} notify={notify} />;
+    case 'yarn-out': return <YarnOut lookups={lookups} notify={notify} refreshLookups={refreshLookups} />;
 
-    case 'out-invoice': return <OutInvoicePro lookups={lookups} notify={notify} />;
+    case 'empty-beam-out': return <EmptyBeamOut lookups={lookups} notify={notify} refreshLookups={refreshLookups} />;
 
-    case 'expenses': return <Expenses lookups={lookups} notify={notify} />;
+    case 'out-invoice': return <OutInvoicePro lookups={lookups} notify={notify} refreshLookups={refreshLookups} />;
+
+    case 'expenses': return <Expenses lookups={lookups} notify={notify} refreshLookups={refreshLookups} />;
 
     case 'database': return <DatabaseManager notify={notify} />;
 
@@ -533,6 +575,20 @@ function ActiveTab({ tab, lookups, notify, refreshLookups }) {
     default: return <DashboardMother />;
 
   }
+
+}
+
+
+
+function tabForAlertPath(path) {
+
+  return ({
+    '/out-invoice': 'out-invoice',
+    '/nakh-khor': 'yarn-out',
+    '/nakh-vor': 'nakh-vor',
+    '/v-kh-moto': 'v-kh-moto',
+    '/reports': 'reports',
+  })[path] || String(path || '').replace(/^\/+/, '') || 'reports';
 
 }
 
@@ -943,7 +999,7 @@ function InitialData({ lookups, refresh, notify }) {
 
 
 
-function NakhVor({ lookups, notify }) {
+function NakhVor({ lookups, notify, refreshLookups }) {
 
   return <CrudPage
 
@@ -965,9 +1021,9 @@ function NakhVor({ lookups, notify }) {
 
       <Input label="وزن" type="number" value={form.weight} onChange={v => set('weight', Number(v))} />
 
-      <Select label="مشتری" value={form.mosh_id} onChange={v => set('mosh_id', Number(v))} items={lookups.customers} />
+      <Select label="مشتری" value={form.mosh_id} onChange={v => set('mosh_id', Number(v))} items={lookups.customers} basicKind="customers" refreshLookups={refreshLookups} notify={notify} />
 
-      <Select label="نوع نخ" value={form.nakh_id} onChange={v => set('nakh_id', Number(v))} items={lookups.yarns} />
+      <Select label="نوع نخ" value={form.nakh_id} onChange={v => set('nakh_id', Number(v))} items={lookups.yarns} basicKind="yarns" refreshLookups={refreshLookups} notify={notify} />
 
     </>}
 
@@ -979,7 +1035,7 @@ function NakhVor({ lookups, notify }) {
 
 
 
-function Chelle({ lookups, notify }) {
+function Chelle({ lookups, notify, refreshLookups }) {
 
   return <CrudPage
 
@@ -999,17 +1055,17 @@ function Chelle({ lookups, notify }) {
 
       <Input label="شماره چله" value={form.shom_chelle} onChange={v => set('shom_chelle', v)} />
 
-      <Select label="نوع نخ" value={form.nakh_id} onChange={v => set('nakh_id', Number(v))} items={lookups.yarns} />
+      <Select label="نوع نخ" value={form.nakh_id} onChange={v => set('nakh_id', Number(v))} items={lookups.yarns} basicKind="yarns" refreshLookups={refreshLookups} notify={notify} />
 
       <Input label="وزن چله" type="number" value={form.weight} onChange={v => set('weight', Number(v))} />
 
-      <Select label="چله پیچ" value={form.pich_id} onChange={v => set('pich_id', Number(v))} items={lookups.warpers} />
+      <Select label="چله پیچ" value={form.pich_id} onChange={v => set('pich_id', Number(v))} items={lookups.warpers} basicKind="warpers" refreshLookups={refreshLookups} notify={notify} />
 
-      <Select label="مشتری" value={form.mosh_id} onChange={v => set('mosh_id', Number(v))} items={lookups.customers} />
+      <Select label="مشتری" value={form.mosh_id} onChange={v => set('mosh_id', Number(v))} items={lookups.customers} basicKind="customers" refreshLookups={refreshLookups} notify={notify} />
 
       <Input label="همبافت چله" value={form.hambaft} onChange={v => set('hambaft', v)} />
 
-      <Select label="کد نورد" value={form.kod_navard_id} onChange={v => set('kod_navard_id', Number(v))} items={lookups.beams} />
+      <Select label="کد نورد" value={form.kod_navard_id} onChange={v => set('kod_navard_id', Number(v))} items={lookups.beams} basicKind="beams" refreshLookups={refreshLookups} notify={notify} />
 
     </>}
 
@@ -1021,7 +1077,7 @@ function Chelle({ lookups, notify }) {
 
 
 
-function Gere({ lookups, notify }) {
+function Gere({ lookups, notify, refreshLookups }) {
 
   const [chelles, setChelles] = useState([]);
 
@@ -1047,7 +1103,7 @@ function Gere({ lookups, notify }) {
 
     renderForm={(form, set) => <>
 
-      <Select label="گره زن" value={form.gerezan_id} onChange={v => set('gerezan_id', Number(v))} items={lookups.tiers} />
+      <Select label="گره زن" value={form.gerezan_id} onChange={v => set('gerezan_id', Number(v))} items={lookups.tiers} basicKind="tiers" refreshLookups={refreshLookups} notify={notify} />
 
       <Select label="شماره چله" value={form.chelle_id} onChange={v => set('chelle_id', Number(v))} items={uniqueOptions(chelles.map(x => ({ id: x.id, name: `${x.shom_chelle} - ${x.hambaft} - ${fmt(x.weight)} کیلو` })), form.chelle_id)} />
 
@@ -1063,7 +1119,7 @@ function Gere({ lookups, notify }) {
 
 
 
-function NakhSalon({ lookups, notify }) {
+function NakhSalon({ lookups, notify, refreshLookups }) {
 
   const [chelles, setChelles] = useState([]);
 
@@ -1130,9 +1186,9 @@ function NakhSalon({ lookups, notify }) {
 
       <Select label="شماره چله فعال روی ماشین" value={form.chelle_id} onChange={chooseChelle} items={uniqueOptions(chelles.map(x => ({ id: x.id, name: `${x.shom_chelle} - ماشین ${normalizeMachineNumber(x.machine)}` })), form.chelle_id)} />
 
-      <Select label="مالک نخ / مشتری" value={form.mosh_name} onChange={v => set('mosh_name', v)} items={(lookups.customers || []).map(x => ({ id: x.name, name: x.name }))} />
+      <Select label="مالک نخ / مشتری" value={form.mosh_name} onChange={v => set('mosh_name', v)} items={(lookups.customers || []).map(x => ({ id: x.name, name: x.name }))} basicKind="customers" basicValue="name" refreshLookups={refreshLookups} notify={notify} />
 
-      <Select label="نوع نخ پود" value={form.nakh_name} onChange={v => set('nakh_name', v)} items={(lookups.yarns || []).map(x => ({ id: x.name, name: x.name }))} />
+      <Select label="نوع نخ پود" value={form.nakh_name} onChange={v => set('nakh_name', v)} items={(lookups.yarns || []).map(x => ({ id: x.name, name: x.name }))} basicKind="yarns" basicValue="name" refreshLookups={refreshLookups} notify={notify} />
 
       <Select label="نوع" value={form.vor_khor} onChange={v => set('vor_khor', v)} items={[{id:'vorud',name:'ورود'}, {id:'khoroj',name:'خروج'}]} />
 
@@ -1151,7 +1207,7 @@ function NakhSalon({ lookups, notify }) {
 
 
 
-function Salon({ lookups, notify }) {
+function Salon({ lookups, notify, refreshLookups }) {
 
   const [recent, setRecent] = useState([]);
 
@@ -1605,7 +1661,7 @@ function Salon({ lookups, notify }) {
 
             }
 
-          }} items={lookups.fabrics} />
+          }} items={lookups.fabrics} basicKind="fabrics" refreshLookups={refreshLookups} notify={notify} />
 
           <Input label="متراژ" type="number" value={form.metr} onChange={v => set('metr', Number(v))} />
 
@@ -1823,7 +1879,101 @@ function Reports() {
 
 
 
-function YarnOut({ lookups, notify }) {
+function MiscMovement({ lookups, notify, refreshLookups }) {
+
+  const locationOptions = [
+    'انبار اصلی',
+    'انبار قطعات',
+    'سالن تولید',
+    'تعمیرگاه',
+    'اداری',
+    'نزد اپراتور',
+    'خارج از کارخانه',
+  ];
+  const operationTypes = [
+    { id: 'vorud', name: 'ورود به کارخانه' },
+    { id: 'khoroj', name: 'خروج از کارخانه' },
+    { id: 'transfer', name: 'انتقال داخلی' },
+    { id: 'repair', name: 'ارسال به تعمیرگاه' },
+    { id: 'return', name: 'بازگشت از تعمیرگاه' },
+  ];
+  const statusOptions = ['در حال تعمیر', 'در حال استفاده', 'موجود در انبار', 'خارج از کارخانه', 'در حال انتقال'];
+  const operatorNames = uniqueText((lookups.operators || []).map(x => x.name));
+
+  return <CrudPage
+    title="ورودی/خروجی متفرقه"
+    endpoint="/v-kh-moto"
+    empty={{ tarikh: '', operation_type: 'vorud', name_kala: '', shomare_kala: '', from_location: '', to_location: '', person: '', status: '', tozih: '', tarikh_bazgasht: '' }}
+    notify={notify}
+    filters={[
+      ['operation_type', 'نوع عملیات'],
+      ['name_kala', 'نام کالا'],
+      ['shomare_kala', 'شماره کالا'],
+      ['from_location', 'از محل'],
+      ['to_location', 'به محل'],
+      ['person', 'شخص'],
+      ['status', 'وضعیت'],
+    ]}
+    mapEdit={row => ({
+      id: row.id,
+      tarikh: row.tarikh || '',
+      operation_type: row.operation_type || 'vorud',
+      name_kala: row.name_kala || '',
+      shomare_kala: row.shomare_kala || '',
+      from_location: row.from_location || '',
+      to_location: row.to_location || '',
+      person: row.person || '',
+      status: row.status || '',
+      tozih: row.tozih || '',
+      tarikh_bazgasht: row.tarikh_bazgasht || '',
+    })}
+    renderForm={(form, set) => <>
+      <Input label="تاریخ" value={form.tarikh} onChange={v => set('tarikh', v)} hint="اگر خالی بماند، تاریخ امروز ثبت می‌شود." />
+      <Select label="نوع عملیات" value={form.operation_type} onChange={v => set('operation_type', v)} items={operationTypes} />
+      <Input label="نام کالا" value={form.name_kala} onChange={v => set('name_kala', v)} />
+      <Input label="شماره کالا" value={form.shomare_kala} onChange={v => set('shomare_kala', v)} />
+      <Select label="از محل" value={form.from_location} onChange={v => set('from_location', v)} items={locationOptions.map(x => ({ id: x, name: x }))} />
+      <Select label="به محل" value={form.to_location} onChange={v => set('to_location', v)} items={locationOptions.map(x => ({ id: x, name: x }))} />
+      <Input label="شخص" value={form.person} onChange={v => set('person', v)} list={operatorNames} basicKind="operators" basicValue="name" refreshLookups={refreshLookups} notify={notify} />
+      <Select label="وضعیت" value={form.status} onChange={v => set('status', v)} items={statusOptions.map(x => ({ id: x, name: x }))} />
+      <Input label="تاریخ بازگشت" value={form.tarikh_bazgasht} onChange={v => set('tarikh_bazgasht', v)} hint="برای موارد خروج موقت یا تعمیرگاه." />
+      <Input label="توضیحات" value={form.tozih} onChange={v => set('tozih', v)} />
+    </>}
+    columns={[
+      ['tarikh', 'تاریخ'],
+      ['operation_type', 'نوع عملیات'],
+      ['name_kala', 'نام کالا'],
+      ['shomare_kala', 'شماره کالا'],
+      ['from_location', 'از محل'],
+      ['to_location', 'به محل'],
+      ['person', 'شخص'],
+      ['status', 'وضعیت'],
+      ['tarikh_bazgasht', 'تاریخ بازگشت'],
+      ['tozih', 'توضیحات'],
+    ]}
+    extraSections={({ items, load }) => {
+      const outside = (items || []).filter(x => ['khoroj', 'repair'].includes(x.operation_type) && !String(x.tarikh_bazgasht || '').trim());
+      return <section className="panel">
+        <div className="panel-title-row"><h2>کالاهای خارج از کارخانه</h2><button onClick={load}>بروزرسانی</button></div>
+        <Table rows={outside} columns={[
+          ['tarikh', 'تاریخ'],
+          ['name_kala', 'نام کالا'],
+          ['shomare_kala', 'شماره کالا'],
+          ['from_location', 'از محل'],
+          ['to_location', 'به محل'],
+          ['person', 'شخص'],
+          ['status', 'وضعیت'],
+          ['operation_type', 'نوع عملیات'],
+        ]} hideActions />
+      </section>;
+    }}
+  />;
+
+}
+
+
+
+function YarnOut({ lookups, notify, refreshLookups }) {
 
   const [yarnInRows, setYarnInRows] = useState([]);
   const [warperBalanceRows, setWarperBalanceRows] = useState([]);
@@ -1908,11 +2058,11 @@ function YarnOut({ lookups, notify }) {
 
       <Input label="وزن خروج" type="number" value={form.weight} onChange={v => set('weight', Number(v))} />
 
-      <Select label="مالک نخ / مشتری" value={form.owner_mosh} onChange={v => set('owner_mosh', v)} items={(lookups.customers || []).map(x => ({ id: x.name, name: x.name }))} />
+      <Select label="مالک نخ / مشتری" value={form.owner_mosh} onChange={v => set('owner_mosh', v)} items={(lookups.customers || []).map(x => ({ id: x.name, name: x.name }))} basicKind="customers" basicValue="name" refreshLookups={refreshLookups} notify={notify} />
 
       <Select label="نوع مقصد" value={form.destination_type} onChange={v => { set('destination_type', v); set('mosh_name', ''); }} items={[{id:'warper',name:'چله‌پیچ'}, {id:'other',name:'مشتری / مصرف دیگر'}]} />
 
-      <Input label="مقصد خروج" value={form.mosh_name} onChange={v => set('mosh_name', v)} list={recipientOptions} />
+      <Input label="مقصد خروج" value={form.mosh_name} onChange={v => set('mosh_name', v)} list={recipientOptions} basicKind={form.destination_type === 'other' ? 'customers' : ''} basicValue="name" refreshLookups={refreshLookups} notify={notify} />
 
       <Input label="نوع نخ" value={form.nakh_name} onChange={setYarn} list={yarnOptions.length ? yarnOptions : (lookups.yarns || []).map(x => x.name)} />
 
@@ -1942,7 +2092,7 @@ function YarnOut({ lookups, notify }) {
 
 }
 
-function EmptyBeamOut({ lookups, notify }) {
+function EmptyBeamOut({ lookups, notify, refreshLookups }) {
   const beamNames = (lookups.beams || []).map(x => x.name).filter(Boolean);
 
   return <CrudPage
@@ -1960,8 +2110,8 @@ function EmptyBeamOut({ lookups, notify }) {
       description: row.description || '',
     })}
     renderForm={(form, set) => <>
-      <Select label="شماره نورد" value={form.beam_id} onChange={v => set('beam_id', Number(v))} items={lookups.beams} />
-      <Select label="خروج جهت / چله‌پیچ" value={form.warper_id} onChange={v => set('warper_id', Number(v))} items={lookups.warpers} />
+      <Select label="شماره نورد" value={form.beam_id} onChange={v => set('beam_id', Number(v))} items={lookups.beams} basicKind="beams" refreshLookups={refreshLookups} notify={notify} />
+      <Select label="خروج جهت / چله‌پیچ" value={form.warper_id} onChange={v => set('warper_id', Number(v))} items={lookups.warpers} basicKind="warpers" refreshLookups={refreshLookups} notify={notify} />
       <Input label="توضیحات" value={form.description} onChange={v => set('description', v)} hint="این ثبت فقط آماری است و اثر مالی ندارد." />
     </>}
     columns={[
@@ -2013,7 +2163,7 @@ function EmptyBeamOut({ lookups, notify }) {
 
 
 
-function Expenses({ lookups, notify }) {
+function Expenses({ lookups, notify, refreshLookups }) {
 
   return <CrudPage
 
@@ -2031,11 +2181,11 @@ function Expenses({ lookups, notify }) {
 
     renderForm={(form, set) => <>
 
-      <Select label="عنوان هزینه" value={form.hazine_id} onChange={v => set('hazine_id', Number(v))} items={lookups.costs} />
+      <Select label="عنوان هزینه" value={form.hazine_id} onChange={v => set('hazine_id', Number(v))} items={lookups.costs} basicKind="costs" refreshLookups={refreshLookups} notify={notify} />
 
-      <Select label="ثبت کننده" value={form.operator_id} onChange={v => set('operator_id', Number(v))} items={lookups.operators} />
+      <Select label="ثبت کننده" value={form.operator_id} onChange={v => set('operator_id', Number(v))} items={lookups.operators} basicKind="operators" refreshLookups={refreshLookups} notify={notify} />
 
-      <Select label="زیرگروه" value={form.weaver_id} onChange={v => set('weaver_id', Number(v))} items={lookups.weavers} />
+      <Select label="زیرگروه" value={form.weaver_id} onChange={v => set('weaver_id', Number(v))} items={lookups.weavers} basicKind="weavers" refreshLookups={refreshLookups} notify={notify} />
 
       <Input label="مبلغ" type="number" value={form.mablagh} onChange={v => set('mablagh', Number(v))} />
 
@@ -2053,7 +2203,7 @@ function Expenses({ lookups, notify }) {
 
 
 
-function OutInvoice({ lookups, notify }) {
+function OutInvoice({ lookups, notify, refreshLookups }) {
 
   const [rows, setRows] = useState([]);
 
@@ -2141,9 +2291,9 @@ function OutInvoice({ lookups, notify }) {
 
         <Input label="شماره سند" value={form.sanad_no} onChange={v => set('sanad_no', v)} />
 
-        <Input label="مشتری" value={form.customer} onChange={v => set('customer', v)} list={(lookups.customers || []).map(x => x.name)} />
+        <Input label="مشتری" value={form.customer} onChange={v => set('customer', v)} list={(lookups.customers || []).map(x => x.name)} basicKind="customers" basicValue="name" refreshLookups={refreshLookups} notify={notify} />
 
-        <Input label="کالا" value={form.kala} onChange={v => set('kala', v)} list={(lookups.fabrics || []).map(x => x.name)} />
+        <Input label="کالا" value={form.kala} onChange={v => set('kala', v)} list={(lookups.fabrics || []).map(x => x.name)} basicKind="fabrics" basicValue="name" refreshLookups={refreshLookups} notify={notify} />
 
         <Input label="کد طاقه" value={form.taghe_code} onChange={v => set('taghe_code', v)} />
 
@@ -2655,7 +2805,7 @@ function FieldView({ label, value }) {
 
 }
 
-function OutInvoicePro({ lookups, notify }) {
+function OutInvoicePro({ lookups, notify, refreshLookups }) {
 
   const inputRef = React.useRef(null);
 
@@ -2943,9 +3093,9 @@ function OutInvoicePro({ lookups, notify }) {
 
         <Input label="شماره فاکتور" value={form.invoice_no} onChange={v => set('invoice_no', v)} />
 
-        <Select label="مشتری" value={form.customer} onChange={v => set('customer', v)} items={(lookups.customers || []).map(x => ({ id: x.name, name: x.name }))} />
+        <Select label="مشتری" value={form.customer} onChange={v => set('customer', v)} items={(lookups.customers || []).map(x => ({ id: x.name, name: x.name }))} basicKind="customers" basicValue="name" refreshLookups={refreshLookups} notify={notify} />
 
-        <Select label="نام کالا" value={form.kala} onChange={v => set('kala', v)} items={(lookups.fabrics || []).map(x => ({ id: x.name, name: x.name }))} />
+        <Select label="نام کالا" value={form.kala} onChange={v => set('kala', v)} items={(lookups.fabrics || []).map(x => ({ id: x.name, name: x.name }))} basicKind="fabrics" basicValue="name" refreshLookups={refreshLookups} notify={notify} />
 
         <label><span>کد طاقه / بارکد</span><input ref={inputRef} value={form.taghe_code} onChange={e => set('taghe_code', e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTaghe(); } }} /></label>
 
@@ -3655,7 +3805,7 @@ function SparePartsInventory({ lookups, notify, refreshLookups }) {
 
     renderForm={(f, set) => <>
 
-      <Input label="نام قطعه" value={f.part_name} onChange={v => set('part_name', v)} list={(lookups.spareParts || []).map(x => x.name)} />
+      <Input label="نام قطعه" value={f.part_name} onChange={v => set('part_name', v)} list={(lookups.spareParts || []).map(x => x.name)} basicKind="spareParts" basicValue="name" refreshLookups={refreshLookups} notify={notify} />
 
       <Input label="شماره قطعه" value={f.part_number} onChange={v => set('part_number', v)} />
 
@@ -3740,13 +3890,13 @@ function MachineryServices({ lookups, notify, refreshLookups }) {
 
       <Input label="تاریخ سرویس" value={f.service_date} onChange={v => set('service_date', v)} />
 
-      <Select label="نوع سرویس" value={f.service_type_id} onChange={v => set('service_type_id', Number(v))} items={lookups.serviceTypes} />
+      <Select label="نوع سرویس" value={f.service_type_id} onChange={v => set('service_type_id', Number(v))} items={lookups.serviceTypes} basicKind="serviceTypes" refreshLookups={refreshLookups} notify={notify} />
 
       <Select label="قطعه مصرفی" value={f.spare_part_id} onChange={v => set('spare_part_id', Number(v))} items={spareOptions} />
 
       <Input label="تعداد مصرف قطعه" type="number" value={f.quantity} onChange={v => set('quantity', Number(v))} />
 
-      <Select label="تحویل‌گیرنده / اپراتور" value={f.operator_name} onChange={v => set('operator_name', v)} items={(lookups.operators || []).map(x => ({ id: x.name, name: x.name }))} />
+      <Select label="تحویل‌گیرنده / اپراتور" value={f.operator_name} onChange={v => set('operator_name', v)} items={(lookups.operators || []).map(x => ({ id: x.name, name: x.name }))} basicKind="operators" basicValue="name" refreshLookups={refreshLookups} notify={notify} />
 
       <Input label="شرح سرویس" value={f.description} onChange={v => set('description', v)} />
 
@@ -3998,7 +4148,7 @@ function Filters({ filters, values, setValues, onPrint, onExcel, rows = [] }) {
 
       <option value="">همه</option>
 
-      {filterOptions(rows, key).map(x => <option key={x} value={x}>{x}</option>)}
+      {filterOptions(rows, key).map(x => <option key={x} value={x}>{display(x)}</option>)}
 
     </select></label>)}
 
@@ -4041,19 +4191,33 @@ function Table({ rows, columns, onEdit, onDelete, hideActions = false }) {
 
 
 
-function Input({ label, value, onChange, onBlur, type = 'text', list, disabled = false, hint = '' }) {
+function Input({ label, value, onChange, onBlur, type = 'text', list, disabled = false, hint = '', basicKind = '', basicValue = 'name', refreshLookups, notify }) {
 
   const id = `list-${label.replaceAll(' ', '-')}`;
 
-  return <label><span>{label}</span><input type={type} value={value ?? ''} disabled={disabled} onChange={e => onChange(e.target.value)} onBlur={onBlur ? e => onBlur(e.target.value) : undefined} list={list ? id : undefined} />{list && <datalist id={id}>{list.map(x => <option key={x} value={x} />)}</datalist>}{hint && <small className="field-hint">{hint}</small>}</label>;
+  return <label className="lookup-field">
+    <span className="lookup-head">
+      <span>{label}</span>
+      {basicKind && <button type="button" className="lookup-add" title={`افزودن ${basicTitleByKind[basicKind] || 'مورد'}`} onClick={() => quickAddBasic(basicKind, refreshLookups, notify, onChange, basicValue)}>+</button>}
+    </span>
+    <input type={type} value={value ?? ''} disabled={disabled} onChange={e => onChange(e.target.value)} onBlur={onBlur ? e => onBlur(e.target.value) : undefined} list={list ? id : undefined} />
+    {list && <datalist id={id}>{list.map(x => <option key={x} value={x} />)}</datalist>}
+    {hint && <small className="field-hint">{hint}</small>}
+  </label>;
 
 }
 
 
 
-function Select({ label, value, onChange, items = [] }) {
+function Select({ label, value, onChange, items = [], basicKind = '', basicValue = 'id', refreshLookups, notify }) {
 
-  return <label><span>{label}</span><select value={value ?? ''} onChange={e => onChange(e.target.value)}><option value="">انتخاب کنید</option>{items.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>;
+  return <label className="lookup-field">
+    <span className="lookup-head">
+      <span>{label}</span>
+      {basicKind && <button type="button" className="lookup-add" title={`افزودن ${basicTitleByKind[basicKind] || 'مورد'}`} onClick={() => quickAddBasic(basicKind, refreshLookups, notify, onChange, basicValue)}>+</button>}
+    </span>
+    <select value={value ?? ''} onChange={e => onChange(e.target.value)}><option value="">انتخاب کنید</option>{items.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select>
+  </label>;
 
 }
 
@@ -4307,6 +4471,24 @@ function uniqueText(items) {
 
 }
 
+async function quickAddBasic(kind, refreshLookups, notify, applyValue, valueMode = 'name') {
+  const title = basicTitleByKind[kind] || 'مورد';
+  const entered = window.prompt(`نام ${title} جدید را وارد کنید`);
+  if (entered == null) return;
+  const name = entered.trim();
+  if (!name) return;
+  try {
+    await api(`/basic/${kind}`, { method: 'POST', body: { name } });
+    const fresh = refreshLookups ? await refreshLookups() : null;
+    const items = fresh?.[kind] || [];
+    const found = items.find(x => String(x?.name ?? '').trim() === name);
+    applyValue(found ? (valueMode === 'id' ? String(found.id) : String(found.name)) : name);
+    if (notify) notify(`${title} جدید ثبت شد`);
+  } catch (err) {
+    if (notify) notify(err.message || `ثبت ${title} انجام نشد`);
+  }
+}
+
 function uniqueInOrder(items) {
 
   return [...new Set((items || []).filter(v => String(v ?? '').trim() !== '').map(v => String(v).trim()))];
@@ -4328,6 +4510,12 @@ function display(v) {
   if (v === 'vorud' || v === 'ورودي') return 'ورود';
 
   if (v === 'khoroj' || v === 'خروجي') return 'خروج';
+
+  if (v === 'transfer') return 'انتقال داخلی';
+
+  if (v === 'repair') return 'ارسال به تعمیرگاه';
+
+  if (v === 'return') return 'بازگشت از تعمیرگاه';
 
   if (typeof v === 'number') return v.toLocaleString('fa-IR');
 

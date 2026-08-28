@@ -50,8 +50,11 @@ jobs:
       - name: Operational tests
         run: go test ./...
         working-directory: operational_cycle_go
-      - name: Portal tests
-        run: go test ./...
+      - name: Portal hardening and tests
+        run: |
+          go run ./tools/hardener -file main.go
+          gofmt -w main.go
+          go test ./...
         working-directory: portal_server
       - name: Financial web production build
         run: npm ci && npm run build

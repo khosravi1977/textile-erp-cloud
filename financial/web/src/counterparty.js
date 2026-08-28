@@ -1,7 +1,10 @@
-const TRANSFER_TYPE = 'transfer';
+const COUNTERPARTY_REQUIRED_TYPES = new Set([
+  'customer_receipt',
+  'supplier_payment',
+]);
 
 export function movementNeedsCounterparty(movement = {}) {
-  return movement.transactionType !== TRANSFER_TYPE;
+  return COUNTERPARTY_REQUIRED_TYPES.has(String(movement.transactionType || ''));
 }
 
 export function confirmedMovementCounterparty(movement = {}) {

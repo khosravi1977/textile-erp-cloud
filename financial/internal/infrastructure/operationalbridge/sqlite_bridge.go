@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 	_ "modernc.org/sqlite"
@@ -96,6 +97,16 @@ type ChelleIncomingRow struct {
 	Machine      string  `json:"machine"`
 }
 
+type FinancialMismatchReport struct {
+	SourceType  string
+	SourceID    string
+	InvoiceNo   string
+	InvoiceKind string
+	Title       string
+	Message     string
+	ReportedBy  string
+}
+
 func NewFromEnv() (*Bridge, error) {
 	if dsn := strings.TrimSpace(os.Getenv("OPERATIONAL_DATABASE_URL")); dsn != "" {
 		db, err := sql.Open("postgres", dsn)
@@ -159,6 +170,13 @@ func (b *Bridge) query(q string, args ...any) (*sql.Rows, error) {
 		return b.conn.QueryContext(context.Background(), rebind(b.dialect, q), args...)
 	}
 	return b.db.Query(rebind(b.dialect, q), args...)
+}
+
+func (b *Bridge) exec(q string, args ...any) (sql.Result, error) {
+	if b.conn != nil {
+		return b.conn.ExecContext(context.Background(), rebind(b.dialect, q), args...)
+	}
+	return b.db.Exec(rebind(b.dialect, q), args...)
 }
 
 func (b *Bridge) ForCompany(ctx context.Context, companyID int64) (*Bridge, func(), error) {
@@ -238,12 +256,53 @@ func (b *Bridge) Customers() ([]LookupRow, error) {
 	return b.lookup(`SELECT id_mosh_name, COALESCE(name_mosh,'') FROM mosh_name ORDER BY name_mosh`)
 }
 
+func (b *Bridge) CreateCustomer(name string) (LookupRow, error) {
+	return b.createLookup("mosh_name", "id_mosh_name", "name_mosh", name)
+}
+
 func (b *Bridge) KalaItems() ([]LookupRow, error) {
 	return b.lookup(`SELECT id_kala_name, COALESCE(name_kala_name,'') FROM kala_name ORDER BY name_kala_name`)
 }
 
+func (b *Bridge) CreateKalaItem(name string) (LookupRow, error) {
+	return b.createLookup("kala_name", "id_kala_name", "name_kala_name", name)
+}
+
 func (b *Bridge) YarnItems() ([]LookupRow, error) {
 	return b.lookup(`SELECT id_nakh_name, COALESCE(name_nakh_name,'') FROM nakh_name ORDER BY name_nakh_name`)
+}
+
+func (b *Bridge) CreateYarnItem(name string) (LookupRow, error) {
+	return b.createLookup("nakh_name", "id_nakh_name", "name_nakh_name", name)
+}
+
+func (b *Bridge) createLookup(table, idCol, nameCol, name string) (LookupRow, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return LookupRow{}, errors.New("name is required")
+	}
+	if b.dialect == "postgres" {
+		if _, err := b.exec("INSERT INTO "+table+" ("+nameCol+") VALUES (?) ON CONFLICT ("+nameCol+") DO NOTHING", name); err != nil {
+			return LookupRow{}, err
+		}
+	} else {
+		if _, err := b.exec("INSERT OR IGNORE INTO "+table+" ("+nameCol+") VALUES (?)", name); err != nil {
+			return LookupRow{}, err
+		}
+	}
+	rows, err := b.query("SELECT "+idCol+", COALESCE("+nameCol+",'') FROM "+table+" WHERE "+nameCol+" = ? LIMIT 1", name)
+	if err != nil {
+		return LookupRow{}, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return LookupRow{}, errors.New("created lookup item could not be reloaded")
+	}
+	var row LookupRow
+	if err := rows.Scan(&row.ID, &row.Name); err != nil {
+		return LookupRow{}, err
+	}
+	return row, rows.Err()
 }
 
 func (b *Bridge) lookup(q string) ([]LookupRow, error) {
@@ -474,4 +533,30 @@ func (b *Bridge) ChelleIncoming(limit int) ([]ChelleIncomingRow, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func (b *Bridge) ReportFinancialMismatch(report FinancialMismatchReport) error {
+	if b == nil {
+		return sql.ErrConnDone
+	}
+	if b.dialect == "postgres" {
+		if _, err := b.exec(`CREATE TABLE IF NOT EXISTS financial_mismatch_reports (id BIGSERIAL PRIMARY KEY, source_type TEXT NOT NULL, source_id TEXT NOT NULL, invoice_no TEXT, invoice_kind TEXT, title TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', reported_by TEXT, reported_at TEXT)`); err != nil {
+			return err
+		}
+	} else {
+		if _, err := b.exec(`CREATE TABLE IF NOT EXISTS financial_mismatch_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, source_type TEXT NOT NULL, source_id TEXT NOT NULL, invoice_no TEXT, invoice_kind TEXT, title TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', reported_by TEXT, reported_at TEXT)`); err != nil {
+			return err
+		}
+	}
+	_, err := b.exec(`INSERT INTO financial_mismatch_reports (source_type, source_id, invoice_no, invoice_kind, title, message, status, reported_by, reported_at) VALUES (?,?,?,?,?,?,'open',?,?)`,
+		strings.TrimSpace(report.SourceType),
+		strings.TrimSpace(report.SourceID),
+		strings.TrimSpace(report.InvoiceNo),
+		strings.TrimSpace(report.InvoiceKind),
+		strings.TrimSpace(report.Title),
+		strings.TrimSpace(report.Message),
+		strings.TrimSpace(report.ReportedBy),
+		time.Now().UTC().Format(time.RFC3339),
+	)
+	return err
 }
