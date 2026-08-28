@@ -127,6 +127,9 @@ type reportSnapshot struct {
 	ProductionCount   int
 	ProductionWeight  float64
 	ProductionMeters  float64
+	ProductionByType  []fabricTypeTotal
+	FabricOutByType   []fabricTypeTotal
+	FabricStockByType []fabricTypeTotal
 	FabricOutInvoices int
 	FabricOutPieces   int
 	FabricOutWeight   float64
@@ -158,6 +161,14 @@ type operationalReportRow struct {
 	Reference string
 	Weight    float64
 	Meters    float64
+	Item      string
+}
+
+type fabricTypeTotal struct {
+	Label  string
+	Count  int
+	Meters float64
+	Weight float64
 }
 
 type accountingPerformance struct {
@@ -1083,37 +1094,39 @@ func (s *Service) collectOperationalPeriod(
 	}
 	schema := pq.QuoteIdentifier(strings.TrimSpace(schemaName))
 	query := fmt.Sprintf(`
-		SELECT kind, source_date, reference, weight, meters
+		SELECT kind, source_date, reference, weight, meters, item
 		FROM (
 			SELECT 'production'::text AS kind,
 			       COALESCE(tarikh_salon,'') AS source_date,
 			       id_salon::text AS reference,
 			       COALESCE(w_salon,0)::double precision AS weight,
-			       COALESCE(metr_salon,0)::double precision AS meters
+			       COALESCE(metr_salon,0)::double precision AS meters,
+			       COALESCE(TRIM(kala_salon),'') AS item
 			FROM %[1]s.salon
 			UNION ALL
 			SELECT 'yarn_in', COALESCE(tarikh_nakh_vor,''), id_nakh_vor::text,
-			       COALESCE(w_vor_nakh_vor,0)::double precision, 0::double precision
+			       COALESCE(w_vor_nakh_vor,0)::double precision, 0::double precision, ''
 			FROM %[1]s.nakh_vor
 			UNION ALL
 			SELECT 'yarn_out', COALESCE(tarikh_nakh_khor,''), id_nakh_khor::text,
-			       ABS(COALESCE(w_vor_nakh_khor,0))::double precision, 0::double precision
+			       ABS(COALESCE(w_vor_nakh_khor,0))::double precision, 0::double precision, ''
 			FROM %[1]s.nakh_khor
 			UNION ALL
 			SELECT 'beam_in', COALESCE(tarikh_chelle,''), id_chelle::text,
-			       COALESCE(w_chelle,0)::double precision, 0::double precision
+			       COALESCE(w_chelle,0)::double precision, 0::double precision, ''
 			FROM %[1]s.chelle
 			UNION ALL
 			SELECT 'fabric_out', COALESCE(f.tarikh_f_khor,''),
 			       TRIM(COALESCE(f.shom_f_khor,'')),
 			       COALESCE(s.w_salon,0)::double precision,
-			       COALESCE(s.metr_salon,0)::double precision
+			       COALESCE(s.metr_salon,0)::double precision,
+			       COALESCE(NULLIF(TRIM(s.kala_salon),''), NULLIF(TRIM(f.kala_name_f_khor),''), '')
 			FROM %[1]s.f_khor f
 			LEFT JOIN %[1]s.salon s
 			  ON s.id_salon::text=TRIM(COALESCE(f.taghe_cod_f_khor,''))
 			UNION ALL
 			SELECT 'waste', COALESCE(waste_date,''), id_waste::text,
-			       COALESCE(weight,0)::double precision, 0::double precision
+			       COALESCE(weight,0)::double precision, 0::double precision, ''
 			FROM %[1]s.production_waste
 		) operational_rows
 	`, schema)
@@ -1131,6 +1144,7 @@ func (s *Service) collectOperationalPeriod(
 			&row.Reference,
 			&row.Weight,
 			&row.Meters,
+			&row.Item,
 		); err != nil {
 			return err
 		}
@@ -1142,8 +1156,10 @@ func (s *Service) collectOperationalPeriod(
 
 	var fabricPieces int
 	var fabricMeters, fabricWeight float64
-	if err := s.db.QueryRowContext(ctx, fmt.Sprintf(`
-		SELECT COUNT(*),
+	stockByType := make(map[string]*fabricTypeTotal)
+	stockRows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT COALESCE(TRIM(s.kala_salon),'') AS kala,
+		       COUNT(*),
 		       COALESCE(SUM(s.metr_salon),0),
 		       COALESCE(SUM(s.w_salon),0)
 		FROM %[1]s.salon s
@@ -1152,7 +1168,32 @@ func (s *Service) collectOperationalPeriod(
 			FROM %[1]s.f_khor f
 			WHERE TRIM(COALESCE(f.taghe_cod_f_khor,''))=s.id_salon::text
 		)
-	`, schema)).Scan(&fabricPieces, &fabricMeters, &fabricWeight); err != nil {
+		GROUP BY COALESCE(TRIM(s.kala_salon),'')
+	`, schema))
+	if err != nil {
+		return err
+	}
+	defer stockRows.Close()
+	for stockRows.Next() {
+		var label string
+		var pieces int
+		var meters, weight float64
+		if err := stockRows.Scan(&label, &pieces, &meters, &weight); err != nil {
+			return err
+		}
+		fabricPieces += pieces
+		fabricMeters += meters
+		fabricWeight += weight
+		totals := stockByType[label]
+		if totals == nil {
+			totals = &fabricTypeTotal{Label: label}
+			stockByType[label] = totals
+		}
+		totals.Count += pieces
+		totals.Meters += meters
+		totals.Weight += weight
+	}
+	if err := stockRows.Err(); err != nil {
 		return err
 	}
 
@@ -1172,6 +1213,7 @@ func (s *Service) collectOperationalPeriod(
 	result.FabricStockMeters = fabricMeters
 	result.FabricStockWeight = fabricWeight
 	result.YarnStockWeight = yarnStock
+	result.FabricStockByType = sortedFabricTypes(stockByType)
 	return nil
 }
 
@@ -1185,8 +1227,12 @@ func applyOperationalRows(
 	result.YarnOutCount = 0
 	result.YarnOutWeight = 0
 	result.ScrapWeight = 0
+	result.ProductionByType = nil
+	result.FabricOutByType = nil
 	activeDates := make(map[string]struct{})
 	outInvoices := make(map[string]struct{})
+	productionTypes := make(map[string]*fabricTypeTotal)
+	fabricOutTypes := make(map[string]*fabricTypeTotal)
 	for _, row := range rows {
 		date, ok := parseAccountingDate(row.Date)
 		if !ok || !dateWithinPeriod(date, start, end) {
@@ -1198,10 +1244,28 @@ func applyOperationalRows(
 			result.ProductionWeight += row.Weight
 			result.ProductionMeters += row.Meters
 			activeDates[date.Format("2006-01-02")] = struct{}{}
+			label := strings.TrimSpace(row.Item)
+			totals := productionTypes[label]
+			if totals == nil {
+				totals = &fabricTypeTotal{Label: label}
+				productionTypes[label] = totals
+			}
+			totals.Count++
+			totals.Meters += row.Meters
+			totals.Weight += row.Weight
 		case "fabric_out":
 			result.FabricOutPieces++
 			result.FabricOutWeight += row.Weight
 			result.FabricOutMeters += row.Meters
+			fabricOutLabel := strings.TrimSpace(row.Item)
+			fabricOutTotals := fabricOutTypes[fabricOutLabel]
+			if fabricOutTotals == nil {
+				fabricOutTotals = &fabricTypeTotal{Label: fabricOutLabel}
+				fabricOutTypes[fabricOutLabel] = fabricOutTotals
+			}
+			fabricOutTotals.Count++
+			fabricOutTotals.Meters += row.Meters
+			fabricOutTotals.Weight += row.Weight
 			if reference := strings.TrimSpace(row.Reference); reference != "" {
 				outInvoices[reference] = struct{}{}
 			}
@@ -1222,6 +1286,22 @@ func applyOperationalRows(
 	if len(activeDates) > result.ActiveDays {
 		result.ActiveDays = len(activeDates)
 	}
+	result.ProductionByType = sortedFabricTypes(productionTypes)
+	result.FabricOutByType = sortedFabricTypes(fabricOutTypes)
+}
+
+func sortedFabricTypes(totals map[string]*fabricTypeTotal) []fabricTypeTotal {
+	result := make([]fabricTypeTotal, 0, len(totals))
+	for _, item := range totals {
+		result = append(result, *item)
+	}
+	sort.Slice(result, func(left, right int) bool {
+		if result[left].Weight != result[right].Weight {
+			return result[left].Weight > result[right].Weight
+		}
+		return result[left].Label < result[right].Label
+	})
+	return result
 }
 
 func dateWithinPeriod(value, start, end time.Time) bool {
@@ -1378,12 +1458,15 @@ func formatOperationalTextileReport(r reportSnapshot, reportType string) string 
 	if r.YarnStockWeight < 0 {
 		yarnStockLabel = "کسری محاسبه‌شده نخ"
 	}
+	productionBreakdown := fabricTypeBreakdownLines("تفکیک تولید بر اساس نوع کالا:", r.ProductionByType)
+	fabricOutBreakdown := fabricTypeBreakdownLines("تفکیک خروج بر اساس نوع کالا:", r.FabricOutByType)
+	stockBreakdown := fabricTypeBreakdownLines("تفکیک موجودی بر اساس نوع کالا:", r.FabricStockByType)
 	return fmt.Sprintf(
 		"%s\n🏢 %s\n📅 %s\n\n"+
 			"🏭 تولید پارچه\n"+
 			"• تعداد طاقه تولیدشده: %s\n"+
 			"• متراژ تولید: %s متر\n"+
-			"• وزن تولید: %s کیلو\n"+
+			"• وزن تولید: %s کیلو%s\n"+
 			"• روزهای دارای تولید: %s\n"+
 			"• میانگین روز فعال: %s متر و %s کیلو\n\n"+
 			"📥 ورود مواد و چله\n"+
@@ -1393,10 +1476,10 @@ func formatOperationalTextileReport(r reportSnapshot, reportType string) string 
 			"• فاکتور خروج پارچه: %s\n"+
 			"• طاقه خروجی: %s\n"+
 			"• متراژ خروجی: %s متر\n"+
-			"• وزن خروجی: %s کیلو\n"+
+			"• وزن خروجی: %s کیلو%s\n"+
 			"• خروج نخ: %s ثبت، %s کیلو\n\n"+
 			"📦 موجودی فعلی\n"+
-			"• پارچه آماده: %s طاقه، %s متر، %s کیلو\n"+
+			"• پارچه آماده: %s طاقه، %s متر، %s کیلو%s\n"+
 			"• %s: %s کیلو\n\n"+
 			"♻️ ضایعات تولید\n"+
 			"• وزن ضایعات: %s کیلو\n"+
@@ -1407,6 +1490,7 @@ func formatOperationalTextileReport(r reportSnapshot, reportType string) string 
 		formatNumber(float64(r.ProductionCount)),
 		formatNumber(r.ProductionMeters),
 		formatNumber(r.ProductionWeight),
+		productionBreakdown,
 		formatNumber(float64(r.ActiveDays)),
 		formatNumber(averageMeters),
 		formatNumber(averageWeight),
@@ -1418,16 +1502,36 @@ func formatOperationalTextileReport(r reportSnapshot, reportType string) string 
 		formatNumber(float64(r.FabricOutPieces)),
 		formatNumber(r.FabricOutMeters),
 		formatNumber(r.FabricOutWeight),
+		fabricOutBreakdown,
 		formatNumber(float64(r.YarnOutCount)),
 		formatNumber(r.YarnOutWeight),
 		formatNumber(float64(r.FabricStockPieces)),
 		formatNumber(r.FabricStockMeters),
 		formatNumber(r.FabricStockWeight),
+		stockBreakdown,
 		yarnStockLabel,
 		formatNumber(absFloat(r.YarnStockWeight)),
 		formatNumber(r.ScrapWeight),
 		formatNumber(wasteRate),
 	)
+}
+
+func fabricTypeBreakdownLines(header string, items []fabricTypeTotal) string {
+	if len(items) == 0 {
+		return ""
+	}
+	var output strings.Builder
+	output.WriteString("\n• " + header)
+	for _, item := range items {
+		output.WriteString(fmt.Sprintf(
+			"\n  ▪ %s: %s طاقه، %s متر، %s کیلو",
+			fallback(item.Label, "نامشخص"),
+			formatNumber(float64(item.Count)),
+			formatNumber(item.Meters),
+			formatNumber(item.Weight),
+		))
+	}
+	return output.String()
 }
 
 func absFloat(value float64) float64 {

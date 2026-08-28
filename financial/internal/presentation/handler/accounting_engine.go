@@ -42,6 +42,7 @@ type glAccount struct {
 var canonicalGL = map[string]glAccount{
 	"cash":            {"1110", "صندوق", "Asset"},
 	"bank":            {"1120", "بانک", "Asset"},
+	"fixedAsset":      {"1500", "دارایی‌های ثابت", "Asset"},
 	"receivable":      {"1200", "حساب‌های دریافتنی", "Asset"},
 	"checkReceivable": {"1210", "اسناد دریافتنی", "Asset"},
 	"inventory":       {"1300", "موجودی مواد و کالا", "Asset"},
@@ -51,6 +52,7 @@ var canonicalGL = map[string]glAccount{
 	"inputVAT":        {"1410", "مالیات بر ارزش افزوده خرید", "Asset"},
 	"payable":         {"2100", "حساب‌های پرداختنی", "Liability"},
 	"checkPayable":    {"2110", "اسناد پرداختنی", "Liability"},
+	"loanLiability":   {"2400", "تسهیلات و وام‌ها", "Liability"},
 	"clearing":        {"2190", "حساب واسط دریافت و پرداخت", "Liability"},
 	"outputVAT":       {"2310", "مالیات بر ارزش افزوده فروش", "Liability"},
 	"opening":         {"3100", "سرمایه و مانده افتتاحیه", "Equity"},
@@ -59,6 +61,8 @@ var canonicalGL = map[string]glAccount{
 	"otherIncome":     {"4900", "سایر درآمدها", "Income"},
 	"cogs":            {"5300", "بهای تمام‌شده کالای فروش‌رفته", "Expense"},
 	"expense":         {"5900", "هزینه‌های عملیاتی", "Expense"},
+	"bankFee":         {"5910", "کارمزد بانکی", "Expense"},
+	"payrollExpense":  {"5920", "هزینه حقوق و دستمزد", "Expense"},
 }
 
 func validateWorkspaceAccounting(state map[string]any) error {
@@ -168,7 +172,27 @@ func validateWorkspaceAccounting(state map[string]any) error {
 		if strings.TrimSpace(transactionType) == "" {
 			return fmt.Errorf("ماهیت حسابداری گردش نقدی %s مشخص نشده است", id)
 		}
-		validMovementTypes := map[string]bool{"customer_receipt": true, "supplier_payment": true, "transfer": true, "expense": true, "other_income": true, "capital": true}
+		validMovementTypes := map[string]bool{
+			"customer_receipt": true,
+			"supplier_payment": true,
+			"transfer": true,
+			"expense": true,
+			"direct_expense": true,
+			"payroll_payment": true,
+			"petty_cash_funding": true,
+			"petty_cash_return": true,
+			"bank_fee": true,
+			"loan_receipt": true,
+			"loan_repayment": true,
+			"owner_deposit": true,
+			"owner_withdrawal": true,
+			"asset_purchase": true,
+			"refund": true,
+			"other_income": true,
+			"other_receipt": true,
+			"other_payment": true,
+			"capital": true,
+		}
 		if !validMovementTypes[transactionType] {
 			return fmt.Errorf("ماهیت گردش نقدی %s معتبر نیست", id)
 		}
@@ -825,10 +849,28 @@ func movementCounterpart(typ, direction string) glAccount {
 		return canonicalGL["payable"]
 	case "expense":
 		return canonicalGL["expense"]
+	case "direct_expense":
+		return canonicalGL["expense"]
+	case "payroll_payment":
+		return canonicalGL["payrollExpense"]
+	case "bank_fee":
+		return canonicalGL["bankFee"]
+	case "petty_cash_funding", "petty_cash_return":
+		return canonicalGL["cash"]
+	case "loan_receipt", "loan_repayment":
+		return canonicalGL["loanLiability"]
+	case "owner_deposit", "owner_withdrawal", "capital":
+		return canonicalGL["opening"]
+	case "asset_purchase":
+		return canonicalGL["fixedAsset"]
 	case "other_income":
 		return canonicalGL["otherIncome"]
-	case "capital":
-		return canonicalGL["opening"]
+	case "other_receipt":
+		return canonicalGL["otherIncome"]
+	case "other_payment":
+		return canonicalGL["expense"]
+	case "refund":
+		return canonicalGL["clearing"]
 	case "transfer":
 		return canonicalGL["clearing"]
 	default:
@@ -871,7 +913,9 @@ func debitCredit(debitAccount, creditAccount glAccount, amount float64, descript
 
 func reverseLedgerEntry(entry ledgerEntry) ledgerEntry {
 	result := entry
-	result.Date = time.Now().Format("2006-01-02")
+	// A correction belongs to the accounting period of the source transaction.
+	// Posting the reversal on "today" shifts historical revenue/cost between periods.
+	result.Date = entry.Date
 	result.Description = "برگشت: " + entry.Description
 	for index := range result.Lines {
 		result.Lines[index].Debit, result.Lines[index].Credit = result.Lines[index].Credit, result.Lines[index].Debit

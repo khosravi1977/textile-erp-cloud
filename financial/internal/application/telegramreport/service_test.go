@@ -101,19 +101,23 @@ func TestApplyOperationalRowsAndFormatReport(t *testing.T) {
 		FabricStockMeters: 2100,
 		FabricStockWeight: 520,
 		YarnStockWeight:   -35,
+		FabricStockByType: []fabricTypeTotal{
+			{Label: "کرکه", Count: 9, Meters: 1300, Weight: 300},
+			{Label: "شمعی", Count: 5, Meters: 800, Weight: 220},
+		},
 	}
 	rows := []operationalReportRow{
-		{Kind: "production", Date: "2026-07-10", Reference: "1", Weight: 30, Meters: 120},
-		{Kind: "production", Date: "2026-07-10", Reference: "2", Weight: 40, Meters: 180},
-		{Kind: "production", Date: "2026-07-11", Reference: "3", Weight: 50, Meters: 220},
+		{Kind: "production", Date: "2026-07-10", Reference: "1", Weight: 30, Meters: 120, Item: "کرکه"},
+		{Kind: "production", Date: "2026-07-10", Reference: "2", Weight: 40, Meters: 180, Item: "کرکه"},
+		{Kind: "production", Date: "2026-07-11", Reference: "3", Weight: 50, Meters: 220, Item: "شمعی"},
 		{Kind: "yarn_in", Date: "2026-07-12", Reference: "4", Weight: 250},
 		{Kind: "yarn_out", Date: "2026-07-13", Reference: "5", Weight: 25},
 		{Kind: "beam_in", Date: "2026-07-14", Reference: "6", Weight: 170},
-		{Kind: "fabric_out", Date: "2026-07-15", Reference: "INV-1", Weight: 30, Meters: 120},
-		{Kind: "fabric_out", Date: "2026-07-15", Reference: "INV-1", Weight: 40, Meters: 180},
-		{Kind: "fabric_out", Date: "2026-07-16", Reference: "INV-2", Weight: 50, Meters: 220},
+		{Kind: "fabric_out", Date: "2026-07-15", Reference: "INV-1", Weight: 30, Meters: 120, Item: "کرکه"},
+		{Kind: "fabric_out", Date: "2026-07-15", Reference: "INV-1", Weight: 40, Meters: 180, Item: "شمعی"},
+		{Kind: "fabric_out", Date: "2026-07-16", Reference: "INV-2", Weight: 50, Meters: 220, Item: "کرکه"},
 		{Kind: "waste", Date: "2026-07-17", Reference: "7", Weight: 5},
-		{Kind: "production", Date: "2026-06-30", Reference: "old", Weight: 999, Meters: 999},
+		{Kind: "production", Date: "2026-06-30", Reference: "old", Weight: 999, Meters: 999, Item: "کرکه"},
 	}
 	applyOperationalRows(&report, rows, start, end)
 	report.OperationalData = true
@@ -121,9 +125,31 @@ func TestApplyOperationalRowsAndFormatReport(t *testing.T) {
 		report.ProductionMeters != 520 || report.ActiveDays != 2 {
 		t.Fatalf("unexpected production aggregation: %#v", report)
 	}
+	if len(report.ProductionByType) != 2 ||
+		report.ProductionByType[0].Label != "کرکه" ||
+		report.ProductionByType[0].Count != 2 ||
+		report.ProductionByType[0].Meters != 300 ||
+		report.ProductionByType[0].Weight != 70 ||
+		report.ProductionByType[1].Label != "شمعی" ||
+		report.ProductionByType[1].Count != 1 ||
+		report.ProductionByType[1].Meters != 220 ||
+		report.ProductionByType[1].Weight != 50 {
+		t.Fatalf("unexpected production type breakdown: %#v", report.ProductionByType)
+	}
 	if report.FabricOutInvoices != 2 || report.FabricOutPieces != 3 ||
 		report.FabricOutWeight != 120 || report.FabricOutMeters != 520 {
 		t.Fatalf("unexpected fabric output aggregation: %#v", report)
+	}
+	if len(report.FabricOutByType) != 2 ||
+		report.FabricOutByType[0].Label != "کرکه" ||
+		report.FabricOutByType[0].Count != 2 ||
+		report.FabricOutByType[0].Meters != 340 ||
+		report.FabricOutByType[0].Weight != 80 ||
+		report.FabricOutByType[1].Label != "شمعی" ||
+		report.FabricOutByType[1].Count != 1 ||
+		report.FabricOutByType[1].Meters != 180 ||
+		report.FabricOutByType[1].Weight != 40 {
+		t.Fatalf("unexpected fabric output type breakdown: %#v", report.FabricOutByType)
 	}
 	if report.InputCount != 1 || report.InputWeight != 250 ||
 		report.YarnOutCount != 1 || report.YarnOutWeight != 25 ||
@@ -136,8 +162,17 @@ func TestApplyOperationalRowsAndFormatReport(t *testing.T) {
 		"گزارش آزمایشی ۳۰ روز اخیر تولید و عملیات",
 		"تعداد طاقه تولیدشده: 3",
 		"متراژ تولید: 520 متر",
+		"تفکیک تولید بر اساس نوع کالا:",
+		"کرکه: 2 طاقه، 300 متر، 70 کیلو",
+		"شمعی: 1 طاقه، 220 متر، 50 کیلو",
 		"فاکتور خروج پارچه: 2",
+		"تفکیک خروج بر اساس نوع کالا:",
+		"کرکه: 2 طاقه، 340 متر، 80 کیلو",
+		"شمعی: 1 طاقه، 180 متر، 40 کیلو",
 		"پارچه آماده: 14 طاقه، 2,100 متر، 520 کیلو",
+		"تفکیک موجودی بر اساس نوع کالا:",
+		"کرکه: 9 طاقه، 1,300 متر، 300 کیلو",
+		"شمعی: 5 طاقه، 800 متر، 220 کیلو",
 		"کسری محاسبه‌شده نخ: 35 کیلو",
 	} {
 		if !strings.Contains(text, expected) {
