@@ -122,9 +122,39 @@ jobs:
           provenance: true
           sbom: true
 
+  base-images:
+    if: github.event_name != 'pull_request'
+    needs: quality
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - source: postgres:16-alpine
+            target: textile-postgres:16-alpine
+          - source: redis:7-alpine
+            target: textile-redis:7-alpine
+          - source: prom/prometheus:v2.55.1
+            target: textile-prometheus:v2.55.1
+          - source: grafana/grafana:11.3.1
+            target: textile-grafana:11.3.1
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Mirror base image to GitHub Container Registry
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "ghcr.io/${{ github.repository_owner }}/${{ matrix.target }}" \
+            "${{ matrix.source }}"
+
   release:
     if: github.event_name != 'pull_request'
-    needs: images
+    needs: [images, base-images]
     runs-on: ubuntu-latest
     steps:
       - run: printf '%s' '${{ github.sha }}' > release-sha
