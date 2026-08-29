@@ -1241,8 +1241,8 @@ func TestPortalOperationalSessionReturnsPortalUser(t *testing.T) {
 	if body.User["username"] != "MAJID_1988" {
 		t.Fatalf("expected username, got %#v", body.User["username"])
 	}
-	if body.User["role"] != "customer" {
-		t.Fatalf("expected customer role, got %#v", body.User["role"])
+	if body.User["role"] != "owner" {
+		t.Fatalf("expected owner role for a legacy textile owner access, got %#v", body.User["role"])
 	}
 	if len(body.Menus) == 0 {
 		t.Fatal("expected operational menus in response")

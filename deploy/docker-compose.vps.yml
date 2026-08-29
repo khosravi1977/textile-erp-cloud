@@ -2,7 +2,7 @@ name: textile-erp
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: ${TEXTILE_POSTGRES_IMAGE:-ghcr.io/khosravi1977/textile-postgres:16-alpine}
     container_name: textile-erp-db
     restart: unless-stopped
     environment:
@@ -20,7 +20,7 @@ services:
       retries: 10
 
   postgres-replica:
-    image: postgres:16-alpine
+    image: ${TEXTILE_POSTGRES_IMAGE:-ghcr.io/khosravi1977/textile-postgres:16-alpine}
     container_name: textile-erp-db-replica
     restart: unless-stopped
     environment:
@@ -41,7 +41,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: ${TEXTILE_REDIS_IMAGE:-ghcr.io/khosravi1977/textile-redis:7-alpine}
     container_name: textile-erp-redis
     restart: unless-stopped
     ports:
@@ -193,7 +193,7 @@ services:
       retries: 5
 
   prometheus:
-    image: prom/prometheus:v2.55.1
+    image: ${TEXTILE_PROMETHEUS_IMAGE:-ghcr.io/khosravi1977/textile-prometheus:v2.55.1}
     container_name: textile-erp-prometheus
     restart: unless-stopped
     ports:
@@ -210,7 +210,7 @@ services:
       - --web.enable-lifecycle
 
   grafana:
-    image: grafana/grafana:11.3.1
+    image: ${TEXTILE_GRAFANA_IMAGE:-ghcr.io/khosravi1977/textile-grafana:11.3.1}
     container_name: textile-erp-grafana
     restart: unless-stopped
     ports:

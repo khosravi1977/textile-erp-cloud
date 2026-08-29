@@ -148,7 +148,8 @@ func normalizeAccessRole(role string) string {
 	case "viewer":
 		return "viewer"
 	default:
-		return "owner"
+		// Unknown non-empty roles must fail closed instead of escalating to owner.
+		return "viewer"
 	}
 }
 
@@ -2233,7 +2234,7 @@ func (a *portalApp) adminAccesses(w http.ResponseWriter, r *http.Request) {
 		}
 		out := make([]map[string]any, 0, len(items))
 		for _, item := range items {
-			out = append(out, a.accessResponse(item, a.mustDecryptPassword(item)))
+			out = append(out, a.accessResponseWithoutPassword(item))
 		}
 		respondJSON(w, http.StatusOK, map[string]any{"items": out})
 	case http.MethodPost:
@@ -2552,7 +2553,7 @@ func (a *portalApp) portalOperationalSession(w http.ResponseWriter, r *http.Requ
 		"user": map[string]any{
 			"id":       record.ID,
 			"username": record.Username,
-			"role":     "customer",
+			"role":     effectiveAccessRole(record),
 			"company":  record.CompanyName,
 		},
 		"menus": menus,
@@ -2692,7 +2693,7 @@ function editUser(id){const r=state.rows.find(x=>Number(x.id)===Number(id));if(!
 async function removeUser(id,name){if(!confirm('کاربر '+name+' حذف شود؟'))return;try{await api('/api/portal/team/'+id,{method:'DELETE'});tell('کاربر حذف شد.','ok');await load();}catch(e){tell(e.message,'err');}}
 async function toggleUser(id,active){try{await api('/api/portal/team/'+id+'/toggle',{method:'POST'});tell(active?'دسترسی کاربر غیرفعال شد.':'دسترسی کاربر فعال شد.','ok');await load();}catch(e){tell(e.message,'err');}}
 function copyValue(value,label){navigator.clipboard.writeText(String(value||'')).then(()=>tell(label+' کپی شد.','ok')).catch(()=>tell('کپی خودکار ممکن نشد؛ متن را انتخاب و کپی کنید.','err'));}
-function render(){const box=$('users');$('count').textContent=state.rows.length+' کاربر';if(!state.rows.length){box.innerHTML='<div class="empty">هنوز کاربری تعریف نشده است.</div>';return;}box.innerHTML=state.rows.map(r=>{const current=Boolean(r.is_current??r.isCurrent),active=Boolean(r.is_active??r.isActive),f=Boolean(r.allow_financial??r.allowFinancial),o=Boolean(r.allow_operational??r.allowOperational),w=Boolean(r.allow_weaving??r.allowWeaving),name=r.contact_name||r.contactName||r.username||'بدون نام',role=r.access_role||r.accessRole,password=r.password||'ثبت شده و مخفی',username=r.username||'-';return '<article class="user"><div class="userHead"><div><div class="name">'+esc(name)+' '+(current?'<span class="current">(مدیر فعلی)</span>':'')+'</div><div class="sub">نقش: '+esc(roleLabel(role))+' | '+(active?'فعال':'غیرفعال')+'</div><div class="tags">'+(f?'<span class="tag fin">مالی</span>':'')+(o?'<span class="tag op">عملیاتی</span>':'')+(w?'<span class="tag weave">راندمان سالن</span>':'')+(!active?'<span class="tag off">غیرفعال</span>':'')+'</div></div></div><div class="credentials"><div class="cred"><button class="small" type="button" data-value="'+esc(username)+'" onclick="copyValue(this.dataset.value,\'نام کاربری\')">کپی</button>Username: '+esc(username)+'</div><div class="cred"><button class="small" type="button" data-value="'+esc(password)+'" onclick="copyValue(this.dataset.value,\'رمز عبور\')">کپی</button>Password: '+esc(password)+'</div></div>'+(!current?'<div class="actions"><button class="small" onclick="editUser('+r.id+')">ویرایش</button><button class="small warn" onclick="toggleUser('+r.id+','+active+')">'+(active?'غیرفعال‌کردن':'فعال‌کردن')+'</button><button class="small danger" onclick="removeUser('+r.id+',\''+esc(name).replace(/'/g,'&#39;')+'\')">حذف</button></div>':'')+'</article>';}).join('');}
+function render(){const box=$('users');$('count').textContent=state.rows.length+' کاربر';if(!state.rows.length){box.innerHTML='<div class="empty">هنوز کاربری تعریف نشده است.</div>';return;}box.innerHTML=state.rows.map(r=>{const current=Boolean(r.is_current??r.isCurrent),active=Boolean(r.is_active??r.isActive),f=Boolean(r.allow_financial??r.allowFinancial),o=Boolean(r.allow_operational??r.allowOperational),w=Boolean(r.allow_weaving??r.allowWeaving),name=r.contact_name||r.contactName||r.username||'بدون نام',role=r.access_role||r.accessRole,password=r.password||'ثبت شده و غیرقابل نمایش',username=r.username||'-';return '<article class="user"><div class="userHead"><div><div class="name">'+esc(name)+' '+(current?'<span class="current">(مدیر فعلی)</span>':'')+'</div><div class="sub">نقش: '+esc(roleLabel(role))+' | '+(active?'فعال':'غیرفعال')+'</div><div class="tags">'+(f?'<span class="tag fin">مالی</span>':'')+(o?'<span class="tag op">عملیاتی</span>':'')+(w?'<span class="tag weave">راندمان سالن</span>':'')+(!active?'<span class="tag off">غیرفعال</span>':'')+'</div></div></div><div class="credentials"><div class="cred"><button class="small" type="button" data-value="'+esc(username)+'" onclick="copyValue(this.dataset.value,\'نام کاربری\')">کپی</button>Username: '+esc(username)+'</div><div class="cred"><button class="small" type="button" data-value="'+esc(password)+'" onclick="copyValue(this.dataset.value,\'رمز عبور\')">کپی</button>Password: '+esc(password)+'</div></div>'+(!current?'<div class="actions"><button class="small" onclick="editUser('+r.id+')">ویرایش</button><button class="small warn" onclick="toggleUser('+r.id+','+active+')">'+(active?'غیرفعال‌کردن':'فعال‌کردن')+'</button><button class="small danger" onclick="removeUser('+r.id+',\''+esc(name).replace(/'/g,'&#39;')+'\')">حذف</button></div>':'')+'</article>';}).join('');}
 async function load(){try{const data=await api('/api/portal/team');state.rows=data.items||[];render();}catch(e){tell(e.message,'err');$('users').innerHTML='<div class="empty">دریافت فهرست کاربران ممکن نشد.</div>';}}
 $('userForm').addEventListener('submit',async e=>{e.preventDefault();const payload={contactName:$('contactName').value.trim(),username:$('username').value.trim(),password:$('password').value,accessRole:$('accessRole').value,canManageTeam:$('canManageTeam').checked,allowFinancial:$('allowFinancial').checked,allowOperational:$('allowOperational').checked,allowWeaving:$('allowWeaving').checked,trialDays:Number($('trialDays').value||3650),notes:$('notes').value.trim()};if(!payload.allowFinancial&&!payload.allowOperational&&!payload.allowWeaving){tell('حداقل یک بخش را برای کارمند انتخاب کنید.','err');return;}if(!state.editing&&!payload.password){tell('برای کاربر جدید رمز عبور مشخص کنید.','err');return;}try{$('saveBtn').disabled=true;await api(state.editing?'/api/portal/team/'+state.editing.id:'/api/portal/team',{method:state.editing?'PUT':'POST',body:JSON.stringify(payload)});tell(state.editing?'تغییرات کاربر ذخیره شد.':'کاربر جدید ساخته شد و اکنون می‌تواند با همین نام کاربری و رمز وارد بخش مجاز شود.','ok');resetForm();await load();}catch(err){tell(err.message,'err');}finally{$('saveBtn').disabled=false;}});
 $('cancelBtn').addEventListener('click',resetForm);$('refreshBtn').addEventListener('click',load);load();
@@ -2723,7 +2724,7 @@ func (a *portalApp) portalTeam(w http.ResponseWriter, r *http.Request) {
 		}
 		out := make([]map[string]any, 0, len(items))
 		for _, item := range items {
-			row := a.accessResponse(item, a.mustDecryptPassword(item))
+			row := a.accessResponseWithoutPassword(item)
 			row["is_current"] = item.ID == record.ID
 			row["isCurrent"] = item.ID == record.ID
 			out = append(out, row)
@@ -3150,7 +3151,7 @@ func (a *portalApp) updateAccess(id int64, projectKey, companyName, contactName,
 	record.FinancialCompanyID = financialCompanyID
 	record.ExpiresAt = expiresAt.UTC()
 	record.Notes = notes
-	rawPassword := a.mustDecryptPassword(record)
+	rawPassword := ""
 	if strings.TrimSpace(password) != "" {
 		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
@@ -3264,10 +3265,7 @@ func existingFinancialCompanyID(items []projectAccess, companyName string) int64
 }
 
 func (a *portalApp) provisionTextileTenant(financialCompanyID, accessID int64, companyName, contactName, username, password, role string) (int64, error) {
-	operationalRole := "viewer"
-	if normalizeAccessRole(role) == "owner" {
-		operationalRole = "admin"
-	}
+	operationalRole := operationalProvisionRole(role)
 	payload, err := json.Marshal(map[string]any{
 		"company_id":   financialCompanyID,
 		"access_id":    accessID,
@@ -3765,13 +3763,16 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 	record.Notes = notes
 
 	rawPassword := ""
+	downstreamPassword := ""
 	if requiresSetup {
 		record.PasswordHash = ""
 		record.PasswordEnc = ""
 		record.MustChangePassword = false
 	} else {
 		record.MustChangePassword = false
-		rawPassword = a.mustDecryptPassword(record)
+		// Existing credentials can still be used internally to synchronize
+		// downstream modules, but must never be returned by read/update APIs.
+		downstreamPassword = strings.TrimSpace(a.mustDecryptPassword(record))
 		if strings.TrimSpace(password) != "" {
 			passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 			if err != nil {
@@ -3784,10 +3785,10 @@ func (a *portalApp) updateManagedAccess(id int64, projectKey, companyName, conta
 			record.PasswordHash = string(passwordHash)
 			record.PasswordEnc = passwordEnc
 			rawPassword = password
+			downstreamPassword = password
 			record.MustChangePassword = false
 		}
 	}
-	downstreamPassword := strings.TrimSpace(rawPassword)
 	if downstreamPassword == "" && (allowOperational || allowWeaving || trialActive) {
 		downstreamPassword, err = randomHex(24)
 		if err != nil {
@@ -4233,11 +4234,31 @@ func subtleConstantTimeCompare(left, right string) bool {
 	return hmac.Equal([]byte(left), []byte(right))
 }
 
+func operationalProvisionRole(role string) string {
+	switch normalizeAccessRole(role) {
+	case "owner":
+		return "admin"
+	case "manager":
+		return "manager"
+	case "accountant":
+		return "accountant"
+	default:
+		return "viewer"
+	}
+}
+
+func (a *portalApp) accessResponseWithoutPassword(record projectAccess) map[string]any {
+	row := a.accessResponse(record, "")
+	delete(row, "password")
+	return row
+}
+
 func (a *portalApp) accessResponse(record projectAccess, rawPassword string) map[string]any {
+	// Passwords are write-only from the API perspective. A newly created or
+	// explicitly reset password may be returned once via rawPassword; an
+	// existing stored credential is never decrypted for a response.
 	if accessRequiresSetup(record) {
 		rawPassword = ""
-	} else if rawPassword == "" {
-		rawPassword = a.portalAccessPassword(record)
 	}
 	accessLink := a.publicBase + "/access/" + record.AccessToken
 	labelText := projectLabel(record.ProjectKey)
