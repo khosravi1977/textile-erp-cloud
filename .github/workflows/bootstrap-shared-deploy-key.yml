@@ -94,3 +94,29 @@ jobs:
             "$VPS_USER@$VPS_HOST" \
             "test \"\$(id -u)\" -ne 0 && sudo /usr/local/sbin/viora-deploy ghcr-logout"
 
+      - name: Diagnose current VPS state
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "set -e
+             echo '=== identity ==='
+             id
+             echo '=== uptime ==='
+             uptime || true
+             echo '=== disk ==='
+             df -h / /var /tmp 2>/dev/null || df -h
+             echo '=== memory ==='
+             free -h || true
+             echo '=== docker ps ==='
+             docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+             echo '=== docker system df ==='
+             docker system df || true
+             echo '=== textile containers ==='
+             docker ps -a --filter name=textile --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+             echo '=== helper exists ==='
+             test -x /usr/local/sbin/viora-deploy && echo yes || echo no"
+
