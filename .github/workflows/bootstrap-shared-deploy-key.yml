@@ -2,6 +2,11 @@ name: bootstrap-shared-deploy-key
 
 on:
   workflow_dispatch:
+    inputs:
+      additional_public_key:
+        description: Optional extra restricted public key to install
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -48,6 +53,27 @@ jobs:
              candidate=\"\$(printf '%s' '$encoded_key' | base64 --decode)\"
              grep -Fqx -- \"\$candidate\" \"\$HOME/.ssh/authorized_keys\" || printf '%s\\n' \"\$candidate\" >> \"\$HOME/.ssh/authorized_keys\"
              sudo /usr/local/sbin/viora-deploy ghcr-logout"
+
+      - name: Install requested local restricted key
+        if: ${{ inputs.additional_public_key != '' }}
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          ADDITIONAL_PUBLIC_KEY: ${{ inputs.additional_public_key }}
+        run: |
+          set -euo pipefail
+          [[ "$ADDITIONAL_PUBLIC_KEY" =~ ^ssh-ed25519\ [A-Za-z0-9+/=]+\ [A-Za-z0-9._@-]+$ ]]
+          restricted_key="no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-pty $ADDITIONAL_PUBLIC_KEY"
+          encoded_key="$(printf '%s' "$restricted_key" | base64 -w0)"
+          ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "set -euo pipefail
+             umask 077
+             install -d -m 0700 \"\$HOME/.ssh\"
+             touch \"\$HOME/.ssh/authorized_keys\"
+             chmod 0600 \"\$HOME/.ssh/authorized_keys\"
+             candidate=\"\$(printf '%s' '$encoded_key' | base64 --decode)\"
+             grep -Fqx -- \"\$candidate\" \"\$HOME/.ssh/authorized_keys\" || printf '%s\\n' \"\$candidate\" >> \"\$HOME/.ssh/authorized_keys\""
 
       - name: Verify shared restricted access
         shell: bash
