@@ -122,5 +122,11 @@ jobs:
              echo '=== deploy helper processes ==='
              pgrep -af 'viora-deploy|docker compose|docker pull|containerd' || true
              echo '=== helper exists ==='
-             test -x /usr/local/sbin/viora-deploy && echo yes || echo no"
+             test -x /usr/local/sbin/viora-deploy && echo yes || echo no
+             echo '=== textile images ==='
+             sudo -n docker image ls --format '{{.Repository}}:{{.Tag}} {{.ID}} {{.Size}}' | grep -E 'textile|postgres|redis|prometheus|grafana|ghcr.io' | head -120 || true
+             echo '=== compose files ==='
+             sudo -n find /opt /srv -maxdepth 5 -type f \\( -name 'docker-compose*.yml' -o -name 'compose*.yml' \\) 2>/dev/null | sort | head -80 || true
+             echo '=== deploy helper head redacted ==='
+             sudo -n sed -n '1,260p' /usr/local/sbin/viora-deploy 2>/dev/null | sed -E 's/(TOKEN|PASSWORD|SECRET|KEY|PASS|DSN|URL)=([^[:space:]]+)/\\1=***/g' || true"
 
