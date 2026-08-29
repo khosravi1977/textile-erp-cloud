@@ -3,7 +3,10 @@ const integrityImport = "import { buildFinancialHealthAccurate, normalizeAccessL
 
 function replaceSection(source, startMarker, endMarker, replacement, label) {
   const start = source.indexOf(startMarker);
-  const end = source.indexOf(endMarker, start + startMarker.length);
+  let end = start >= 0 ? source.indexOf(endMarker, start + startMarker.length) : -1;
+  if (end < 0 && endMarker.includes('\n')) {
+    end = start >= 0 ? source.indexOf(endMarker.replaceAll('\n', '\r\n'), start + startMarker.length) : -1;
+  }
   if (start < 0 || end < 0 || end <= start) throw new Error(`financial integrity transform anchor missing: ${label}`);
   return source.slice(0, start) + replacement + source.slice(end);
 }

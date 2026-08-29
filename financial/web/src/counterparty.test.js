@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   confirmMovementCounterparty,
   confirmedMovementCounterparty,
+  movementCounterpartyLabel,
   movementNeedsCounterparty,
   unconfirmedMovementCounterparty,
 } from './counterparty.js';
@@ -36,4 +37,10 @@ test('only customer and supplier flows require a counterparty', () => {
   assert.equal(movementNeedsCounterparty({ transactionType: 'customer_receipt' }), true);
   assert.equal(movementNeedsCounterparty({ transactionType: 'supplier_payment' }), true);
   assert.equal(movementNeedsCounterparty({}), false);
+});
+
+test('display label does not mark direct expenses as unconfirmed party rows', () => {
+  assert.equal(movementCounterpartyLabel({ transactionType: 'expense', counterpartyCandidate: 'حقوق ماهانه' }), 'بدون طرف حساب اجباری');
+  assert.equal(movementCounterpartyLabel({ transactionType: 'transfer' }), '-');
+  assert.equal(movementCounterpartyLabel({ transactionType: 'customer_receipt' }), 'در انتظار تأیید طرف حساب');
 });

@@ -7,6 +7,14 @@ export function movementNeedsCounterparty(movement = {}) {
   return COUNTERPARTY_REQUIRED_TYPES.has(String(movement.transactionType || ''));
 }
 
+export function movementCounterpartyLabel(movement = {}) {
+  if (String(movement.transactionType || '') === 'transfer') return '-';
+  const confirmed = confirmedMovementCounterparty(movement);
+  if (confirmed) return confirmed;
+  if (movementNeedsCounterparty(movement)) return 'در انتظار تأیید طرف حساب';
+  return 'بدون طرف حساب اجباری';
+}
+
 export function confirmedMovementCounterparty(movement = {}) {
   if (!movementNeedsCounterparty(movement) || movement.counterpartyConfirmed !== true) return '';
   return String(movement.payer || movement.customer || '').trim();

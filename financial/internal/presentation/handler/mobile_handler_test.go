@@ -106,13 +106,13 @@ func TestMobileAccountingDateHandlesClockSuffix(t *testing.T) {
 
 func TestLegacyStateMappingForTypedTypes(t *testing.T) {
 	cases := map[string]string{
-		"CUSTOMER_RECEIPT":     "customer_receipt",
-		"SUPPLIER_PAYMENT":     "supplier_payment",
-		"INTERNAL_TRANSFER":    "transfer",
-		"PETTY_CASH_FUNDING":   "expense",
-		"PAYROLL_PAYMENT":      "expense",
-		"OWNER_DEPOSIT":        "other_income",
-		"CHECK_RECEIPT":        "other_income",
+		"CUSTOMER_RECEIPT":   "customer_receipt",
+		"SUPPLIER_PAYMENT":   "supplier_payment",
+		"INTERNAL_TRANSFER":  "transfer",
+		"PETTY_CASH_FUNDING": "expense",
+		"PAYROLL_PAYMENT":    "expense",
+		"OWNER_DEPOSIT":      "other_income",
+		"CHECK_RECEIPT":      "other_income",
 	}
 	for typed, legacy := range cases {
 		if got := legacyStateTypeForTyped(typed); got != legacy {
@@ -128,5 +128,19 @@ func TestLegacyStateMappingForTypedTypes(t *testing.T) {
 		if got := typedExpenseLike(typed); got != want {
 			t.Fatalf("typedExpenseLike(%s)=%v want %v", typed, got, want)
 		}
+	}
+}
+
+func TestNormalizeMobileCategoryKeepsPeopleOutOfSubgroup(t *testing.T) {
+	group, subgroup := normalizeMobileCategory("حقوق", "مهدی خسروی", "expense", &typedStateMeta{TypedType: "PAYROLL_PAYMENT", CandidateName: "مهدی خسروی", ExpenseLike: true})
+	if group != "هزینه" || subgroup != "حقوق پرسنل" {
+		t.Fatalf("payroll category=%q subgroup=%q", group, subgroup)
+	}
+}
+
+func TestNormalizeMobileCategoryAllowsBankFeeWithoutParty(t *testing.T) {
+	group, subgroup := normalizeMobileCategory("کارمزد", "", "expense", &typedStateMeta{TypedType: "BANK_FEE", ExpenseLike: true})
+	if group != "هزینه" || subgroup != "کارمزد بانکی" {
+		t.Fatalf("bank fee category=%q subgroup=%q", group, subgroup)
 	}
 }

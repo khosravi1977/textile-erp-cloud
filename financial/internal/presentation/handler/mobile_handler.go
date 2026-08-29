@@ -397,9 +397,10 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 // (v1 app) so the UI can show the canonical nature and the ERP-confirmed
 // party without asking the accountant to pick it again.
 type typedStateMeta struct {
-	TypedType   string
-	PartyName   string // confirmed ERP party display name (empty if none)
-	ExpenseLike bool   // create a workspace expense row for this type
+	TypedType     string
+	PartyName     string // confirmed ERP party display name (empty if none)
+	CandidateName string // display-only suggestion from HesabYar when no ERP party was resolved
+	ExpenseLike   bool   // create a workspace expense row for this type
 }
 
 type mobileStateResult int
@@ -441,6 +442,98 @@ func typedExpenseLike(typedType string) bool {
 	default:
 		return false
 	}
+}
+
+func normalizeMobileText(value string) string {
+	return strings.TrimSpace(strings.NewReplacer("ي", "ی", "ك", "ک").Replace(value))
+}
+
+func sameMobileName(left, right string) bool {
+	left = normalizeMobileText(left)
+	right = normalizeMobileText(right)
+	return left != "" && right != "" && left == right
+}
+
+func mobileExpenseSubgroup(group, subgroup, typedType, partyName string) string {
+	typedType = strings.ToUpper(strings.TrimSpace(typedType))
+	group = normalizeMobileText(group)
+	subgroup = normalizeMobileText(subgroup)
+	if sameMobileName(subgroup, partyName) {
+		subgroup = ""
+	}
+	joined := normalizeMobileText(strings.TrimSpace(group + " " + subgroup))
+	switch {
+	case typedType == "PAYROLL_PAYMENT" || strings.Contains(joined, "حقوق"):
+		return "حقوق پرسنل"
+	case strings.Contains(joined, "مساعد"):
+		return "مساعده پرسنل"
+	case strings.Contains(joined, "اضافه") || strings.Contains(joined, "پاداش"):
+		return "پاداش و اضافه‌کاری"
+	case strings.Contains(joined, "بیمه") && strings.Contains(joined, "پرسنل"):
+		return "بیمه پرسنل"
+	case strings.Contains(joined, "بیمه"):
+		return "بیمه شرکت"
+	case strings.Contains(joined, "کارمزد") && strings.Contains(joined, "بانک"):
+		return "کارمزد بانکی"
+	case typedType == "BANK_FEE":
+		return "کارمزد بانکی"
+	case strings.Contains(joined, "سرور") || strings.Contains(strings.ToLower(joined), "vps"):
+		return "سرور و VPS"
+	case strings.Contains(joined, "پیامک") || strings.Contains(joined, "نرم‌افزار"):
+		return "خدمات پیامکی و نرم‌افزاری"
+	case strings.Contains(joined, "تعمیر"):
+		return "تعمیر و نگهداری"
+	case strings.Contains(joined, "باربری") || strings.Contains(joined, "حمل"):
+		return "حمل‌ونقل و باربری"
+	case strings.Contains(joined, "غذا") || strings.Contains(joined, "رفاه"):
+		return "غذا و رفاه پرسنل"
+	case strings.Contains(joined, "اجاره"):
+		return "اجاره"
+	case strings.Contains(joined, "مالیات") || strings.Contains(joined, "عوارض"):
+		return "مالیات و عوارض"
+	case strings.Contains(joined, "بهره") || strings.Contains(joined, "وام"):
+		return "بهره و کارمزد وام"
+	case strings.Contains(joined, "برق"):
+		return "برق"
+	case strings.Contains(joined, "گاز"):
+		return "گاز"
+	case strings.Contains(joined, "آب"):
+		return "آب"
+	case strings.Contains(joined, "تلفن"):
+		return "تلفن"
+	case strings.Contains(joined, "اینترنت"):
+		return "اینترنت"
+	case subgroup != "":
+		return subgroup
+	case group != "" && group != "هزینه" && group != "هزینه مستقیم":
+		return group
+	default:
+		return "سایر"
+	}
+}
+
+func normalizeMobileCategory(group, subgroup, transactionType string, typed *typedStateMeta) (string, string) {
+	group = normalizeMobileText(group)
+	subgroup = normalizeMobileText(subgroup)
+	typedType := ""
+	partyName := ""
+	if typed != nil {
+		typedType = strings.ToUpper(strings.TrimSpace(typed.TypedType))
+		partyName = firstNonEmpty(typed.PartyName, typed.CandidateName)
+	}
+	if transactionType == "expense" && (typed == nil || typed.ExpenseLike) {
+		return "هزینه", mobileExpenseSubgroup(group, subgroup, typedType, partyName)
+	}
+	if transactionType == "transfer" {
+		if group == "" {
+			group = "انتقال"
+		}
+		if subgroup == "" {
+			subgroup = "بین حساب‌ها"
+		}
+		return group, subgroup
+	}
+	return group, subgroup
 }
 
 // persistMobileTransactionState writes the workspace state rows for one
@@ -521,15 +614,16 @@ func (h *APIHandler) persistMobileTransactionState(r *http.Request, companyID in
 				customer = ""
 			}
 		} else if typed.PartyName == "" {
-			customer = ""
+			customer = strings.TrimSpace(typed.CandidateName)
 		} else {
 			customer = typed.PartyName
 		}
-		counterparty := strings.Trim(strings.TrimSpace(req.Group+" / "+req.Subgroup), " /")
+		group, subgroup := normalizeMobileCategory(req.Group, req.Subgroup, transactionType, typed)
+		counterparty := strings.Trim(strings.TrimSpace(group+" / "+subgroup), " /")
 		if typed != nil && typed.PartyName != "" {
 			counterparty = typed.PartyName
 		}
-		mobileRow := map[string]any{"id": "sms-" + req.ExternalID, "externalId": req.ExternalID, "title": req.Title, "amount": req.Amount, "direction": req.Direction, "transactionType": transactionType, "transactionTypeExplicit": strings.TrimSpace(req.TransactionType) != "", "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "counterAccount": req.CounterAccount, "group": req.Group, "subgroup": req.Subgroup, "reportedCustomer": req.Customer, "counterparty": counterparty, "bank": accountName, "sender": req.Sender, "trackingNo": req.TrackingNo, "reportedBalance": req.ReportedBalance, "occurredAt": occurred, "occurredJalali": occurredJalali, "syncedAt": now}
+		mobileRow := map[string]any{"id": "sms-" + req.ExternalID, "externalId": req.ExternalID, "title": req.Title, "amount": req.Amount, "direction": req.Direction, "transactionType": transactionType, "transactionTypeExplicit": strings.TrimSpace(req.TransactionType) != "", "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "counterAccount": req.CounterAccount, "group": group, "subgroup": subgroup, "reportedCustomer": req.Customer, "counterparty": counterparty, "bank": accountName, "sender": req.Sender, "trackingNo": req.TrackingNo, "reportedBalance": req.ReportedBalance, "occurredAt": occurred, "occurredJalali": occurredJalali, "syncedAt": now}
 		setUnconfirmedCounterparty(mobileRow, customer)
 		if typed != nil {
 			mobileRow["typedType"] = typed.TypedType
@@ -542,7 +636,7 @@ func (h *APIHandler) persistMobileTransactionState(r *http.Request, companyID in
 		if trackingNo == "" {
 			trackingNo = req.ExternalID
 		}
-		movement := map[string]any{"id": "mov-sms-" + req.ExternalID, "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "date": occurred, "occurredJalali": occurredJalali, "direction": req.Direction, "transactionType": transactionType, "amount": req.Amount, "counterparty": counterparty, "trackingNo": trackingNo, "description": req.Description, "sourceMobileTransaction": req.ExternalID, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName, "group": req.Group, "subgroup": req.Subgroup}
+		movement := map[string]any{"id": "mov-sms-" + req.ExternalID, "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "date": occurred, "occurredJalali": occurredJalali, "direction": req.Direction, "transactionType": transactionType, "amount": req.Amount, "counterparty": counterparty, "trackingNo": trackingNo, "description": req.Description, "sourceMobileTransaction": req.ExternalID, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName, "group": group, "subgroup": subgroup}
 		setUnconfirmedCounterparty(movement, customer)
 		if typed != nil {
 			movement["typedType"] = typed.TypedType
@@ -553,9 +647,18 @@ func (h *APIHandler) persistMobileTransactionState(r *http.Request, companyID in
 		createExpense := transactionType == "expense" && (typed == nil || typed.ExpenseLike)
 		if createExpense {
 			expenseID := "exp-sms-" + req.ExternalID
-			expense := map[string]any{"id": expenseID, "date": occurred, "occurredJalali": occurredJalali, "group": req.Group, "subgroup": req.Subgroup, "amount": req.Amount, "description": req.Description, "accountId": resolvedAccountID, "counterparty": counterparty, "reportedCustomer": req.Customer, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName}
+			expense := map[string]any{"id": expenseID, "date": occurred, "occurredJalali": occurredJalali, "group": group, "subgroup": subgroup, "amount": req.Amount, "description": req.Description, "accountId": resolvedAccountID, "counterparty": counterparty, "reportedCustomer": req.Customer, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName}
 			if typed != nil {
 				expense["typedType"] = typed.TypedType
+				if typed.PartyName != "" {
+					expense["payer"] = typed.PartyName
+					expense["customer"] = typed.PartyName
+					expense["counterpartyConfirmed"] = true
+					expense["counterpartySource"] = "erp_party_id"
+				} else if typed.CandidateName != "" {
+					expense["counterpartyCandidate"] = typed.CandidateName
+					expense["counterpartyConfirmed"] = false
+				}
 			}
 			state["expenses"] = append([]any{expense}, anyRows(state, "expenses")...)
 			movement["sourceExpense"] = expenseID

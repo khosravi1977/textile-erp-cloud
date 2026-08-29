@@ -175,10 +175,15 @@ func (h *APIHandler) MobileTypedTransaction(w http.ResponseWriter, r *http.Reque
 		Amount:          req.Amount,
 		TrackingNo:      strings.TrimSpace(req.BankReference),
 	}
+	confirmedPartyName := ""
+	if partyID > 0 {
+		confirmedPartyName = partyName
+	}
 	stateResult, detail, err := h.persistMobileTransactionState(r, companyID, stateReq, stateReq.TransactionType, &typedStateMeta{
-		TypedType:   typedType,
-		PartyName:   partyName,
-		ExpenseLike: typedExpenseLike(typedType),
+		TypedType:     typedType,
+		PartyName:     confirmedPartyName,
+		CandidateName: partyName,
+		ExpenseLike:   typedExpenseLike(typedType),
 	})
 	switch stateResult {
 	case mobileStateSaved, mobileStateDuplicate:
