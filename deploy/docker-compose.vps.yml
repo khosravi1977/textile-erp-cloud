@@ -195,6 +195,7 @@ services:
   prometheus:
     image: ${TEXTILE_PROMETHEUS_IMAGE:-ghcr.io/khosravi1977/textile-prometheus:v2.55.1}
     container_name: textile-erp-prometheus
+    profiles: ["monitoring"]
     restart: unless-stopped
     ports:
       - "127.0.0.1:9190:9090"
@@ -212,6 +213,7 @@ services:
   grafana:
     image: ${TEXTILE_GRAFANA_IMAGE:-ghcr.io/khosravi1977/textile-grafana:11.3.1}
     container_name: textile-erp-grafana
+    profiles: ["monitoring"]
     restart: unless-stopped
     ports:
       - "127.0.0.1:3300:3000"

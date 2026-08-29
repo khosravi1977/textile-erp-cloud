@@ -11,6 +11,7 @@ export TEXTILE_OPERATIONAL_IMAGE=example.invalid/textile-operational:test
 export TEXTILE_PORTAL_IMAGE=example.invalid/textile-portal:test
 
 docker compose \
+  --profile monitoring \
   --project-directory "$root" \
   --env-file "$root/deploy/.env.vps.example" \
   --file "$root/deploy/docker-compose.vps.yml" \
