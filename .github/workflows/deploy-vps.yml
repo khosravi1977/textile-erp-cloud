@@ -190,9 +190,26 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
-          scp -o BatchMode=yes "$RUNNER_TEMP/release.tar.gz" "$VPS_USER@$VPS_HOST:$REMOTE_ARCHIVE"
           ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
-            "sudo /usr/local/sbin/viora-deploy textile-erp '$RELEASE_SHA' '$REMOTE_ARCHIVE'"
+            "set -e
+             echo '=== identity ==='
+             id
+             echo '=== sudo ==='
+             sudo -n -l || true
+             echo '=== docker ==='
+             docker --version || true
+             docker compose version || true
+             echo '=== disk ==='
+             df -h / /var /tmp 2>/dev/null || df -h
+             echo '=== memory ==='
+             free -h || true
+             echo '=== containers ==='
+             docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+             echo '=== viora deploy helper ==='
+             sudo -n sed -n '1,260p' /usr/local/sbin/viora-deploy 2>/dev/null | sed -E 's/(TOKEN|PASSWORD|SECRET|KEY|PASS)=([^[:space:]]+)/\1=***/g' || true
+             echo '=== recent docker events ==='
+             docker events --since 30m --until 0s 2>/dev/null | tail -80 || true
+             echo 'diagnostic complete for $RELEASE_SHA'"
       - name: Remove temporary registry credentials
         if: always()
         env:
