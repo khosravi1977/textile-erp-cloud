@@ -112,11 +112,15 @@ jobs:
              echo '=== memory ==='
              free -h || true
              echo '=== docker ps ==='
-             docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+             sudo -n docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
              echo '=== docker system df ==='
-             docker system df || true
+             sudo -n docker system df || true
              echo '=== textile containers ==='
-             docker ps -a --filter name=textile --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+             sudo -n docker ps -a --filter name=textile --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+             echo '=== heavy processes ==='
+             ps -eo pid,ppid,stat,pcpu,pmem,comm,args --sort=-pcpu | head -30 || true
+             echo '=== deploy helper processes ==='
+             pgrep -af 'viora-deploy|docker compose|docker pull|containerd' || true
              echo '=== helper exists ==='
              test -x /usr/local/sbin/viora-deploy && echo yes || echo no"
 
