@@ -7,6 +7,7 @@ import { isDateWithinInclusiveRange } from './dateRange.js';
 import { isValidSayadId, issuedChecksForCheckbook, normalizeSayadId, validateCheckbookUpdate } from './checkbook.js';
 import { expenseTraceId, linkedExpenseTraceId, mapOperationalExpense, matchesExpenseFilters, matchesExpenseTrace } from './expenseMapping.js';
 import { formatTableValue, toPersianDigits } from './localization.js';
+import { normalizeEditableJalaliDate } from './persianDateInput.js';
 import { isMonetaryColumn, monetaryColumnTotals, parseLocalizedNumber } from './reportTotals.js';
 
 const FINANCIAL_DEV_ORIGIN = `${window.location.protocol}//${window.location.hostname}:5173`;
@@ -579,15 +580,14 @@ function TextInput(props) {
 
 function DateInput({ value, onChange, className = '', ...props }) {
 
-  const [editing, setEditing] = useState(false);
+  const displayValue = normalizeEditableJalaliDate(toJalali(value) === '-' ? '' : toJalali(value));
 
-  if (editing) {
+  const handleChange = e => {
+    if (!onChange) return;
+    onChange({ target: { value: normalizeEditableJalaliDate(e.target.value) } });
+  };
 
-    return <TextInput {...props} className={className} type="date" value={value || ''} onChange={onChange} autoFocus onBlur={() => setEditing(false)} />;
-
-  }
-
-  return <TextInput {...props} className={className} type="text" value={toJalali(value)} readOnly onFocus={() => setEditing(true)} onClick={() => setEditing(true)} />;
+  return <TextInput {...props} className={className} type="text" dir="ltr" inputMode="numeric" placeholder="1405/06/08" value={displayValue} onChange={handleChange} />;
 
 }
 
@@ -3360,6 +3360,8 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
   const amount = subtotal + taxAmount;
 
+  const invoiceTotal = form.nonFinancial ? subtotal : amount;
+
   const paid = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
 
   const openReceivableDocs = finance.receivableDocs.filter(x => x.status === 'open');
@@ -3416,15 +3418,27 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
     e.preventDefault();
 
-    if (!form.customer || !amount) return;
+    if (!form.date) { window.alert('تاریخ فاکتور ورود الزامی است.'); return; }
 
-    const cleanPayments = form.nonFinancial ? [] : payments.map(p => ({ ...p, amount: Number(p.amount || 0), quantity: Number(p.quantity || 0), unitPrice: Number(p.unitPrice || 0) })).filter(p => p.amount > 0);
+    if (!String(form.customer || '').trim()) { window.alert('شخص / فروشنده فاکتور ورود را انتخاب یا درج کنید.'); return; }
 
-    const validationError = form.nonFinancial ? '' : paymentValidationError(cleanPayments, amount, 'فاکتور ورود');
+    if (!String(form.itemName || '').trim()) { window.alert('نوع نخ، کالا یا قطعه را انتخاب یا درج کنید.'); return; }
+
+    if (!Number(form.quantity || 0) || Number(form.quantity || 0) <= 0) { window.alert('مقدار فاکتور ورود باید عددی و بزرگ‌تر از صفر باشد.'); return; }
+
+    if (!Number(invoiceTotal || 0) || Number(invoiceTotal || 0) <= 0) { window.alert('مبلغ فاکتور ورود کامل نیست؛ نرخ واحد یا مبلغ قبل از مالیات را وارد کنید.'); return; }
+
+    const normalizedPayments = payments.map(p => ({ ...p, amount: Number(p.amount || 0), quantity: Number(p.quantity || 0), unitPrice: Number(p.unitPrice || 0) }));
+
+    const activePayments = normalizedPayments.filter(p => p.amount > 0);
+
+    const cleanPayments = form.nonFinancial ? [] : (activePayments.length ? activePayments : [{ ...newPaymentLine('credit'), amount: invoiceTotal }]);
+
+    const validationError = form.nonFinancial ? '' : paymentValidationError(cleanPayments, invoiceTotal, 'فاکتور ورود');
 
     if (validationError) { window.alert(validationError); return; }
 
-    const invoice = { ...form, id: editingId || shortId('IN'), subtotal, taxAmount: form.nonFinancial ? 0 : taxAmount, taxRate: form.nonFinancial ? 0 : taxRate, taxable: !form.nonFinancial && !!form.taxable, amount, quantity: Number(form.quantity || 0), unitPrice: Number(form.unitPrice || 0), payments: cleanPayments, nonFinancial: !!form.nonFinancial };
+    const invoice = { ...form, id: editingId || shortId('IN'), subtotal, taxAmount: form.nonFinancial ? 0 : taxAmount, taxRate: form.nonFinancial ? 0 : taxRate, taxable: !form.nonFinancial && !!form.taxable, amount: invoiceTotal, quantity: Number(form.quantity || 0), unitPrice: Number(form.unitPrice || 0), payments: cleanPayments, nonFinancial: !!form.nonFinancial };
 
     setFinance(prev => {
 
@@ -3537,7 +3551,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
             {form.nonFinancial
               ? <div className="rounded-md border border-emerald-700 bg-emerald-950 p-4 text-sm text-emerald-100">اين فاکتور بدون اثر ريالي ثبت مي‌شود؛ چک، نقد، بدهکاري يا بستانکاري براي مشتري ايجاد نمي‌شود، اما مقدار و ارزش کالا در حساب کالايي و اعتبارسنجي لحاظ مي‌شود.</div>
               : <div className="rounded-md border border-slate-700 bg-slate-900 p-4"><div className="mb-3 flex items-center justify-between"><h4 className="font-bold">رديف هاي تسويه فاکتور ورود</h4><PrimaryButton onClick={() => setPayments(prev => [...prev, newPaymentLine('credit')])}>افزودن رديف</PrimaryButton></div><div className="space-y-3">{payments.map(p => <IncomingPaymentLine key={p.id} payment={p} accounts={finance.accounts} receivableDocs={openReceivableDocs} onChange={patch => updatePayment(p.id, patch)} onRemove={() => removePayment(p.id)} />)}</div></div>}
-            <div className="grid grid-cols-5 gap-3"><Field label="مبلغ قبل مالیات" value={money(subtotal) + ' تومان'} /><Field label="مالیات/عوارض" value={money(form.nonFinancial ? 0 : taxAmount) + ' تومان'} tone="text-blue-300" /><Field label="جمع فاکتور" value={money(form.nonFinancial ? subtotal : amount) + ' تومان'} /><Field label="جمع تسويه" value={money(form.nonFinancial ? 0 : paid) + ' تومان'} tone={form.nonFinancial || paid === amount ? 'text-emerald-300' : 'text-amber-300'} /><Field label={form.nonFinancial ? 'اثر ريالي' : 'مانده'} value={form.nonFinancial ? 'بدون اثر در صورتحساب' : money(amount - paid) + ' تومان'} tone={form.nonFinancial || amount - paid === 0 ? 'text-emerald-300' : 'text-red-300'} /></div>
+            <div className="grid grid-cols-5 gap-3"><Field label="مبلغ قبل مالیات" value={money(subtotal) + ' تومان'} /><Field label="مالیات/عوارض" value={money(form.nonFinancial ? 0 : taxAmount) + ' تومان'} tone="text-blue-300" /><Field label="جمع فاکتور" value={money(invoiceTotal) + ' تومان'} /><Field label="جمع تسويه" value={money(form.nonFinancial ? 0 : paid) + ' تومان'} tone={form.nonFinancial || paid === invoiceTotal ? 'text-emerald-300' : 'text-amber-300'} /><Field label={form.nonFinancial ? 'اثر ريالي' : 'مانده'} value={form.nonFinancial ? 'بدون اثر در صورتحساب' : money(invoiceTotal - paid) + ' تومان'} tone={form.nonFinancial || invoiceTotal - paid === 0 ? 'text-emerald-300' : 'text-red-300'} /></div>
             <PrimaryButton className="w-full" type="submit">{onlySource === 'chelle' ? 'ثبت فاکتور ورود چله و اعمال مالی' : 'ثبت فاکتور ورود و اعمال مالي'}</PrimaryButton>
           </form>
         </Card>
