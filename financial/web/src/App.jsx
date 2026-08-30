@@ -5,7 +5,7 @@ import QRCode from 'qrcode';
 import { confirmMovementCounterparty, confirmedMovementCounterparty, movementCounterpartyLabel, movementNeedsCounterparty } from './counterparty.js';
 import { isDateWithinInclusiveRange } from './dateRange.js';
 import { isValidSayadId, issuedChecksForCheckbook, normalizeSayadId, validateCheckbookUpdate } from './checkbook.js';
-import { mapOperationalExpense, matchesExpenseFilters } from './expenseMapping.js';
+import { expenseTraceId, linkedExpenseTraceId, mapOperationalExpense, matchesExpenseFilters, matchesExpenseTrace } from './expenseMapping.js';
 import { formatTableValue, toPersianDigits } from './localization.js';
 import { isMonetaryColumn, monetaryColumnTotals, parseLocalizedNumber } from './reportTotals.js';
 
@@ -1476,7 +1476,7 @@ export default function App() {
         {currentPage === 'costs' && <CostsPage finance={safeFinance} setFinance={updateFinance} />}
         {currentPage === 'receivableDocs' && <DocsPage kind="receivable" finance={safeFinance} setFinance={updateFinance} />}
         {currentPage === 'payableDocs' && <DocsPage kind="payable" finance={safeFinance} setFinance={updateFinance} />}
-        {currentPage === 'bankCash' && <ProfessionalBankCashPage finance={safeFinance} setFinance={updateFinance} />}
+        {currentPage === 'bankCash' && <ProfessionalBankCashPage finance={safeFinance} setFinance={updateFinance} onGo={setCurrentPage} />}
         {currentPage === 'accounting' && <AccountingPage finance={safeFinance} setFinance={updateFinance} revision={workspaceStatus.revision} />}
         {currentPage === 'reports' && <ReportsPage finance={safeFinance} setFinance={updateFinance} />}
         {currentPage === 'taxReports' && <TaxReportPage finance={safeFinance} />}
@@ -4342,7 +4342,15 @@ function CostsPage({ finance, setFinance }) {
 
   const { data, loading, error } = useOperationalData();
 
-  const [term, setTerm] = useState('');
+  const [term, setTerm] = useState(() => {
+    try {
+      const trace = localStorage.getItem('textile-expense-trace-filter') || '';
+      if (trace) localStorage.removeItem('textile-expense-trace-filter');
+      return trace;
+    } catch {
+      return '';
+    }
+  });
 
   const [categoryFilter, setCategoryFilter] = useState('all');
 
@@ -4365,7 +4373,7 @@ function CostsPage({ finance, setFinance }) {
     ...(finance.openingBalances || []).map(x => x.customer),
     ...finance.movements.flatMap(x => [confirmedMovementCounterparty(x), x.counterpartyCandidate]),
   ].filter(Boolean))];
-  const emptyExpenseForm = () => ({ date: today(), operationalDate: '', group: groups[0]?.name || '', subgroup: groups[0]?.subgroups?.[0] || '', amount: '', description: '', accountId: finance.accounts[0]?.id || '', payer: '', source_type: 'manual', sourceId: '' });
+  const emptyExpenseForm = () => ({ date: today(), operationalDate: '', group: groups[0]?.name || '', subgroup: groups[0]?.subgroups?.[0] || '', amount: '', description: '', accountId: finance.accounts[0]?.id || '', payer: '', source_type: 'manual', sourceId: '', documentNo: '', expenseTraceId: '' });
 
   const [form, setForm] = useState(emptyExpenseForm);
 
@@ -4379,12 +4387,17 @@ function CostsPage({ finance, setFinance }) {
 
   const financial = finance.expenses.map(x => {
     const operationalSource = x.source_type === 'operational_expense' ? operationalById.get(String(x.sourceId)) : null;
+    const documentNo = x.documentNo || operationalSource?.shomare_sanad || operationalSource?.doc_no || '';
+    const traceId = expenseTraceId({ ...x, documentNo });
     return {
       ...x,
-      date: x.date || operationalSource?.date || '',
-      group: operationalSource?.title || expenseGroup(x),
+      date: x.date || operationalSource?.date || operationalSource?.tarikh || '',
+      group: operationalSource?.title || operationalSource?.onvan_hazine || expenseGroup(x),
       subgroup: operationalSource?.weaver_name || expenseSubgroup(x),
-      description: operationalSource?.description ?? x.description ?? '',
+      amount: Number(x.amount ?? operationalSource?.mablagh ?? 0),
+      description: operationalSource?.description ?? operationalSource?.tozih ?? x.description ?? '',
+      documentNo,
+      expenseTraceId: traceId,
       source: expenseSourceLabel(x),
       financialRecord: true,
     };
@@ -4404,7 +4417,7 @@ function CostsPage({ finance, setFinance }) {
 
   const printCosts = () => {
 
-    const html = `<p>منبع: ${sourceFilter === 'all' ? 'همه' : sourceFilter} | گروه: ${categoryFilter === 'all' ? 'همه' : categoryFilter} | زیرگروه: ${subgroupFilter === 'all' ? 'همه' : subgroupFilter} | حساب: ${accountFilter === 'all' ? 'همه' : finance.accounts.find(a => a.id === accountFilter)?.name || '-'}</p><table><thead><tr><th>منبع</th><th>تاریخ</th><th>گروه</th><th>زیرگروه</th><th>مبلغ</th><th>توضیحات</th></tr></thead><tbody>${rows.map(x => `<tr><td>${x.source}</td><td>${toJalali(x.date) || ''}</td><td>${expenseGroup(x)}</td><td>${expenseSubgroup(x)}</td><td>${money(x.amount)}</td><td>${x.description || ''}</td></tr>`).join('')}</tbody></table>`;
+    const html = `<p>منبع: ${sourceFilter === 'all' ? 'همه' : sourceFilter} | گروه: ${categoryFilter === 'all' ? 'همه' : categoryFilter} | زیرگروه: ${subgroupFilter === 'all' ? 'همه' : subgroupFilter} | حساب: ${accountFilter === 'all' ? 'همه' : finance.accounts.find(a => a.id === accountFilter)?.name || '-'}</p><table><thead><tr><th>منبع</th><th>تاریخ</th><th>شناسه سند</th><th>گروه</th><th>زیرگروه</th><th>مبلغ</th><th>توضیحات</th></tr></thead><tbody>${rows.map(x => `<tr><td>${x.source}</td><td>${toJalali(x.date) || ''}</td><td>${expenseTraceId(x) || '-'}</td><td>${expenseGroup(x)}</td><td>${expenseSubgroup(x)}</td><td>${money(x.amount)}</td><td>${x.description || ''}</td></tr>`).join('')}</tbody></table>`;
 
     printSection('گزارش هزينه ها', html);
 
@@ -4443,9 +4456,12 @@ function CostsPage({ finance, setFinance }) {
       const previousExpense = editingId ? prev.expenses.find(x => x.id === editingId) : null;
 
       const partyName = String(form.payer || '').trim();
+      const expenseId = editingId || uid('exp');
+      const documentNo = String(form.documentNo || '').trim();
+      const traceId = expenseTraceId({ ...form, id: expenseId, documentNo });
 
       const expense = {
-        id: editingId || uid('exp'), ...form, payer: partyName, customer: partyName,
+        id: expenseId, ...form, documentNo, expenseTraceId: traceId, payer: partyName, customer: partyName,
         amount: Number(form.amount), counterpartyConfirmed: Boolean(partyName),
         counterpartySource: partyName ? 'expense_form' : '', source: 'مالی',
       };
@@ -4455,8 +4471,8 @@ function CostsPage({ finance, setFinance }) {
       const movementBase = {
         id: uid('mov'), accountId: form.accountId, date: form.date, direction: 'out',
         transactionType: 'expense', amount: Number(form.amount),
-        description: `هزینه: ${form.group} / ${form.subgroup}`,
-        group: form.group, subgroup: form.subgroup, sourceExpense: expense.id,
+        description: `هزینه: ${form.group} / ${form.subgroup} | سند ${traceId}`,
+        group: form.group, subgroup: form.subgroup, sourceExpense: expense.id, sourceExpenseTraceId: traceId, documentNo,
       };
 
       const movement = partyName
@@ -4506,7 +4522,8 @@ function CostsPage({ finance, setFinance }) {
     const linkedMovement = finance.movements.find(movement => movement.sourceExpense === row.id);
     const partyRow = linkedMovement || row;
     const existingPayer = confirmedMovementCounterparty(partyRow) || String(partyRow.payer || partyRow.customer || '').trim();
-    setForm({ date: row.date, operationalDate: row.operationalDate || '', group: expenseGroup(row), subgroup: expenseSubgroup(row), amount: row.amount, description: row.description || '', accountId: row.accountId || finance.accounts[0]?.id || '', payer: existingPayer, source_type: row.source_type || 'manual', sourceId: row.sourceId || '' });
+    const traceId = expenseTraceId(row);
+    setForm({ date: row.date, operationalDate: row.operationalDate || '', group: expenseGroup(row), subgroup: expenseSubgroup(row), amount: row.amount, description: row.description || '', accountId: row.accountId || finance.accounts[0]?.id || '', payer: existingPayer, source_type: row.source_type || 'manual', sourceId: row.sourceId || '', documentNo: row.documentNo || '', expenseTraceId: traceId });
 
     setFormMessage({ type: 'success', text: 'اطلاعات هزینه برای ویرایش در فرم قرار گرفت.' });
 
@@ -4516,13 +4533,15 @@ function CostsPage({ finance, setFinance }) {
 
   const importOperationalExpense = row => {
     if (row.settled) return;
+    const documentNo = row.documentNo || row.shomare_sanad || row.doc_no || '';
+    const traceId = expenseTraceId({ ...row, source_type: 'operational_expense', sourceId: row.id, documentNo });
     setEditingId('');
     setForm({
-      date: row.date || today(), operationalDate: row.date || '', group: row.title || 'سایر', subgroup: row.weaver_name || 'سایر', amount: Number(row.amount || 0),
+      date: row.date || today(), operationalDate: row.date || '', group: row.group || row.title || row.onvan_hazine || 'سایر', subgroup: row.subgroup || row.weaver_name || 'سایر', amount: Number(row.amount ?? row.mablagh ?? 0),
       description: row.description || '',
-      accountId: finance.accounts[0]?.id || '', payer: '', source_type: 'operational_expense', sourceId: row.id,
+      accountId: finance.accounts[0]?.id || '', payer: '', source_type: 'operational_expense', sourceId: row.id, documentNo, expenseTraceId: traceId,
     });
-    setFormMessage({ type: 'success', text: 'اطلاعات هزینه عملیاتی در فرم قرار گرفت؛ حساب پرداخت‌کننده را انتخاب و ثبت را بزنید.' });
+    setFormMessage({ type: 'success', text: `اطلاعات هزینه عملیاتی با شناسه ${traceId || '-'} در فرم قرار گرفت؛ حساب پرداخت‌کننده را انتخاب و ثبت را بزنید.` });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -4567,13 +4586,15 @@ function CostsPage({ finance, setFinance }) {
 
           <SelectInput value={form.accountId} onChange={e => setForm({ ...form, accountId: e.target.value })}>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput>
 
+          <TextInput placeholder="شناسه سند هزینه" value={form.expenseTraceId || form.documentNo} onChange={e => setForm({ ...form, expenseTraceId: e.target.value, documentNo: e.target.value })} />
+
           <SelectInput value={form.payer} onChange={e => setForm({ ...form, payer: e.target.value })}><option value="">طرف حساب اختیاری</option>{counterparties.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput>
 
           <PrimaryButton type="submit">{editingId ? 'ذخيره ويرايش' : 'ثبت هزينه'}</PrimaryButton>
 
           <TextInput className="col-span-5" placeholder="توضيحات" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
 
-          {form.source_type === 'operational_expense' && <div className="col-span-5 rounded-md border border-amber-700 bg-amber-950 p-3 text-xs text-amber-100">این هزینه از بخش عملیاتی دریافت شده است. حساب پرداخت‌کننده را انتخاب و ثبت مالی را تایید کنید؛ طرف حساب اختیاری است.</div>}
+          {form.source_type === 'operational_expense' && <div className="col-span-5 rounded-md border border-amber-700 bg-amber-950 p-3 text-xs text-amber-100">این هزینه از بخش عملیاتی دریافت شده است. حساب پرداخت‌کننده را انتخاب و ثبت مالی را تایید کنید؛ طرف حساب اختیاری است و شناسه سند برای ردیابی بین هزینه و بانک/صندوق نگه داشته می‌شود.</div>}
 
           {editingId && <GhostButton onClick={() => { setEditingId(''); setForm(emptyExpenseForm()); }}>انصراف</GhostButton>}
 
@@ -4583,7 +4604,7 @@ function CostsPage({ finance, setFinance }) {
 
       </Card>
 
-      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ليست هزينه ها</h3><div className="flex flex-wrap gap-2"><SelectInput value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}><option value="all">همه منابع</option>{sourceOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={categoryFilter} onChange={e => { setCategoryFilter(e.target.value); setSubgroupFilter('all'); }}><option value="all">همه گروه‌ها</option>{groupOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={subgroupFilter} onChange={e => setSubgroupFilter(e.target.value)}><option value="all">همه زیرگروه‌ها</option>{subgroupOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={accountFilter} onChange={e => setAccountFilter(e.target.value)}><option value="all">همه بانک/صندوق</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><TextInput placeholder="جستجو در گروه و زيرگروه" value={term} onChange={e => setTerm(e.target.value)} /><PrimaryButton onClick={printCosts}>چاپ</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش هزینه‌ها', rows.map(row => ({ ...row, group_name: expenseGroup(row), subgroup_name: expenseSubgroup(row) })), [['source','منبع'],['date','تاریخ'],['group_name','گروه'],['subgroup_name','زیرگروه'],['amount','مبلغ'],['description','توضیحات']], { label: 'جمع کل', amount: total })}>خروجی اکسل</PrimaryButton></div></div>{loading && <p className="text-sm text-slate-400">در حال دريافت...</p>}{error ? <ErrorBox message={error} /> : <ExpensesTable rows={rows} onEdit={editExpense} onDelete={deleteExpense} onImport={importOperationalExpense} />}</Card>
+      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ليست هزينه ها</h3><div className="flex flex-wrap gap-2"><SelectInput value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}><option value="all">همه منابع</option>{sourceOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={categoryFilter} onChange={e => { setCategoryFilter(e.target.value); setSubgroupFilter('all'); }}><option value="all">همه گروه‌ها</option>{groupOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={subgroupFilter} onChange={e => setSubgroupFilter(e.target.value)}><option value="all">همه زیرگروه‌ها</option>{subgroupOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={accountFilter} onChange={e => setAccountFilter(e.target.value)}><option value="all">همه بانک/صندوق</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><TextInput placeholder="جستجو در گروه، زیرگروه یا شناسه سند" value={term} onChange={e => setTerm(e.target.value)} />{term && <GhostButton onClick={() => setTerm('')}>پاک کردن جستجو</GhostButton>}<PrimaryButton onClick={printCosts}>چاپ</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش هزینه‌ها', rows.map(row => ({ ...row, trace_id: expenseTraceId(row), group_name: expenseGroup(row), subgroup_name: expenseSubgroup(row) })), [['source','منبع'],['date','تاریخ'],['trace_id','شناسه سند'],['group_name','گروه'],['subgroup_name','زیرگروه'],['amount','مبلغ'],['description','توضیحات']], { label: 'جمع کل', amount: total })}>خروجی اکسل</PrimaryButton></div></div>{loading && <p className="text-sm text-slate-400">در حال دريافت...</p>}{error ? <ErrorBox message={error} /> : <ExpensesTable rows={rows} onEdit={editExpense} onDelete={deleteExpense} onImport={importOperationalExpense} highlightTrace={term} />}</Card>
 
     </div>
 
@@ -5015,11 +5036,11 @@ const typedSourceLabels = { HESABYAR: 'حسابیار', ERP_MANUAL: 'ثبت دس
 const typedLedgerPartyRequired = new Set(['CUSTOMER_RECEIPT', 'SUPPLIER_PAYMENT', 'PAYROLL_PAYMENT', 'PETTY_CASH_FUNDING', 'PETTY_CASH_RETURN', 'CHECK_RECEIPT', 'CHECK_PAYMENT']);
 const typedLedgerCounterpartyLabel = row => row.party_name || (row.transaction_type === 'INTERNAL_TRANSFER' ? '-' : typedLedgerPartyRequired.has(row.transaction_type) ? 'در انتظار تطبیق' : 'بدون طرف حساب اجباری');
 
-function ProfessionalBankCashPage({ finance, setFinance }) {
+function ProfessionalBankCashPage({ finance, setFinance, onGo }) {
   const { data } = useOperationalData();
   const [account, setAccount] = useState({ name: '', type: 'بانک', opening: 0 });
   const [movement, setMovement] = useState({ accountId: finance.accounts[0]?.id || '', counterAccountId: '', date: today(), direction: 'in', transactionType: 'customer_receipt', amount: '', payer: '', trackingNo: '', description: '' });
-  const [filters, setFilters] = useState({ accountId: 'all', reconciled: 'all', fromDate: '', toDate: '' });
+  const [filters, setFilters] = useState({ accountId: 'all', reconciled: 'all', fromDate: '', toDate: '', traceId: '' });
   const [pendingCounterparties, setPendingCounterparties] = useState({});
   const [typedLedger, setTypedLedger] = useState([]);
   const [typedLedgerError, setTypedLedgerError] = useState('');
@@ -5072,11 +5093,23 @@ function ProfessionalBankCashPage({ finance, setFinance }) {
     if (target && movementNeedsCounterparty(target) && !confirmedMovementCounterparty(target)) { window.alert('قبل از تطبیق، طرف حساب را انتخاب و تأیید کنید.'); return; }
     setFinance(prev => ({ ...prev, movements: prev.movements.map(row => row.id === id ? { ...row, reconciled: !row.reconciled, reconciledAt: !row.reconciled ? today() : '' } : row) }));
   };
+  const expensesById = new Map((finance.expenses || []).map(row => [String(row.id), row]));
+  const movementExpenseTrace = row => {
+    const linkedExpense = row.sourceExpense ? expensesById.get(String(row.sourceExpense)) : null;
+    return linkedExpense ? expenseTraceId(linkedExpense) : linkedExpenseTraceId(row);
+  };
+  const goToExpense = row => {
+    const traceId = movementExpenseTrace(row);
+    if (!traceId) return;
+    try { localStorage.setItem('textile-expense-trace-filter', traceId); } catch {}
+    if (onGo) onGo('costs');
+  };
   const rows = finance.movements
-    .map(row => ({ ...row, confirmedCounterparty: confirmedMovementCounterparty(row), accountName: finance.accounts.find(a => a.id === row.accountId)?.name || '-', counterAccountName: finance.accounts.find(a => a.id === row.counterAccountId)?.name || '-' }))
+    .map(row => ({ ...row, confirmedCounterparty: confirmedMovementCounterparty(row), accountName: finance.accounts.find(a => a.id === row.accountId)?.name || '-', counterAccountName: finance.accounts.find(a => a.id === row.counterAccountId)?.name || '-', expenseTraceId: movementExpenseTrace(row) }))
     .filter(row => (
       (filters.accountId === 'all' || row.accountId === filters.accountId)
       && (filters.reconciled === 'all' || String(Boolean(row.reconciled)) === filters.reconciled)
+      && (!filters.traceId || String(row.expenseTraceId || '').includes(String(filters.traceId)) || String(row.sourceExpense || '').includes(String(filters.traceId)))
       && isDateWithinInclusiveRange(jalaliSortKey(row.date), jalaliSortKey(filters.fromDate), jalaliSortKey(filters.toDate))
     ));
   const typeLabels = { customer_receipt: 'دریافت از مشتری', supplier_payment: 'پرداخت به فروشنده', transfer: 'انتقال بین حساب‌ها', expense: 'پرداخت هزینه', other_income: 'سایر درآمد', capital: 'آورده/برداشت سرمایه' };
@@ -5084,7 +5117,7 @@ function ProfessionalBankCashPage({ finance, setFinance }) {
   const counterpartyText = row => movementCounterpartyLabel(row);
   const pendingCounterpartyValue = row => pendingCounterparties[row.id] || row.counterpartyCandidate || '';
   const changeType = transactionType => setMovement(prev => ({ ...prev, transactionType, direction: ['supplier_payment', 'expense'].includes(transactionType) ? 'out' : 'in', payer: '', counterAccountId: '' }));
-  const printMovements = () => printSection('صورت گردش بانک و صندوق', `<p>بازه گزارش: ${filters.fromDate ? toJalali(filters.fromDate) : 'ابتدای دوره'} تا ${filters.toDate ? toJalali(filters.toDate) : 'انتهای دوره'}</p><table><thead><tr><th>تاریخ</th><th>حساب</th><th>ماهیت</th><th>طرف حساب</th><th>مبلغ</th><th>رهگیری</th><th>تطبیق</th></tr></thead><tbody>${rows.map(row => `<tr><td>${toJalali(row.date)}</td><td>${row.accountName}</td><td>${typedTransactionLabels[row.typedType] || typeLabels[row.transactionType] || row.direction}</td><td>${counterpartyText(row)}</td><td>${money(row.amount)}</td><td>${row.trackingNo || '-'}</td><td>${row.reconciled ? 'تطبیق شد' : 'باز'}</td></tr>`).join('')}</tbody></table>`);
+  const printMovements = () => printSection('صورت گردش بانک و صندوق', `<p>بازه گزارش: ${filters.fromDate ? toJalali(filters.fromDate) : 'ابتدای دوره'} تا ${filters.toDate ? toJalali(filters.toDate) : 'انتهای دوره'}</p><table><thead><tr><th>تاریخ</th><th>حساب</th><th>ماهیت</th><th>طرف حساب</th><th>مبلغ</th><th>رهگیری</th><th>شناسه سند هزینه</th><th>تطبیق</th></tr></thead><tbody>${rows.map(row => `<tr><td>${toJalali(row.date)}</td><td>${row.accountName}</td><td>${typedTransactionLabels[row.typedType] || typeLabels[row.transactionType] || row.direction}</td><td>${counterpartyText(row)}</td><td>${money(row.amount)}</td><td>${row.trackingNo || '-'}</td><td>${row.expenseTraceId || '-'}</td><td>${row.reconciled ? 'تطبیق شد' : 'باز'}</td></tr>`).join('')}</tbody></table>`);
 
   return <div className="space-y-5">
     <div className="grid grid-cols-4 gap-4">{finance.accounts.map(a => <Field key={a.id} label={`${a.type}: ${a.name}`} value={`${money(accountBalance(a, finance.movements))} تومان`} tone={accountBalance(a, finance.movements) >= 0 ? 'text-emerald-300' : 'text-red-300'} />)}</div>
@@ -5099,8 +5132,8 @@ function ProfessionalBankCashPage({ finance, setFinance }) {
       <TextInput placeholder="شرح" value={movement.description} onChange={e => setMovement({ ...movement, description: e.target.value })} />
       <PrimaryButton type="submit">ثبت گردش</PrimaryButton>
     </form><div className="mt-3 rounded-md border border-blue-800 bg-blue-950 p-3 text-xs text-blue-100">فیلد طرف حساب فقط برای ماهیت‌های «دریافت از مشتری» و «پرداخت به فروشنده» الزامی است؛ هزینه مستقیم و سایر درآمدها طرف حساب ندارند. نام‌های دریافتی از حسابیار تا زمان تأیید کاربر در گزارش و مانده اشخاص اعمال نمی‌شوند.</div></Card>
-    <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گردش و مغایرت‌گیری بانک و صندوق</h3><div className="flex flex-wrap items-end gap-2"><SelectInput value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })}><option value="all">همه حساب‌ها</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><SelectInput value={filters.reconciled} onChange={e => setFilters({ ...filters, reconciled: e.target.value })}><option value="all">همه وضعیت‌ها</option><option value="false">تطبیق‌نشده</option><option value="true">تطبیق‌شده</option></SelectInput><label className="text-xs text-slate-300"><span className="mb-1 block">از تاریخ</span><DateInput value={filters.fromDate} onChange={e => setFilters({ ...filters, fromDate: e.target.value })} /></label><label className="text-xs text-slate-300"><span className="mb-1 block">تا تاریخ</span><DateInput value={filters.toDate} onChange={e => setFilters({ ...filters, toDate: e.target.value })} /></label><PrimaryButton onClick={printMovements}>چاپ صورت حساب</PrimaryButton><PrimaryButton onClick={() => exportExcel('گردش بانک و صندوق', rows.map(row => ({ ...row, counterparty_text: counterpartyText(row), transaction_text: typedTransactionLabels[row.typedType] || typeLabels[row.transactionType] || row.direction, reconciled_text: row.reconciled ? 'تطبیق شد' : 'باز' })), [['date','تاریخ'],['accountName','حساب'],['transaction_text','ماهیت'],['counterparty_text','طرف حساب'],['amount','مبلغ'],['trackingNo','رهگیری'],['reconciled_text','تطبیق']])}>خروجی اکسل</PrimaryButton></div></div>
-      <div className="overflow-auto"><table className="w-full text-right text-sm"><thead><tr className="border-b border-slate-700 text-slate-300"><th className="p-3">تاریخ</th><th>حساب</th><th>ماهیت</th><th>طرف حساب</th><th>مبلغ</th><th>رهگیری</th><th>وضعیت تطبیق</th></tr></thead><tbody>{rows.map(row => <tr key={row.id} className="border-b border-slate-800"><td className="p-3">{toJalali(row.date)}</td><td>{row.accountName}{row.transactionType === 'transfer' ? ` ← ${row.counterAccountName}` : ''}</td><td>{movementTypeLabel(row)}</td><td className="min-w-[280px]">{movementNeedsCounterparty(row) ? (row.confirmedCounterparty ? <div className="flex items-center gap-2"><span>{row.confirmedCounterparty}</span><GhostButton onClick={() => reopenCounterparty(row.id)}>اصلاح</GhostButton></div> : <div className="flex flex-wrap items-center gap-2"><span className="text-amber-300">{counterpartyText(row)}</span><SelectInput value={pendingCounterpartyValue(row)} onChange={e => setPendingCounterparties(prev => ({ ...prev, [row.id]: e.target.value }))}><option value="">انتخاب طرف حساب</option>{row.counterpartyCandidate && !customers.includes(row.counterpartyCandidate) && <option value={row.counterpartyCandidate}>{row.counterpartyCandidate}</option>}{customers.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><PrimaryButton disabled={!pendingCounterpartyValue(row)} onClick={() => confirmCounterparty(row.id)}>تأیید</PrimaryButton></div>) : <span className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-xs text-slate-300">{counterpartyText(row)}</span>}</td><td>{money(row.amount)}</td><td>{row.trackingNo || '-'}</td><td><GhostButton onClick={() => setReconciled(row.id)} disabled={movementNeedsCounterparty(row) && !row.confirmedCounterparty}>{row.reconciled ? 'تطبیق شده' : 'علامت تطبیق'}</GhostButton></td></tr>)}</tbody></table></div>
+    <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گردش و مغایرت‌گیری بانک و صندوق</h3><div className="flex flex-wrap items-end gap-2"><SelectInput value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })}><option value="all">همه حساب‌ها</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><SelectInput value={filters.reconciled} onChange={e => setFilters({ ...filters, reconciled: e.target.value })}><option value="all">همه وضعیت‌ها</option><option value="false">تطبیق‌نشده</option><option value="true">تطبیق‌شده</option></SelectInput><TextInput placeholder="شناسه سند هزینه" value={filters.traceId} onChange={e => setFilters({ ...filters, traceId: e.target.value })} /><label className="text-xs text-slate-300"><span className="mb-1 block">از تاریخ</span><DateInput value={filters.fromDate} onChange={e => setFilters({ ...filters, fromDate: e.target.value })} /></label><label className="text-xs text-slate-300"><span className="mb-1 block">تا تاریخ</span><DateInput value={filters.toDate} onChange={e => setFilters({ ...filters, toDate: e.target.value })} /></label><PrimaryButton onClick={printMovements}>چاپ صورت حساب</PrimaryButton><PrimaryButton onClick={() => exportExcel('گردش بانک و صندوق', rows.map(row => ({ ...row, counterparty_text: counterpartyText(row), transaction_text: typedTransactionLabels[row.typedType] || typeLabels[row.transactionType] || row.direction, expense_trace: row.expenseTraceId || '', reconciled_text: row.reconciled ? 'تطبیق شد' : 'باز' })), [['date','تاریخ'],['accountName','حساب'],['transaction_text','ماهیت'],['counterparty_text','طرف حساب'],['amount','مبلغ'],['trackingNo','رهگیری'],['expense_trace','شناسه سند هزینه'],['reconciled_text','تطبیق']])}>خروجی اکسل</PrimaryButton></div></div>
+      <div className="overflow-auto"><table className="w-full text-right text-sm"><thead><tr className="border-b border-slate-700 text-slate-300"><th className="p-3">تاریخ</th><th>حساب</th><th>ماهیت</th><th>طرف حساب</th><th>مبلغ</th><th>رهگیری</th><th>سند هزینه</th><th>وضعیت تطبیق</th></tr></thead><tbody>{rows.map(row => <tr key={row.id} className="border-b border-slate-800"><td className="p-3">{toJalali(row.date)}</td><td>{row.accountName}{row.transactionType === 'transfer' ? ` ← ${row.counterAccountName}` : ''}</td><td>{movementTypeLabel(row)}</td><td className="min-w-[280px]">{movementNeedsCounterparty(row) ? (row.confirmedCounterparty ? <div className="flex items-center gap-2"><span>{row.confirmedCounterparty}</span><GhostButton onClick={() => reopenCounterparty(row.id)}>اصلاح</GhostButton></div> : <div className="flex flex-wrap items-center gap-2"><span className="text-amber-300">{counterpartyText(row)}</span><SelectInput value={pendingCounterpartyValue(row)} onChange={e => setPendingCounterparties(prev => ({ ...prev, [row.id]: e.target.value }))}><option value="">انتخاب طرف حساب</option>{row.counterpartyCandidate && !customers.includes(row.counterpartyCandidate) && <option value={row.counterpartyCandidate}>{row.counterpartyCandidate}</option>}{customers.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><PrimaryButton disabled={!pendingCounterpartyValue(row)} onClick={() => confirmCounterparty(row.id)}>تأیید</PrimaryButton></div>) : <span className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-xs text-slate-300">{counterpartyText(row)}</span>}</td><td>{money(row.amount)}</td><td>{row.trackingNo || '-'}</td><td>{row.expenseTraceId ? <div className="flex flex-wrap items-center gap-2"><span className="rounded-full border border-blue-800 bg-blue-950 px-3 py-1 text-xs text-blue-100">{row.expenseTraceId}</span><GhostButton onClick={() => goToExpense(row)}>مشاهده هزینه</GhostButton></div> : '-'}</td><td><GhostButton onClick={() => setReconciled(row.id)} disabled={movementNeedsCounterparty(row) && !row.confirmedCounterparty}>{row.reconciled ? 'تطبیق شده' : 'علامت تطبیق'}</GhostButton></td></tr>)}</tbody></table></div>
     </Card>
     <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">دفتر مرکزی تراکنش‌های بانکی (ماهیت‌محور)</h3><span className="text-xs text-slate-400">دریافت‌شده از حسابیار و ثبت‌های سیستمی، بر اساس ماهیت حسابداری</span></div>
       {typedLedgerError ? <div className="rounded-md border border-amber-700 bg-amber-950 p-3 text-xs text-amber-100">دفتر مرکزی در دسترس نیست: {typedLedgerError}</div> : <div className="overflow-auto"><table className="w-full text-right text-sm"><thead><tr className="border-b border-slate-700 text-slate-300"><th className="p-3">تاریخ</th><th>حساب</th><th>ورودی/خروجی</th><th>ماهیت</th><th>مبلغ</th><th>طرف حساب</th><th>منبع</th><th>وضعیت</th></tr></thead><tbody>{typedLedger.map(row => <tr key={row.id} className="border-b border-slate-800"><td className="p-3">{toJalali(row.transaction_date)}</td><td>{row.bank_account_name || '-'}</td><td>{row.direction === 'IN' ? <span className="text-emerald-300">ورودی</span> : <span className="text-rose-300">خروجی</span>}</td><td>{typedTransactionLabels[row.transaction_type] || row.transaction_type}</td><td>{money(row.amount)}</td><td>{row.party_name ? row.party_name : typedLedgerPartyRequired.has(row.transaction_type) ? <span className="text-amber-300">{typedLedgerCounterpartyLabel(row)}</span> : typedLedgerCounterpartyLabel(row)}</td><td>{typedSourceLabels[row.source] || row.source}</td><td>{row.posting_status === 'NEEDS_REVIEW' ? <span className="text-amber-300">نیازمند بررسی</span> : <span className="text-slate-300">{row.status === 'VOIDED' ? 'ابطال‌شده' : 'ثبت‌شده'}</span>}</td></tr>)}</tbody></table></div>}
@@ -5627,13 +5660,13 @@ function AdvisorPage({ finance }) {
 
 
 
-function ExpensesTable({ rows, onEdit, onDelete, onImport }) {
+function ExpensesTable({ rows, onEdit, onDelete, onImport, highlightTrace = '' }) {
 
   if (!rows.length) return <EmptyState />;
 
   return (
 
-    <div className="overflow-auto"><table className="w-full border-collapse text-sm"><thead><tr className="border-b border-slate-700 text-slate-400"><th className="p-3 text-right">منبع</th><th className="p-3 text-right">تاریخ</th><th className="p-3 text-right">گروه</th><th className="p-3 text-right">زیرگروه</th><th className="p-3 text-right">مبلغ</th><th className="p-3 text-right">توضیحات</th><th className="p-3 text-right">عملیات</th></tr></thead><tbody>{rows.map(row => <tr key={`${row.source}-${row.id}`} className="border-b border-slate-800"><td className="p-3">{row.source}</td><td className="p-3 whitespace-nowrap">{toJalali(row.date)}</td><td className="p-3 font-bold text-blue-200">{expenseGroup(row)}</td><td className="p-3">{expenseSubgroup(row)}</td><td className="p-3 font-bold text-red-200">{money(row.amount)}</td><td className="p-3 text-slate-400">{row.description || '-'}</td><td className="p-3">{row.financialRecord ? <div className="flex gap-2"><GhostButton onClick={() => onEdit(row)}>ویرایش</GhostButton><DangerButton onClick={() => onDelete(row.id)}>حذف</DangerButton></div> : <PrimaryButton onClick={() => onImport(row)}>ثبت در مالی</PrimaryButton>}</td></tr>)}</tbody></table></div>
+    <div className="overflow-auto"><table className="w-full border-collapse text-sm"><thead><tr className="border-b border-slate-700 text-slate-400"><th className="p-3 text-right">منبع</th><th className="p-3 text-right">تاریخ</th><th className="p-3 text-right">شناسه سند</th><th className="p-3 text-right">گروه</th><th className="p-3 text-right">زیرگروه</th><th className="p-3 text-right">مبلغ</th><th className="p-3 text-right">توضیحات</th><th className="p-3 text-right">عملیات</th></tr></thead><tbody>{rows.map(row => { const traceId = expenseTraceId(row); const isHighlighted = highlightTrace && matchesExpenseTrace(row, highlightTrace); return <tr key={`${row.source}-${row.id}`} className={`border-b border-slate-800 ${isHighlighted ? 'bg-blue-950/50' : ''}`}><td className="p-3">{row.source}</td><td className="p-3 whitespace-nowrap">{toJalali(row.date)}</td><td className="p-3"><span className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-xs text-blue-100">{traceId || '-'}</span></td><td className="p-3 font-bold text-blue-200">{expenseGroup(row)}</td><td className="p-3">{expenseSubgroup(row)}</td><td className="p-3 font-bold text-red-200">{money(row.amount)}</td><td className="p-3 text-slate-400">{row.description || '-'}</td><td className="p-3">{row.financialRecord ? <div className="flex gap-2"><GhostButton onClick={() => onEdit(row)}>ویرایش</GhostButton><DangerButton onClick={() => onDelete(row.id)}>حذف</DangerButton></div> : <PrimaryButton onClick={() => onImport(row)}>ثبت در مالی</PrimaryButton>}</td></tr>; })}</tbody></table></div>
 
   );
 
