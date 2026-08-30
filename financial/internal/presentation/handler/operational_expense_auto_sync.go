@@ -25,6 +25,12 @@ func (h *APIHandler) WorkspaceRootAutomated(w http.ResponseWriter, r *http.Reque
 			// in server logs.
 			log.Printf("operational expense auto-sync skipped: %v", err)
 		}
+		if err := h.syncHesabyarTransactionsIntoWorkspace(r); err != nil {
+			// HesabYar may have posted the typed core transaction while a workspace
+			// revision conflict prevented the UI rows from being written. Keep the
+			// UI recoverable on the next workspace read instead of losing the event.
+			log.Printf("HesabYar workspace backfill skipped: %v", err)
+		}
 	}
 	h.WorkspaceRootAudited(w, r)
 }

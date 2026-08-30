@@ -2266,6 +2266,14 @@ function useOperationalData() {
 
     setLoading(true);
 
+    const payloadRows = payload => {
+      if (Array.isArray(payload)) return payload;
+      if (Array.isArray(payload?.rows)) return payload.rows;
+      if (Array.isArray(payload?.data)) return payload.data;
+      if (Array.isArray(payload?.items)) return payload.items;
+      return [];
+    };
+
     Promise.all([
 
       apiGetSafe('/operational/customers'),
@@ -2292,25 +2300,25 @@ function useOperationalData() {
 
       .then(([customers, kala, yarn, invoices, yarnIn, chelleIn, yarnOut, expenses, miscIncoming, spareParts]) => setData({
 
-        customers: customers.rows || [],
+        customers: payloadRows(customers),
 
-        kala: kala.rows || [],
+        kala: payloadRows(kala),
 
-        yarn: yarn.rows || [],
+        yarn: payloadRows(yarn),
 
-        invoices: invoices.rows || [],
+        invoices: payloadRows(invoices),
 
-        yarnIn: yarnIn.rows || [],
+        yarnIn: payloadRows(yarnIn),
 
-        chelleIn: chelleIn.rows || [],
+        chelleIn: payloadRows(chelleIn),
 
-        yarnOut: yarnOut.rows || [],
+        yarnOut: payloadRows(yarnOut),
 
-        expenses: expenses.rows || [],
+        expenses: payloadRows(expenses),
 
-        miscIncoming: miscIncoming.rows || [],
+        miscIncoming: payloadRows(miscIncoming),
 
-        spareParts: spareParts.rows || [],
+        spareParts: payloadRows(spareParts),
 
       }))
 
@@ -4417,7 +4425,12 @@ function CostsPage({ finance, setFinance }) {
     };
   });
 
-  const allExpenseRows = [...financial, ...operational];
+  const expenseDisplayPriority = row => {
+    if (!row.financialRecord) return 0;
+    if (row.source_type === 'operational_expense') return 1;
+    return 2;
+  };
+  const allExpenseRows = [...operational, ...financial].sort((a, b) => expenseDisplayPriority(a) - expenseDisplayPriority(b));
 
   const groupOptions = [...new Set(allExpenseRows.map(x => x.group).filter(Boolean))];
 

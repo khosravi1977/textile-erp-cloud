@@ -3,6 +3,8 @@ package handler
 import (
 	"testing"
 	"time"
+
+	"github.com/erpsystem/textile-erp/internal/application/financecore"
 )
 
 func TestSetUnconfirmedCounterpartyKeepsOnlyCandidate(t *testing.T) {
@@ -142,5 +144,46 @@ func TestNormalizeMobileCategoryAllowsBankFeeWithoutParty(t *testing.T) {
 	group, subgroup := normalizeMobileCategory("کارمزد", "", "expense", &typedStateMeta{TypedType: "BANK_FEE", ExpenseLike: true})
 	if group != "هزینه" || subgroup != "کارمزد بانکی" {
 		t.Fatalf("bank fee category=%q subgroup=%q", group, subgroup)
+	}
+}
+
+func TestHesabyarBackfillRestoresMissingWorkspaceRows(t *testing.T) {
+	state := map[string]any{
+		"accounts":           []any{map[string]any{"id": "bank-main", "name": "بانک صادرات"}},
+		"mobileTransactions": []any{},
+		"movements":          []any{},
+		"expenses":           []any{},
+	}
+	changed := mergeHesabyarTransactionsIntoWorkspaceState(state, []financecore.BankTransaction{{
+		ID: 11, ExternalID: "HY-1690477958", TransactionType: financecore.TypePayrollPayment,
+		Direction: "OUT", Amount: 3009000, TransactionDate: "2026-08-29",
+		BankAccountID: 7, BankAccountName: "بانک صادرات", PartyName: "مهدی خسروی",
+		Description: "پرداخت حقوق", Source: financecore.SourceHesabyar, Status: "ACTIVE", PostingStatus: financecore.PostingPosted,
+	}}, time.Date(2026, 8, 30, 0, 0, 0, 0, time.UTC))
+	if !changed {
+		t.Fatal("missing HesabYar typed transaction was not backfilled")
+	}
+	movements := rowsFrom(state, "movements")
+	expenses := rowsFrom(state, "expenses")
+	mobileRows := rowsFrom(state, "mobileTransactions")
+	if len(movements) != 1 || len(expenses) != 1 || len(mobileRows) != 1 {
+		t.Fatalf("backfill counts movement/expense/mobile = %d/%d/%d", len(movements), len(expenses), len(mobileRows))
+	}
+	if stringValue(movements[0]["sourceId"]) != "1690477958" || stringValue(expenses[0]["sourceId"]) != "1690477958" {
+		t.Fatalf("source identity was not normalized: movement=%#v expense=%#v", movements[0], expenses[0])
+	}
+	if !boolValue(movements[0]["counterpartyConfirmed"]) || stringValue(movements[0]["payer"]) != "مهدی خسروی" {
+		t.Fatalf("ERP-resolved party should not require another dropdown confirmation: %#v", movements[0])
+	}
+	if stringValue(expenses[0]["group"]) != "هزینه" || stringValue(expenses[0]["subgroup"]) != "حقوق پرسنل" {
+		t.Fatalf("typed expense category was not normalized: %#v", expenses[0])
+	}
+	if mergeHesabyarTransactionsIntoWorkspaceState(state, []financecore.BankTransaction{{
+		ExternalID: "HY-1690477958", TransactionType: financecore.TypePayrollPayment,
+		Direction: "OUT", Amount: 3009000, TransactionDate: "2026-08-29",
+		BankAccountName: "بانک صادرات", PartyName: "مهدی خسروی",
+		Source: financecore.SourceHesabyar, Status: "ACTIVE",
+	}}, time.Now()) {
+		t.Fatal("backfill must be idempotent and avoid duplicate workspace rows")
 	}
 }
