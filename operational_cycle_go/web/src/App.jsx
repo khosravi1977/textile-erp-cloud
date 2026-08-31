@@ -1011,6 +1011,8 @@ function NakhVor({ lookups, notify, refreshLookups }) {
 
     notify={notify}
 
+    afterSave={refreshLookups}
+
     filters={[['mosh','مشتری'],['nakh','نخ'],['hambaft','همبافت']]}
 
     mapEdit={row => ({ id: row.id, hambaft: row.hambaft, weight: Math.abs(Number(row.weight || 0)), mosh_id: row.mosh_id || '', nakh_id: row.nakh_id || '' })}
@@ -1156,6 +1158,9 @@ function NakhSalon({ lookups, notify, refreshLookups }) {
     renderForm={(form, set) => {
       const current = movements.find(x => Number(x.id) === Number(form.id));
       const inventoryRow = inventory.find(x => x.mosh === form.mosh_name && x.hambaft === form.ham_nakh && x.yarn === form.nakh_name);
+      const warehouseRows = (inventory || [])
+        .filter(x => String(x.hambaft || '').trim() && Number(x.inventory || 0) > 0.001);
+      const hambaftOptions = buildHallYarnHambaftOptions(warehouseRows, lookups.hambaftYarn, form);
       const warehouseAvailable = Number(inventoryRow?.inventory || 0)
         + (current?.vor_khor === 'vorud' ? Math.abs(Number(current.weight || 0)) : 0)
         - (current?.vor_khor === 'khoroj' ? Math.abs(Number(current.weight || 0)) : 0);
@@ -1174,13 +1179,24 @@ function NakhSalon({ lookups, notify, refreshLookups }) {
         if (selected) {
           set('machine', normalizeMachineNumber(selected.machine));
           set('mosh_name', selected.mosh_name || form.mosh_name || '');
+          set('nakh_name', selected.nakh_name || form.nakh_name || '');
+        }
+      };
+      const chooseHambaft = value => {
+        const hambaft = String(value || '').trim();
+        set('ham_nakh', hambaft);
+        const matches = warehouseRows.filter(x => String(x.hambaft || '').trim() === hambaft);
+        const preferred = matches.find(x => (!form.mosh_name || x.mosh === form.mosh_name) && (!form.nakh_name || x.yarn === form.nakh_name)) || matches[0];
+        if (preferred) {
+          if (!form.mosh_name) set('mosh_name', preferred.mosh || '');
+          if (!form.nakh_name) set('nakh_name', preferred.yarn || '');
         }
       };
       return <>
 
       <Input label="شماره ماشین" value={form.machine} onChange={v => set('machine', normalizeMachineNumber(v))} hint="باید با ماشین چله فعال یکسان باشد." />
 
-      <Select label="هم‌بافت نخ پود" value={form.ham_nakh} onChange={v => set('ham_nakh', v)} items={(lookups.hambaftYarn || []).map(x => ({ id: x, name: x }))} />
+      <Select label="هم‌بافت نخ پود" value={form.ham_nakh} onChange={chooseHambaft} items={hambaftOptions} />
 
       <Input label="وزن" type="number" value={form.weight} onChange={v => set('weight', Number(v))} />
 
@@ -4463,6 +4479,42 @@ function uniqueOptions(items, selected) {
 
   return [{ id: selected, name: `رکورد انتخابی ${selected}` }, ...items];
 
+}
+
+function buildHallYarnHambaftOptions(inventoryRows = [], lookupHambafts = [], form = {}) {
+  const selected = String(form.ham_nakh || '').trim();
+  const owner = String(form.mosh_name || '').trim();
+  const yarn = String(form.nakh_name || '').trim();
+  const normalize = value => String(value ?? '').trim();
+  const seen = new Set();
+  const options = [];
+  const add = (id, name) => {
+    const key = normalize(id);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    options.push({ id: key, name: name || key });
+  };
+  const priority = row => {
+    const rowOwner = normalize(row.mosh);
+    const rowYarn = normalize(row.yarn);
+    let score = 0;
+    if (owner && rowOwner === owner) score += 4;
+    if (yarn && rowYarn === yarn) score += 2;
+    return score;
+  };
+  [...inventoryRows]
+    .filter(row => normalize(row.hambaft) && Number(row.inventory || 0) > 0.001)
+    .sort((a, b) => priority(b) - priority(a) || normalize(a.hambaft).localeCompare(normalize(b.hambaft), 'fa'))
+    .forEach(row => {
+      const parts = [normalize(row.hambaft)];
+      if (normalize(row.mosh)) parts.push(normalize(row.mosh));
+      if (normalize(row.yarn)) parts.push(normalize(row.yarn));
+      parts.push(`مانده ${fmt(row.inventory)} کیلو`);
+      add(row.hambaft, parts.join(' - '));
+    });
+  for (const hambaft of lookupHambafts || []) add(hambaft, normalize(hambaft));
+  if (selected) add(selected, `رکورد انتخابی ${selected}`);
+  return options;
 }
 
 function uniqueText(items) {
