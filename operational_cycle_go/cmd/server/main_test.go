@@ -246,6 +246,29 @@ func TestAdvisorMenuIsSeededAndReadOnlyUsersCanOpenIt(t *testing.T) {
 	}
 }
 
+func TestMiscMovementMenuIsSeeded(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:misc-movement-menu-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	application := &app{db: db, dialect: "sqlite", dbLabel: "test"}
+	if err := application.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	var name string
+	var restricted int
+	if err := application.queryRow(`SELECT menu_name, is_restricted FROM menu_items WHERE menu_key='v-kh-moto'`).Scan(&name, &restricted); err != nil {
+		t.Fatal(err)
+	}
+	if name != "ورودی/خروجی متفرقه" || restricted != 0 {
+		t.Fatalf("unexpected misc movement menu: name=%q restricted=%d", name, restricted)
+	}
+	if allowed, err := application.userHasMenuAccess(99, "manager", "v-kh-moto"); err != nil || !allowed {
+		t.Fatalf("misc movement must be available to managers: allowed=%v err=%v", allowed, err)
+	}
+}
+
 func TestAdvisorPayloadUsesOperationalManagementData(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:advisor-payload-test?mode=memory&cache=shared")
 	if err != nil {

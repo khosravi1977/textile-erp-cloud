@@ -1048,10 +1048,11 @@ func (a *app) seedMenus() error {
 		{"expenses", "هزینه‌ها", "/expenses", "💰", 1, 12},
 		{"advisor", "تحلیل و مشاور هوشمند", "/advisor", "🧠", 0, 13},
 		{"reports", "گزارشات", "/reports", "📊", 0, 14},
-		{"database", "مدیریت دیتابیس", "/database", "🗄️", 1, 15},
-		{"machinery-services", "خدمات ماشین‌آلات", "/machinery-services", "🔧", 1, 16},
-		{"spare-parts", "موجودی انبار قطعات", "/spare-parts", "⚙️", 1, 17},
-		{"users", "مدیریت کاربران", "/users", "👥", 1, 18},
+		{"v-kh-moto", "ورودی/خروجی متفرقه", "/v-kh-moto", "🔁", 0, 15},
+		{"database", "مدیریت دیتابیس", "/database", "🗄️", 1, 16},
+		{"machinery-services", "خدمات ماشین‌آلات", "/machinery-services", "🔧", 1, 17},
+		{"spare-parts", "موجودی انبار قطعات", "/spare-parts", "⚙️", 1, 18},
+		{"users", "مدیریت کاربران", "/users", "👥", 1, 19},
 	}
 	for _, m := range menus {
 		if _, err := a.exec(`INSERT INTO menu_items (menu_key, menu_name, path, icon, is_restricted, sort_order) VALUES (?,?,?,?,?,?)

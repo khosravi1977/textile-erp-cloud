@@ -4466,6 +4466,7 @@ func operationalPortalMenusForKeys(keys []string) []map[string]any {
 		{"menu_key": "advisor", "menu_name": "تحلیل و مشاور هوشمند", "path": "/advisor", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "expenses", "menu_name": "هزینه‌ها", "path": "/expenses", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "reports", "menu_name": "گزارشات", "path": "/reports", "icon": "", "is_restricted": 0, "has_access": 1},
+		{"menu_key": "v-kh-moto", "menu_name": "ورودی/خروجی متفرقه", "path": "/v-kh-moto", "icon": "", "is_restricted": 0, "has_access": 1},
 		{"menu_key": "database", "menu_name": "مدیریت دیتابیس", "path": "/database", "icon": "", "is_restricted": 1, "has_access": 1},
 		{"menu_key": "machinery-services", "menu_name": "خدمات ماشین‌آلات", "path": "/machinery-services", "icon": "", "is_restricted": 1, "has_access": 1},
 		{"menu_key": "spare-parts", "menu_name": "موجودی انبار قطعات", "path": "/spare-parts", "icon": "", "is_restricted": 1, "has_access": 1},
@@ -4874,7 +4875,7 @@ func operationalMenuKeys(record projectAccess) []string {
 		return []string{
 			"dashboard", "initial", "nakh-vor", "chelle", "gere", "nakh-salon", "formulas",
 			"salon", "consumption", "yarn-out", "empty-beam-out", "out-invoice", "expenses",
-			"advisor", "reports", "machinery-services", "spare-parts",
+			"advisor", "reports", "v-kh-moto", "machinery-services", "spare-parts",
 		}
 	case "accountant":
 		return []string{"dashboard", "advisor", "reports", "out-invoice", "expenses"}
