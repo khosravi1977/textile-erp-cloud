@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { expenseTraceId, linkedExpenseTraceId, mapOperationalExpense, matchesExpenseFilters, matchesExpenseTrace } from './expenseMapping.js';
+import { compareExpenseRows, expenseDateKey, expenseTraceId, linkedExpenseTraceId, mapOperationalExpense, matchesExpenseFilters, matchesExpenseTrace } from './expenseMapping.js';
 
 test('operational expense maps title to group and weaver to subgroup', () => {
   const mapped = mapOperationalExpense({
@@ -41,4 +41,14 @@ test('operational expense keeps document number as trace id', () => {
 test('manual expense gets a stable display trace from its id', () => {
   assert.equal(expenseTraceId({ id: 'exp-123' }), 'EXP-exp-123');
   assert.equal(linkedExpenseTraceId({ sourceExpenseTraceId: 'EXP-55', sourceExpense: 'exp-1' }), 'EXP-55');
+});
+
+test('expense filters and sorting use the visible Jalali date', () => {
+  const recent = mapOperationalExpense({ id: 128, tarikh: '1405/06/07', onvan_hazine: 'خرید', mablagh: 2470000 });
+  const older = mapOperationalExpense({ id: 120, tarikh: '1405/05/29', onvan_hazine: 'خرید', mablagh: 1800000 });
+
+  assert.equal(expenseDateKey('۱۴۰۵/۶/۷'), '1405/06/07');
+  assert.equal(matchesExpenseFilters(recent, { term: '', group: 'all', subgroup: 'all', source: 'all', accountId: 'all', fromDate: '1405/06/01', toDate: '1405/06/30' }), true);
+  assert.equal(matchesExpenseFilters(older, { term: '', group: 'all', subgroup: 'all', source: 'all', accountId: 'all', fromDate: '1405/06/01', toDate: '1405/06/30' }), false);
+  assert.deepEqual([older, recent].sort(compareExpenseRows).map(row => row.id), [128, 120]);
 });

@@ -187,3 +187,37 @@ func TestHesabyarBackfillRestoresMissingWorkspaceRows(t *testing.T) {
 		t.Fatal("backfill must be idempotent and avoid duplicate workspace rows")
 	}
 }
+
+func TestHesabyarBackfillRepairsPartialWorkspaceRows(t *testing.T) {
+	state := map[string]any{
+		"accounts": []any{map[string]any{"id": "bank-main", "name": "بانک صادرات"}},
+		"mobileTransactions": []any{map[string]any{
+			"id": "sms-269267322", "externalId": "269267322", "source_type": "mobile_sms", "sourceId": "269267322",
+		}},
+		"movements": []any{},
+		"expenses":  []any{},
+	}
+	changed := mergeHesabyarTransactionsIntoWorkspaceState(state, []financecore.BankTransaction{{
+		ExternalID: "HY-269267322", TransactionType: financecore.TypeDirectExpense,
+		Direction: "OUT", Amount: 14012200, TransactionDate: "2026-08-29",
+		BankAccountName: "بانک صادرات", Description: "بانک صادرات",
+		Source: financecore.SourceHesabyar, Status: "ACTIVE",
+	}}, time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC))
+	if !changed {
+		t.Fatal("partial HesabYar workspace row was not repaired")
+	}
+	if len(rowsFrom(state, "mobileTransactions")) != 1 {
+		t.Fatalf("existing mobile transaction should not be duplicated: %#v", rowsFrom(state, "mobileTransactions"))
+	}
+	if len(rowsFrom(state, "movements")) != 1 || len(rowsFrom(state, "expenses")) != 1 {
+		t.Fatalf("missing movement/expense were not restored: movements=%#v expenses=%#v", rowsFrom(state, "movements"), rowsFrom(state, "expenses"))
+	}
+	if mergeHesabyarTransactionsIntoWorkspaceState(state, []financecore.BankTransaction{{
+		ExternalID: "HY-269267322", TransactionType: financecore.TypeDirectExpense,
+		Direction: "OUT", Amount: 14012200, TransactionDate: "2026-08-29",
+		BankAccountName: "بانک صادرات", Description: "بانک صادرات",
+		Source: financecore.SourceHesabyar, Status: "ACTIVE",
+	}}, time.Now()) {
+		t.Fatal("repair must remain idempotent")
+	}
+}

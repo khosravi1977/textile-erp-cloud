@@ -74,7 +74,7 @@ func mergeHesabyarTransactionsIntoWorkspaceState(state map[string]any, transacti
 			continue
 		}
 		externalID := workspaceHesabyarExternalID(tx.ExternalID)
-		if externalID == "" || workspaceHasMobileTransaction(state, externalID) {
+		if externalID == "" {
 			continue
 		}
 		accountID := ensureWorkspaceBankAccount(&accounts, tx)
@@ -143,12 +143,20 @@ func mergeHesabyarTransactionsIntoWorkspaceState(state map[string]any, transacti
 			if partyName != "" {
 				applyConfirmedCounterparty(expense, partyName)
 			}
-			state["expenses"] = append([]any{expense}, anyRows(state, "expenses")...)
+			if !workspaceHasHesabyarRow(state, "expenses", externalID) {
+				state["expenses"] = append([]any{expense}, anyRows(state, "expenses")...)
+				changed = true
+			}
 			movement["sourceExpense"] = expenseID
 		}
-		state["mobileTransactions"] = append([]any{mobileRow}, anyRows(state, "mobileTransactions")...)
-		state["movements"] = append([]any{movement}, anyRows(state, "movements")...)
-		changed = true
+		if !workspaceHasHesabyarRow(state, "mobileTransactions", externalID) {
+			state["mobileTransactions"] = append([]any{mobileRow}, anyRows(state, "mobileTransactions")...)
+			changed = true
+		}
+		if !workspaceHasHesabyarRow(state, "movements", externalID) {
+			state["movements"] = append([]any{movement}, anyRows(state, "movements")...)
+			changed = true
+		}
 	}
 	if changed {
 		state["accounts"] = mapsToAny(accounts)
@@ -172,14 +180,12 @@ func workspaceHesabyarExternalID(value string) string {
 	return strings.TrimSpace(value)
 }
 
-func workspaceHasMobileTransaction(state map[string]any, externalID string) bool {
+func workspaceHasHesabyarRow(state map[string]any, key, externalID string) bool {
 	values := map[string]bool{externalID: true, "HY-" + externalID: true}
-	for _, key := range []string{"mobileTransactions", "movements", "expenses"} {
-		for _, row := range rowsFrom(state, key) {
-			for _, field := range []string{"externalId", "sourceId", "sourceMobileTransaction"} {
-				if values[strings.TrimSpace(stringValue(row[field]))] {
-					return true
-				}
+	for _, row := range rowsFrom(state, key) {
+		for _, field := range []string{"externalId", "sourceId", "sourceMobileTransaction"} {
+			if values[strings.TrimSpace(stringValue(row[field]))] {
+				return true
 			}
 		}
 	}

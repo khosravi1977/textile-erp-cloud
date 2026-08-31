@@ -5,7 +5,7 @@ import QRCode from 'qrcode';
 import { confirmMovementCounterparty, confirmedMovementCounterparty, movementCounterpartyLabel, movementNeedsCounterparty } from './counterparty.js';
 import { isDateWithinInclusiveRange } from './dateRange.js';
 import { isValidSayadId, issuedChecksForCheckbook, normalizeSayadId, validateCheckbookUpdate } from './checkbook.js';
-import { expenseTraceId, linkedExpenseTraceId, mapOperationalExpense, matchesExpenseFilters, matchesExpenseTrace } from './expenseMapping.js';
+import { compareExpenseRows, expenseTraceId, linkedExpenseTraceId, mapOperationalExpense, matchesExpenseFilters, matchesExpenseTrace } from './expenseMapping.js';
 import { formatTableValue, toPersianDigits } from './localization.js';
 import { normalizeEditableJalaliDate } from './persianDateInput.js';
 import { isMonetaryColumn, monetaryColumnTotals, parseLocalizedNumber } from './reportTotals.js';
@@ -340,7 +340,7 @@ const defaultExpenseGroups = [
 
 const expenseGroup = row => row.group || row.title || 'سایر';
 const expenseSubgroup = row => row.subgroup || row.title || 'سایر';
-const expenseSourceLabel = row => row.source_type === 'mobile_sms' ? 'اپ موبایل' : row.source_type === 'operational_expense' ? 'عملیاتی' : 'ثبت وب‌اپ';
+const expenseSourceLabel = row => ['mobile_sms', 'hesabyar_mobile'].includes(row.source_type) ? 'حسابیار' : row.source_type === 'operational_expense' ? 'عملیاتی' : 'ثبت وب‌اپ';
 
 
 
@@ -4382,6 +4382,10 @@ function CostsPage({ finance, setFinance }) {
 
   const [accountFilter, setAccountFilter] = useState('all');
 
+  const [fromDate, setFromDate] = useState('');
+
+  const [toDate, setToDate] = useState('');
+
   const [editingId, setEditingId] = useState('');
 
   const [formMessage, setFormMessage] = useState({ type: '', text: '' });
@@ -4430,7 +4434,10 @@ function CostsPage({ finance, setFinance }) {
     if (row.source_type === 'operational_expense') return 1;
     return 2;
   };
-  const allExpenseRows = [...operational, ...financial].sort((a, b) => expenseDisplayPriority(a) - expenseDisplayPriority(b));
+  const allExpenseRows = [...operational, ...financial].sort((a, b) => {
+    const byPriority = expenseDisplayPriority(a) - expenseDisplayPriority(b);
+    return byPriority || compareExpenseRows(a, b);
+  });
 
   const groupOptions = [...new Set(allExpenseRows.map(x => x.group).filter(Boolean))];
 
@@ -4438,13 +4445,13 @@ function CostsPage({ finance, setFinance }) {
 
   const sourceOptions = [...new Set(allExpenseRows.map(x => x.source).filter(Boolean))];
 
-  const rows = allExpenseRows.filter(x => matchesExpenseFilters(x, { term, group: categoryFilter, subgroup: subgroupFilter, source: sourceFilter, accountId: accountFilter }));
+  const rows = allExpenseRows.filter(x => matchesExpenseFilters(x, { term, group: categoryFilter, subgroup: subgroupFilter, source: sourceFilter, accountId: accountFilter, fromDate, toDate }));
 
   const total = rows.reduce((s, x) => s + Number(x.amount || 0), 0);
 
   const printCosts = () => {
 
-    const html = `<p>منبع: ${sourceFilter === 'all' ? 'همه' : sourceFilter} | گروه: ${categoryFilter === 'all' ? 'همه' : categoryFilter} | زیرگروه: ${subgroupFilter === 'all' ? 'همه' : subgroupFilter} | حساب: ${accountFilter === 'all' ? 'همه' : finance.accounts.find(a => a.id === accountFilter)?.name || '-'}</p><table><thead><tr><th>منبع</th><th>تاریخ</th><th>شناسه سند</th><th>گروه</th><th>زیرگروه</th><th>مبلغ</th><th>توضیحات</th></tr></thead><tbody>${rows.map(x => `<tr><td>${x.source}</td><td>${toJalali(x.date) || ''}</td><td>${expenseTraceId(x) || '-'}</td><td>${expenseGroup(x)}</td><td>${expenseSubgroup(x)}</td><td>${money(x.amount)}</td><td>${x.description || ''}</td></tr>`).join('')}</tbody></table>`;
+    const html = `<p>منبع: ${sourceFilter === 'all' ? 'همه' : sourceFilter} | گروه: ${categoryFilter === 'all' ? 'همه' : categoryFilter} | زیرگروه: ${subgroupFilter === 'all' ? 'همه' : subgroupFilter} | حساب: ${accountFilter === 'all' ? 'همه' : finance.accounts.find(a => a.id === accountFilter)?.name || '-'} | از تاریخ: ${toJalali(fromDate) || '-'} | تا تاریخ: ${toJalali(toDate) || '-'}</p><table><thead><tr><th>منبع</th><th>تاریخ</th><th>شناسه سند</th><th>گروه</th><th>زیرگروه</th><th>مبلغ</th><th>توضیحات</th></tr></thead><tbody>${rows.map(x => `<tr><td>${x.source}</td><td>${toJalali(x.date) || ''}</td><td>${expenseTraceId(x) || '-'}</td><td>${expenseGroup(x)}</td><td>${expenseSubgroup(x)}</td><td>${money(x.amount)}</td><td>${x.description || ''}</td></tr>`).join('')}</tbody></table>`;
 
     printSection('گزارش هزينه ها', html);
 
@@ -4631,7 +4638,7 @@ function CostsPage({ finance, setFinance }) {
 
       </Card>
 
-      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ليست هزينه ها</h3><div className="flex flex-wrap gap-2"><SelectInput value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}><option value="all">همه منابع</option>{sourceOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={categoryFilter} onChange={e => { setCategoryFilter(e.target.value); setSubgroupFilter('all'); }}><option value="all">همه گروه‌ها</option>{groupOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={subgroupFilter} onChange={e => setSubgroupFilter(e.target.value)}><option value="all">همه زیرگروه‌ها</option>{subgroupOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={accountFilter} onChange={e => setAccountFilter(e.target.value)}><option value="all">همه بانک/صندوق</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><TextInput placeholder="جستجو در گروه، زیرگروه یا شناسه سند" value={term} onChange={e => setTerm(e.target.value)} />{term && <GhostButton onClick={() => setTerm('')}>پاک کردن جستجو</GhostButton>}<PrimaryButton onClick={printCosts}>چاپ</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش هزینه‌ها', rows.map(row => ({ ...row, trace_id: expenseTraceId(row), group_name: expenseGroup(row), subgroup_name: expenseSubgroup(row) })), [['source','منبع'],['date','تاریخ'],['trace_id','شناسه سند'],['group_name','گروه'],['subgroup_name','زیرگروه'],['amount','مبلغ'],['description','توضیحات']], { label: 'جمع کل', amount: total })}>خروجی اکسل</PrimaryButton></div></div>{loading && <p className="text-sm text-slate-400">در حال دريافت...</p>}{error ? <ErrorBox message={error} /> : <ExpensesTable rows={rows} onEdit={editExpense} onDelete={deleteExpense} onImport={importOperationalExpense} highlightTrace={term} />}</Card>
+      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ليست هزينه ها</h3><div className="flex flex-wrap gap-2"><SelectInput value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}><option value="all">همه منابع</option>{sourceOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={categoryFilter} onChange={e => { setCategoryFilter(e.target.value); setSubgroupFilter('all'); }}><option value="all">همه گروه‌ها</option>{groupOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={subgroupFilter} onChange={e => setSubgroupFilter(e.target.value)}><option value="all">همه زیرگروه‌ها</option>{subgroupOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={accountFilter} onChange={e => setAccountFilter(e.target.value)}><option value="all">همه بانک/صندوق</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><DateInput value={fromDate} onChange={e => setFromDate(e.target.value)} /><DateInput value={toDate} onChange={e => setToDate(e.target.value)} /><TextInput placeholder="جستجو در گروه، زیرگروه یا شناسه سند" value={term} onChange={e => setTerm(e.target.value)} />{term && <GhostButton onClick={() => setTerm('')}>پاک کردن جستجو</GhostButton>}<PrimaryButton onClick={printCosts}>چاپ</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش هزینه‌ها', rows.map(row => ({ ...row, trace_id: expenseTraceId(row), group_name: expenseGroup(row), subgroup_name: expenseSubgroup(row) })), [['source','منبع'],['date','تاریخ'],['trace_id','شناسه سند'],['group_name','گروه'],['subgroup_name','زیرگروه'],['amount','مبلغ'],['description','توضیحات']], { label: 'جمع کل', amount: total })}>خروجی اکسل</PrimaryButton></div></div>{loading && <p className="text-sm text-slate-400">در حال دريافت...</p>}{error ? <ErrorBox message={error} /> : <ExpensesTable rows={rows} onEdit={editExpense} onDelete={deleteExpense} onImport={importOperationalExpense} highlightTrace={term} />}</Card>
 
     </div>
 
@@ -5073,7 +5080,7 @@ function ProfessionalBankCashPage({ finance, setFinance, onGo }) {
   const [typedLedgerError, setTypedLedgerError] = useState('');
   useEffect(() => {
     let cancelled = false;
-    apiJSON('/v1/financial/transactions?limit=100')
+    apiJSON('/v1/financial/transactions?limit=1000')
       .then(payload => { if (!cancelled) setTypedLedger(payload.transactions || []); })
       .catch(error => { if (!cancelled) setTypedLedgerError(error.message || String(error)); });
     return () => { cancelled = true; };
@@ -5138,7 +5145,8 @@ function ProfessionalBankCashPage({ finance, setFinance, onGo }) {
       && (filters.reconciled === 'all' || String(Boolean(row.reconciled)) === filters.reconciled)
       && (!filters.traceId || String(row.expenseTraceId || '').includes(String(filters.traceId)) || String(row.sourceExpense || '').includes(String(filters.traceId)))
       && isDateWithinInclusiveRange(jalaliSortKey(row.date), jalaliSortKey(filters.fromDate), jalaliSortKey(filters.toDate))
-    ));
+    ))
+    .sort((a, b) => jalaliSortKey(b.date).localeCompare(jalaliSortKey(a.date)) || String(b.id || '').localeCompare(String(a.id || '')));
   const typeLabels = { customer_receipt: 'دریافت از مشتری', supplier_payment: 'پرداخت به فروشنده', transfer: 'انتقال بین حساب‌ها', expense: 'پرداخت هزینه', other_income: 'سایر درآمد', capital: 'آورده/برداشت سرمایه' };
   const movementTypeLabel = row => typedTransactionLabels[row.typedType] || typeLabels[row.transactionType] || row.direction;
   const counterpartyText = row => movementCounterpartyLabel(row);
