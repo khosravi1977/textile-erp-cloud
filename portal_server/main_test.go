@@ -671,7 +671,7 @@ func TestOperationalPortalMenusRespectCentralRoleAndExcludeUserManagement(t *tes
 		key, _ := menu["menu_key"].(string)
 		keys[key] = true
 	}
-	if !keys["expenses"] || !keys["machinery-services"] || !keys["spare-parts"] {
+	if !keys["expenses"] || !keys["v-kh-moto"] || !keys["machinery-services"] || !keys["spare-parts"] {
 		t.Fatalf("manager operational menus are incomplete: %#v", keys)
 	}
 	if keys["database"] || keys["users"] {
