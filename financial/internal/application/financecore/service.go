@@ -661,9 +661,11 @@ type Party struct {
 
 // ListParties returns parties with their roles, optionally filtered by role.
 func (s *Service) ListParties(ctx context.Context, companyID int64, role string) ([]Party, error) {
-	rows, err := postgres.WithCompanySession(ctx, s.db, companyID, func(q postgres.SessionQueryable) (*sql.Rows, error) {
+	return postgres.WithCompanySession(ctx, s.db, companyID, func(q postgres.SessionQueryable) ([]Party, error) {
+		var rows *sql.Rows
+		var err error
 		if strings.TrimSpace(role) != "" {
-			return q.QueryContext(ctx, `
+			rows, err = q.QueryContext(ctx, `
 				SELECT p.id, p.name, p.type, COALESCE(array_agg(pr.role) FILTER (WHERE pr.role IS NOT NULL), '{}')
 				FROM parties p
 				LEFT JOIN party_roles pr ON pr.party_id=p.id
@@ -673,31 +675,32 @@ func (s *Service) ListParties(ctx context.Context, companyID int64, role string)
 				GROUP BY p.id, p.name, p.type
 				ORDER BY p.name
 			`, companyID, strings.ToUpper(strings.TrimSpace(role)))
+		} else {
+			rows, err = q.QueryContext(ctx, `
+				SELECT p.id, p.name, p.type, COALESCE(array_agg(pr.role) FILTER (WHERE pr.role IS NOT NULL), '{}')
+				FROM parties p
+				LEFT JOIN party_roles pr ON pr.party_id=p.id
+				WHERE p.company_id=$1 AND p.is_active=TRUE
+				GROUP BY p.id, p.name, p.type
+				ORDER BY p.name
+			`, companyID)
 		}
-		return q.QueryContext(ctx, `
-			SELECT p.id, p.name, p.type, COALESCE(array_agg(pr.role) FILTER (WHERE pr.role IS NOT NULL), '{}')
-			FROM parties p
-			LEFT JOIN party_roles pr ON pr.party_id=p.id
-			WHERE p.company_id=$1 AND p.is_active=TRUE
-			GROUP BY p.id, p.name, p.type
-			ORDER BY p.name
-		`, companyID)
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	parties := make([]Party, 0)
-	for rows.Next() {
-		var item Party
-		var roles []byte
-		if err := rows.Scan(&item.ID, &item.Name, &item.Type, &roles); err != nil {
+		if err != nil {
 			return nil, err
 		}
-		item.Roles = parseTextArray(string(roles))
-		parties = append(parties, item)
-	}
-	return parties, rows.Err()
+		defer rows.Close()
+		parties := make([]Party, 0)
+		for rows.Next() {
+			var item Party
+			var roles []byte
+			if err := rows.Scan(&item.ID, &item.Name, &item.Type, &roles); err != nil {
+				return nil, err
+			}
+			item.Roles = parseTextArray(string(roles))
+			parties = append(parties, item)
+		}
+		return parties, rows.Err()
+	})
 }
 
 // LedgerEntry is one line of a party ledger view.
@@ -711,8 +714,8 @@ type LedgerEntry struct {
 
 // PartyLedger returns the voucher-line ledger for one party.
 func (s *Service) PartyLedger(ctx context.Context, companyID, partyID int64) ([]LedgerEntry, error) {
-	rows, err := postgres.WithCompanySession(ctx, s.db, companyID, func(q postgres.SessionQueryable) (*sql.Rows, error) {
-		return q.QueryContext(ctx, `
+	return postgres.WithCompanySession(ctx, s.db, companyID, func(q postgres.SessionQueryable) ([]LedgerEntry, error) {
+		rows, err := q.QueryContext(ctx, `
 			SELECT v.voucher_date::text, COALESCE(v.description,''), COALESCE(v.voucher_no,''),
 			       COALESCE(l.debit,0), COALESCE(l.credit,0)
 			FROM journal_voucher_lines l
@@ -720,20 +723,20 @@ func (s *Service) PartyLedger(ctx context.Context, companyID, partyID int64) ([]
 			WHERE l.company_id=$1 AND l.party_id=$2 AND v.status='Posted'
 			ORDER BY v.voucher_date, v.id
 		`, companyID, partyID)
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	entries := make([]LedgerEntry, 0)
-	for rows.Next() {
-		var item LedgerEntry
-		if err := rows.Scan(&item.Date, &item.Description, &item.DocumentNo, &item.Debit, &item.Credit); err != nil {
+		if err != nil {
 			return nil, err
 		}
-		entries = append(entries, item)
-	}
-	return entries, rows.Err()
+		defer rows.Close()
+		entries := make([]LedgerEntry, 0)
+		for rows.Next() {
+			var item LedgerEntry
+			if err := rows.Scan(&item.Date, &item.Description, &item.DocumentNo, &item.Debit, &item.Credit); err != nil {
+				return nil, err
+			}
+			entries = append(entries, item)
+		}
+		return entries, rows.Err()
+	})
 }
 
 // BankTransaction is the list payload for the bank & cash ledger view.
@@ -759,8 +762,8 @@ func (s *Service) ListTransactions(ctx context.Context, companyID int64, limit i
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := postgres.WithCompanySession(ctx, s.db, companyID, func(q postgres.SessionQueryable) (*sql.Rows, error) {
-		return q.QueryContext(ctx, `
+	return postgres.WithCompanySession(ctx, s.db, companyID, func(q postgres.SessionQueryable) ([]BankTransaction, error) {
+		rows, err := q.QueryContext(ctx, `
 			SELECT t.id, t.external_transaction_id, t.transaction_type, t.direction,
 			       t.amount, t.transaction_date::text, t.bank_account_id,
 			       COALESCE(a.name,''), COALESCE(t.party_id,0), COALESCE(p.name,''),
@@ -772,23 +775,23 @@ func (s *Service) ListTransactions(ctx context.Context, companyID int64, limit i
 			ORDER BY t.transaction_date DESC, t.id DESC
 			LIMIT $2
 		`, companyID, limit)
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	result := make([]BankTransaction, 0)
-	for rows.Next() {
-		var item BankTransaction
-		if err := rows.Scan(&item.ID, &item.ExternalID, &item.TransactionType, &item.Direction,
-			&item.Amount, &item.TransactionDate, &item.BankAccountID,
-			&item.BankAccountName, &item.PartyID, &item.PartyName,
-			&item.Description, &item.Source, &item.Status, &item.PostingStatus); err != nil {
+		if err != nil {
 			return nil, err
 		}
-		result = append(result, item)
-	}
-	return result, rows.Err()
+		defer rows.Close()
+		result := make([]BankTransaction, 0)
+		for rows.Next() {
+			var item BankTransaction
+			if err := rows.Scan(&item.ID, &item.ExternalID, &item.TransactionType, &item.Direction,
+				&item.Amount, &item.TransactionDate, &item.BankAccountID,
+				&item.BankAccountName, &item.PartyID, &item.PartyName,
+				&item.Description, &item.Source, &item.Status, &item.PostingStatus); err != nil {
+				return nil, err
+			}
+			result = append(result, item)
+		}
+		return result, rows.Err()
+	})
 }
 
 // BankAccount is a bank/cash account row for the sync API.
@@ -802,27 +805,27 @@ type BankAccount struct {
 
 // ListBankAccounts returns the company's bank and cash accounts.
 func (s *Service) ListBankAccounts(ctx context.Context, companyID int64) ([]BankAccount, error) {
-	rows, err := postgres.WithCompanySession(ctx, s.db, companyID, func(q postgres.SessionQueryable) (*sql.Rows, error) {
-		return q.QueryContext(ctx, `
+	return postgres.WithCompanySession(ctx, s.db, companyID, func(q postgres.SessionQueryable) ([]BankAccount, error) {
+		rows, err := q.QueryContext(ctx, `
 			SELECT id, name, account_type, opening_balance, is_active
 			FROM bank_accounts
 			WHERE company_id=$1
 			ORDER BY id
 		`, companyID)
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	result := make([]BankAccount, 0)
-	for rows.Next() {
-		var item BankAccount
-		if err := rows.Scan(&item.ID, &item.Name, &item.AccountType, &item.OpeningBalance, &item.IsActive); err != nil {
+		if err != nil {
 			return nil, err
 		}
-		result = append(result, item)
-	}
-	return result, rows.Err()
+		defer rows.Close()
+		result := make([]BankAccount, 0)
+		for rows.Next() {
+			var item BankAccount
+			if err := rows.Scan(&item.ID, &item.Name, &item.AccountType, &item.OpeningBalance, &item.IsActive); err != nil {
+				return nil, err
+			}
+			result = append(result, item)
+		}
+		return result, rows.Err()
+	})
 }
 
 func ensureBankAccount(ctx context.Context, tx *sql.Tx, companyID, requestedID int64, name string) (int64, string, error) {
