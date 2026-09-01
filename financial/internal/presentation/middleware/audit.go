@@ -53,6 +53,13 @@ func AuditLog(next http.Handler) http.Handler {
 }
 
 func storeAuditLog(r *http.Request, statusCode int, duration time.Duration) {
+	// The management report supports a scoped query-string token so scheduled
+	// agents can call it. Never persist that query string to audit storage.
+	// The request is still represented by the structured path/status log above.
+	if r.URL.Path == "/api/management-report" {
+		return
+	}
+
 	db := postgres.DB
 	if db == nil {
 		return
