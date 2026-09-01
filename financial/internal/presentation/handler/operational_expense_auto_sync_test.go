@@ -9,8 +9,8 @@ import (
 
 func TestOperationalExpenseAutoSyncCreatesExpenseAndMovementWithoutApproval(t *testing.T) {
 	state := map[string]any{
-		"accounts": []any{map[string]any{"id": "cash-main", "name": "صندوق", "type": "صندوق", "opening": 1000.0}},
-		"expenses": []any{},
+		"accounts":  []any{map[string]any{"id": "cash-main", "name": "صندوق", "type": "صندوق", "opening": 1000.0}},
+		"expenses":  []any{},
 		"movements": []any{},
 	}
 	source := []operationalbridge.ExpenseRow{{
@@ -34,16 +34,40 @@ func TestOperationalExpenseAutoSyncCreatesExpenseAndMovementWithoutApproval(t *t
 	if stringValue(expense["accountId"]) != "cash-main" || number(expense["amount"]) != 250 {
 		t.Fatalf("expense destination/amount wrong: %#v", expense)
 	}
+	if stringValue(expense["source"]) != "عملیاتی" || stringValue(expense["operationalDate"]) != "1405/05/28" || stringValue(expense["group"]) != "برق" || stringValue(expense["subgroup"]) != "سایر" || stringValue(expense["doc_no"]) != "OP-42" || stringValue(expense["documentNo"]) != "OP-42" || stringValue(expense["enteredBy"]) != "javad" {
+		t.Fatalf("operational expense field mapping is wrong: %#v", expense)
+	}
 	movement := movements[0]
 	if stringValue(movement["sourceExpense"]) != stringValue(expense["id"]) || stringValue(movement["transactionType"]) != "expense" || stringValue(movement["direction"]) != "out" {
 		t.Fatalf("cash movement was not linked to auto-posted expense: %#v", movement)
+	}
+	if stringValue(movement["sourceExpenseTraceId"]) != "OP-42" {
+		t.Fatalf("cash movement did not keep expense trace id: %#v", movement)
+	}
+}
+
+func TestOperationalExpenseAutoSyncMapsWeaverToFinancialSubgroup(t *testing.T) {
+	state := map[string]any{
+		"accounts":  []any{map[string]any{"id": "cash-main"}},
+		"expenses":  []any{},
+		"movements": []any{},
+	}
+	source := []operationalbridge.ExpenseRow{{
+		ID: 43, Date: "1405/05/29", Title: "خرید پاکستانی", Operator: "کارت تنخواه", Weaver: "پاکستانیها", Amount: 400000, Description: "شرح", DocNo: "7528",
+	}}
+	if !mergeOperationalExpensesIntoState(state, source, "cash-main", time.Now()) {
+		t.Fatal("operational expense was not synchronized")
+	}
+	expense := rowsFrom(state, "expenses")[0]
+	if stringValue(expense["source"]) != "عملیاتی" || stringValue(expense["group"]) != "خرید پاکستانی" || stringValue(expense["subgroup"]) != "پاکستانیها" || stringValue(expense["amount"]) == "" || stringValue(expense["doc_no"]) != "7528" || stringValue(expense["description"]) != "شرح" {
+		t.Fatalf("field mapping mismatch: %#v", expense)
 	}
 }
 
 func TestOperationalExpenseAutoSyncIsIdempotent(t *testing.T) {
 	state := map[string]any{
-		"accounts": []any{map[string]any{"id": "cash-main"}},
-		"expenses": []any{},
+		"accounts":  []any{map[string]any{"id": "cash-main"}},
+		"expenses":  []any{},
 		"movements": []any{},
 	}
 	source := []operationalbridge.ExpenseRow{{ID: 7, Date: "2026-08-18", Title: "تعمیرات", Amount: 100}}
@@ -109,7 +133,7 @@ func TestOperationalExpenseAutoSyncAdoptsLegacyManualMovementInsteadOfDuplicatin
 
 func TestOperationalExpenseAccountResolutionUsesConfiguredDefault(t *testing.T) {
 	state := map[string]any{
-		"accounts": []any{map[string]any{"id": "first"}, map[string]any{"id": "configured"}},
+		"accounts":           []any{map[string]any{"id": "first"}, map[string]any{"id": "configured"}},
 		"accountingSettings": map[string]any{"operationalExpenseAccountId": "configured"},
 	}
 	if got := resolveOperationalExpenseAccountID(state); got != "configured" {
