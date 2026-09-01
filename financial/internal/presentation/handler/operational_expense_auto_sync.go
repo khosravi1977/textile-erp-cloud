@@ -167,9 +167,6 @@ func mergeOperationalExpensesIntoState(state map[string]any, source []operationa
 		}
 		subgroup := strings.TrimSpace(row.Weaver)
 		if subgroup == "" {
-			subgroup = strings.TrimSpace(row.Operator)
-		}
-		if subgroup == "" {
 			subgroup = "سایر"
 		}
 
@@ -191,9 +188,11 @@ func mergeOperationalExpensesIntoState(state map[string]any, source []operationa
 		desiredExpense["operationalDate"] = row.Date
 		desiredExpense["group"] = group
 		desiredExpense["subgroup"] = subgroup
+		desiredExpense["source"] = "عملیاتی"
 		desiredExpense["amount"] = row.Amount
 		desiredExpense["description"] = row.Description
 		desiredExpense["doc_no"] = row.DocNo
+		desiredExpense["documentNo"] = row.DocNo
 		desiredExpense["enteredBy"] = row.Operator
 		desiredExpense["accountId"] = accountID
 		desiredExpense["source_type"] = "operational_expense"
@@ -245,6 +244,7 @@ func mergeOperationalExpensesIntoState(state map[string]any, source []operationa
 		desiredMovement["amount"] = row.Amount
 		desiredMovement["description"] = row.Description
 		desiredMovement["sourceExpense"] = expenseID
+		desiredMovement["sourceExpenseTraceId"] = row.DocNo
 		desiredMovement["source_type"] = "operational_expense"
 		desiredMovement["sourceId"] = sourceID
 		desiredMovement["autoPosted"] = true
