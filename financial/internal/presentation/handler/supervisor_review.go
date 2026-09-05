@@ -124,6 +124,16 @@ func (h *APIHandler) SupervisorReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !hasLedger {
+		if requestctx.IsPortalAccess(r.Context()) {
+			canReadAll := false
+			for _, permission := range requestctx.Permissions(r.Context()) {
+				canReadAll = canReadAll || workspaceReadAllPermissions[permission]
+			}
+			if !canReadAll && current.Revision > 0 {
+				RespondError(w, 409, "راه‌اندازی اولیه دفتر کل باید توسط مدیر مالی انجام شود")
+				return
+			}
+		}
 		ledgerBefore = map[string]any{}
 	}
 	lines, err := supervisorLedgerDelta(ledgerBefore, proposed)
@@ -133,7 +143,7 @@ func (h *APIHandler) SupervisorReview(w http.ResponseWriter, r *http.Request) {
 	}
 	claim := supervisorApproval{Company: requestctx.CompanyID(r.Context()), User: requestctx.UserID(r.Context()), Revision: current.Revision, Checksum: checksum, SourceStamp: sourceStamp, Expires: time.Now().Add(10 * time.Minute).Unix()}
 	if strings.HasSuffix(r.URL.Path, "/preview") {
-		RespondJSON(w, 200, map[string]any{"approval": signSupervisorApproval(claim), "revision": current.Revision, "expires_at": claim.Expires, "lines": lines, "findings": supervisorStateFindings(proposed)})
+		RespondJSON(w, 200, map[string]any{"approval": signSupervisorApproval(claim), "revision": current.Revision, "expires_at": claim.Expires, "lines": lines})
 		return
 	}
 	if !checkSupervisorApproval(input.Approval, claim, time.Now()) {

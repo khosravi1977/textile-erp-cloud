@@ -1520,7 +1520,7 @@ export default function App() {
 
         {currentPage === 'dashboard' && <Dashboard finance={safeFinance} />}
         {currentPage === 'financialHealth' && <FinancialHealthPage finance={safeFinance} />}
-        {currentPage === 'financialSupervisor' && <FinancialSupervisorPage finance={safeFinance} operational={operationalState.data} revision={workspaceStatus.revision} onGo={setCurrentPage} />}
+        {currentPage === 'financialSupervisor' && <FinancialSupervisorPage revision={workspaceStatus.revision} allowedPageIds={allowedPageIds} onGo={setCurrentPage} />}
         {currentPage === 'initialData' && <InitialDataPage finance={safeFinance} setFinance={updateFinance} />}
         {currentPage === 'operational' && <OperationalPage />}
         {currentPage === 'invoices' && <InvoicePage finance={safeFinance} setFinance={updateFinance} />}
@@ -5663,7 +5663,7 @@ function CreditPage({ finance }) {
 
 
 
-function FinancialSupervisorPage({ finance, revision, onGo }) {
+function FinancialSupervisorPage({ revision, allowedPageIds, onGo }) {
   const [report, setReport] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(true);
@@ -5683,6 +5683,11 @@ function FinancialSupervisorPage({ finance, revision, onGo }) {
   const warnings = findings.filter(x => x.severity === 'warning').length;
   const fresh = !busy && !error && report?.revision === revision && report?.complete;
   const visible = filter === 'all' ? findings : findings.filter(x => x.severity === filter);
+  const openFinding = item => {
+    if (!allowedPageIds.includes(item.page)) return;
+    if (item.page === 'costs') { try { localStorage.setItem('textile-expense-trace-filter', item.reference); } catch {} }
+    onGo(item.page);
+  };
   return <div className="space-y-5">
     <Card>
       <div className="flex flex-wrap justify-between gap-3"><h2 className="text-xl font-bold">ناظر مالی و صف رسیدگی</h2><PrimaryButton disabled={busy} onClick={() => setRefresh(x => x + 1)}>بررسی دوباره</PrimaryButton></div>
@@ -5693,13 +5698,14 @@ function FinancialSupervisorPage({ finance, revision, onGo }) {
       </div>
       <p className="mt-3 text-sm">پایش پس‌زمینه سرور هر ۵ دقیقه بدون نیاز به باز بودن صفحه انجام می‌شود و فقط گزارش تشخیصی ذخیره می‌کند؛ ثبت یا اصلاح خودکار وجه انجام نمی‌دهد.</p>
       <p className="mt-2 text-xs text-slate-400">آخرین گزارش پس‌زمینه: {report?.backgroundCheckedAt ? new Date(report.backgroundCheckedAt).toLocaleString('fa-IR') : 'هنوز دریافت نشده؛ اجرای پس‌زمینه قابل تأیید نیست'}</p>
+      {report?.backgroundCheckedAt && Date.now() - new Date(report.backgroundCheckedAt).getTime() > 600000 && <p className="mt-2 text-sm text-amber-300">گزارش پس‌زمینه بیش از ده دقیقه به‌روز نشده است؛ سلامت پایش خودکار باید بررسی شود.</p>}
       <ul className="mt-3 list-inside list-disc text-sm text-slate-400">{(report?.coverage || []).map((item, i) => <li key={i}>{item}</li>)}</ul>
     </Card>
     <div className="grid grid-cols-2 gap-4"><Field label="مغایرت قطعی" value={num(critical)} tone="text-red-300" /><Field label="هشدار بررسی انسانی" value={num(warnings)} tone="text-amber-300" /></div>
     <Card>
       <div className="mb-4 flex flex-wrap justify-between gap-3"><h3 className="font-bold">صف رسیدگی — هیچ داده‌ای با مشاهده گزارش تغییر نمی‌کند</h3><div className="flex gap-2"><GhostButton onClick={() => setFilter('all')}>همه</GhostButton><GhostButton onClick={() => setFilter('critical')}>مغایرت</GhostButton><GhostButton onClick={() => setFilter('warning')}>هشدار</GhostButton></div></div>
       <div className="space-y-3">{visible.map(item => <article key={item.id} className={'rounded-lg border p-4 ' + (item.severity === 'critical' ? 'border-red-800 text-red-200' : 'border-amber-800 text-amber-200')}>
-        <div className="flex flex-wrap justify-between gap-3"><div><h4 className="font-bold">{item.title}</h4><div className="mt-2 text-sm">شناسه سند: <bdi>{item.reference}</bdi></div></div><GhostButton onClick={() => onGo(item.page)}>باز کردن بخش مربوطه</GhostButton></div>
+        <div className="flex flex-wrap justify-between gap-3"><div><h4 className="font-bold">{item.title}</h4><div className="mt-2 text-sm">شناسه سند: <bdi>{item.reference}</bdi></div></div>{allowedPageIds.includes(item.page) ? <GhostButton onClick={() => openFinding(item)}>باز کردن بخش مربوطه</GhostButton> : <span className="text-xs">اصلاح این مورد به دسترسی بخش مربوطه نیاز دارد.</span>}</div>
       </article>)}</div>
       {!visible.length && <p className="p-4 text-slate-400">{fresh ? 'در این فیلتر موردی پیدا نشد.' : 'تا تکمیل بررسی، خالی بودن لیست نشانه سلامت نیست.'}</p>}
     </Card>

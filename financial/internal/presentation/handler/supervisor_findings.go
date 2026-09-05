@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/erpsystem/textile-erp/internal/application/financecore"
 	"math"
 	"sort"
 )
@@ -69,7 +70,7 @@ func supervisorStateFindings(state map[string]any) []supervisorFinding {
 	for id, expense := range expenses {
 		if firstText(expense, "source_type") == "operational_expense" {
 			verified, _ := expense["verifiedPayment"].(map[string]any)
-			if firstText(verified, "accountId") != firstText(expense, "accountId") || firstText(verified, "date") != firstText(expense, "date") || !amountsEqual(number(verified["amount"]), number(expense["amount"])) {
+			if firstText(verified, "accountId") != firstText(expense, "accountId") || !supervisorSameDate(firstText(verified, "date"), firstText(expense, "date")) || !amountsEqual(number(verified["amount"]), number(expense["amount"])) {
 				add("payment-verification", "warning", "costs", id, "مبدأ عملیاتی بانک پرداخت‌کننده را مشخص نمی‌کند؛ حساب و مبلغ هزینه را در فرم مالی بررسی و ذخیره کنید", firstText(expense, "accountId"))
 			}
 		}
@@ -231,6 +232,12 @@ func supervisorPage(field string) string {
 	default:
 		return field
 	}
+}
+
+func supervisorSameDate(left, right string) bool {
+	a, errA := financecore.AccountingDate(left)
+	b, errB := financecore.AccountingDate(right)
+	return errA == nil && errB == nil && a.Equal(b)
 }
 
 // Both the preview and the committed journal use deriveWorkspaceLedger. There

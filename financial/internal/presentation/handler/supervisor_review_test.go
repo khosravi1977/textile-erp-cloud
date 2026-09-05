@@ -119,3 +119,12 @@ func TestSupervisorPreventsReissuingPaidChequeDuringInvoiceEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSupervisorMatchesEquivalentPersianAndGregorianExpenseDates(t *testing.T) {
+	if !supervisorSameDate("1405/06/10", "2026-09-01") {
+		t.Fatal("equivalent accounting dates did not match")
+	}
+	if supervisorSameDate("", "invalid") {
+		t.Fatal("invalid dates falsely matched")
+	}
+}

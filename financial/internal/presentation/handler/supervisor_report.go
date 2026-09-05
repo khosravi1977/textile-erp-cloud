@@ -84,7 +84,7 @@ func (h *APIHandler) buildSupervisorReport(r *http.Request) (supervisorReport, e
 					if subgroup == "" {
 						subgroup = "سایر"
 					}
-					if !amountsEqual(source.Amount, number(e["amount"])) || date.Format("2006-01-02") != firstText(e, "date") || group != firstText(e, "group") || subgroup != firstText(e, "subgroup") || source.DocNo != firstText(e, "documentNo", "doc_no") || source.Description != firstText(e, "description") || source.Operator != firstText(e, "enteredBy") {
+					if !amountsEqual(source.Amount, number(e["amount"])) || !supervisorSameDate(date.Format("2006-01-02"), firstText(e, "date")) || group != firstText(e, "group") || subgroup != firstText(e, "subgroup") || source.DocNo != firstText(e, "documentNo", "doc_no") || source.Description != firstText(e, "description") || source.Operator != firstText(e, "enteredBy") {
 						add("op-difference", "critical", "costs", id, "تاریخ، مبلغ یا مشخصات هزینه با مبدأ عملیاتی متفاوت است")
 					}
 				}
@@ -94,7 +94,7 @@ func (h *APIHandler) buildSupervisorReport(r *http.Request) (supervisorReport, e
 	}
 	// Stream every typed source transaction: no silent 500-row UI pagination cap.
 	_, err = postgres.WithCompanySession(r.Context(), postgres.DB, requestctx.CompanyID(r.Context()), func(q postgres.SessionQueryable) (bool, error) {
-		rows, err := q.QueryContext(r.Context(), `SELECT external_transaction_id,amount,direction,transaction_date::text,status FROM bank_transactions WHERE company_id=$1 AND source='HESABYAR'`, requestctx.CompanyID(r.Context()))
+		rows, err := q.QueryContext(r.Context(), `SELECT t.external_transaction_id,t.amount,t.direction,t.transaction_date::text,t.status,t.transaction_type,COALESCE(a.name,''),COALESCE(p.name,'') FROM bank_transactions t LEFT JOIN bank_accounts a ON a.id=t.bank_account_id AND a.company_id=t.company_id LEFT JOIN parties p ON p.id=t.party_id AND p.company_id=t.company_id WHERE t.company_id=$1 AND t.source='HESABYAR'`, requestctx.CompanyID(r.Context()))
 		if err != nil {
 			return false, err
 		}
@@ -106,10 +106,11 @@ func (h *APIHandler) buildSupervisorReport(r *http.Request) (supervisorReport, e
 			}
 		}
 		count := 0
+		accounts := indexSupervisorRows(rowsFrom(state, "accounts"), "id")
 		for rows.Next() {
-			var id, dir, date, status string
+			var id, dir, date, status, typedType, bankName, partyName string
 			var amount float64
-			if err := rows.Scan(&id, &amount, &dir, &date, &status); err != nil {
+			if err := rows.Scan(&id, &amount, &dir, &date, &status, &typedType, &bankName, &partyName); err != nil {
 				return false, err
 			}
 			count++
@@ -125,8 +126,18 @@ func (h *APIHandler) buildSupervisorReport(r *http.Request) (supervisorReport, e
 				add("mobile-missing", "critical", "mobileApp", id, "رویداد حسابیار در هسته دریافت شده اما گردش مالی ندارد")
 				continue
 			}
-			if !amountsEqual(amount, number(m["amount"])) || strings.ToLower(dir) != firstText(m, "direction") || date != firstText(m, "date") {
+			if !amountsEqual(amount, number(m["amount"])) || strings.ToLower(dir) != firstText(m, "direction") || !supervisorSameDate(date, firstText(m, "date")) {
 				add("mobile-core", "critical", "bankCash", id, "مبلغ، جهت یا تاریخ گردش با هسته حسابیار یکسان نیست")
+			}
+			if firstText(m, "transactionType") != legacyStateTypeForTyped(typedType) || firstText(m, "typedType") != typedType {
+				add("mobile-classification", "critical", "bankCash", id, "ماهیت گردش با نوع ثبت‌شده در هسته حسابیار متفاوت است")
+			}
+			account := accounts[firstText(m, "accountId")]
+			if mobileCanonicalBankName(firstText(account, "name")) != mobileCanonicalBankName(bankName) {
+				add("mobile-bank", "warning", "bankCash", id, "نام بانک مالی با بانک مبدأ حسابیار یکسان نیست؛ نگاشت حساب را بررسی کنید")
+			}
+			if boolValue(m["counterpartyConfirmed"]) && partyName != "" && firstText(m, "payer", "customer") != partyName {
+				add("mobile-party", "critical", "bankCash", id, "طرف حساب تأییدشده با طرف حساب ثبت‌شده در هسته حسابیار متفاوت است")
 			}
 		}
 		report.Coverage = append(report.Coverage, fmt.Sprintf("تطبیق %d تراکنش هسته حسابیار", count))
