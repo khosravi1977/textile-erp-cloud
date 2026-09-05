@@ -548,15 +548,48 @@ func (b *Bridge) ReportFinancialMismatch(report FinancialMismatchReport) error {
 			return err
 		}
 	}
-	_, err := b.exec(`INSERT INTO financial_mismatch_reports (source_type, source_id, invoice_no, invoice_kind, title, message, status, reported_by, reported_at) VALUES (?,?,?,?,?,?,'open',?,?)`,
-		strings.TrimSpace(report.SourceType),
-		strings.TrimSpace(report.SourceID),
+	sourceType := strings.TrimSpace(report.SourceType)
+	sourceID := strings.TrimSpace(report.SourceID)
+	reportedAt := time.Now().UTC().Format(time.RFC3339)
+	if result, err := b.exec(`UPDATE financial_mismatch_reports SET invoice_no=?, invoice_kind=?, title=?, message=?, reported_by=?, reported_at=? WHERE source_type=? AND source_id=? AND COALESCE(status,'open')='open'`,
 		strings.TrimSpace(report.InvoiceNo),
 		strings.TrimSpace(report.InvoiceKind),
 		strings.TrimSpace(report.Title),
 		strings.TrimSpace(report.Message),
 		strings.TrimSpace(report.ReportedBy),
-		time.Now().UTC().Format(time.RFC3339),
+		reportedAt,
+		sourceType,
+		sourceID,
+	); err == nil {
+		if affected, err := result.RowsAffected(); err == nil && affected > 0 {
+			return nil
+		}
+	}
+	_, err := b.exec(`INSERT INTO financial_mismatch_reports (source_type, source_id, invoice_no, invoice_kind, title, message, status, reported_by, reported_at) VALUES (?,?,?,?,?,?,'open',?,?)`,
+		sourceType,
+		sourceID,
+		strings.TrimSpace(report.InvoiceNo),
+		strings.TrimSpace(report.InvoiceKind),
+		strings.TrimSpace(report.Title),
+		strings.TrimSpace(report.Message),
+		strings.TrimSpace(report.ReportedBy),
+		reportedAt,
 	)
+	return err
+}
+
+func (b *Bridge) ResolveFinancialMismatch(sourceType, sourceID string) error {
+	if b == nil {
+		return sql.ErrConnDone
+	}
+	sourceType = strings.TrimSpace(sourceType)
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceType == "" || sourceID == "" {
+		return nil
+	}
+	_, err := b.exec(`UPDATE financial_mismatch_reports SET status='resolved' WHERE source_type=? AND source_id=? AND COALESCE(status,'open')='open'`, sourceType, sourceID)
+	if err != nil && (strings.Contains(strings.ToLower(err.Error()), "no such table") || strings.Contains(strings.ToLower(err.Error()), "does not exist")) {
+		return nil
+	}
 	return err
 }

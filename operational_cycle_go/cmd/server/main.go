@@ -5079,8 +5079,43 @@ func (a *app) latestOutInvoices(limit int) []record {
 	return items
 }
 
+func (a *app) financialMismatchReports() []record {
+	rows, err := a.query(`SELECT source_type, source_id, COALESCE(invoice_no,''), COALESCE(invoice_kind,''), title, message, COALESCE(reported_at,'') FROM financial_mismatch_reports WHERE COALESCE(status,'open')='open' ORDER BY id DESC LIMIT 50`)
+	if err != nil {
+		return []record{}
+	}
+	defer rows.Close()
+	items := []record{}
+	for rows.Next() {
+		var sourceType, sourceID, invoiceNo, invoiceKind, title, message, reportedAt string
+		if err := rows.Scan(&sourceType, &sourceID, &invoiceNo, &invoiceKind, &title, &message, &reportedAt); err != nil {
+			continue
+		}
+		path := "/reports"
+		switch sourceType {
+		case "operational_yarn_in":
+			path = "/nakh-vor"
+		case "operational_chelle_in":
+			path = "/chelle"
+		case "operational_spare_part":
+			path = "/spare-parts"
+		case "operational_misc":
+			path = "/v-kh-moto"
+		}
+		if invoiceNo != "" {
+			message = fmt.Sprintf("%s | فاکتور مالی: %s", message, invoiceNo)
+		}
+		if invoiceKind != "" {
+			title = fmt.Sprintf("%s - %s", title, invoiceKind)
+		}
+		items = append(items, record{"type": "critical", "code": "financial-mismatch-" + sourceType + "-" + sourceID, "title": title, "message": message, "path": path, "source_type": sourceType, "source_id": sourceID, "reported_at": reportedAt})
+	}
+	return items
+}
+
 func (a *app) notifications() []record {
 	items := []record{}
+	items = append(items, a.financialMismatchReports()...)
 	for _, y := range a.yarnInventory() {
 		inv, _ := y["inventory"].(float64)
 		if complete, _ := y["data_complete"].(bool); !complete {

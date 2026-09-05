@@ -18,6 +18,8 @@ build/
 !telegram_relay/build/
 !telegram_relay/build/sites-vite-plugin.ts
 coverage/
+playwright-report/
+test-results/
 data/
 uploads/
 backups/

@@ -18,8 +18,8 @@ import (
 )
 
 var workspacePermissionFields = map[string][]string{
-	"initialData":      {"openingBalances", "accounts", "receivableDocs", "payableDocs", "ownedInventory", "smsGroups", "smsBankSenders"},
-	"incomingInvoices": {"incomingInvoices", "movements", "payableDocs", "receivableDocs", "ownedInventory"},
+	"initialData":      {"openingBalances", "accounts", "receivableDocs", "payableDocs", "ownedInventory", "smsGroups", "smsBankSenders", "manualCustomers", "manualItems"},
+	"incomingInvoices": {"incomingInvoices", "movements", "payableDocs", "receivableDocs", "ownedInventory", "manualCustomers", "manualItems"},
 	"yarnOutInvoices":  {"yarnOutInvoices", "ownedInventory"},
 	"invoices":         {"invoices", "movements", "receivableDocs", "payableDocs", "ownedInventory"},
 	"inventory":        {"ownedInventory"},
@@ -32,7 +32,7 @@ var workspacePermissionFields = map[string][]string{
 
 var workspaceReadAllPermissions = map[string]bool{
 	"dashboard": true, "financialHealth": true, "reports": true,
-	"taxReports": true, "credit": true, "advisor": true,
+	"taxReports": true, "credit": true, "advisor": true, "financialSupervisor": true,
 }
 
 const maxWorkspacePayload = 8 << 20
@@ -227,6 +227,12 @@ func saveWorkspace(r *http.Request, companyID, userID int64, expectedRevision *i
 		if err != nil {
 			return err
 		}
+		if err := validateWorkspaceSupervisorChanges(decodeWorkspaceMap(current.State), decodeWorkspaceMap(state)); err != nil {
+			return err
+		}
+		if err := validateWorkspaceLifecycleChanges(decodeWorkspaceMap(current.State), decodeWorkspaceMap(state)); err != nil {
+			return err
+		}
 		if err := validateWorkspaceAccountingChanges(decodeWorkspaceMap(current.State), decodeWorkspaceMap(state)); err != nil {
 			return err
 		}
@@ -262,7 +268,14 @@ func saveWorkspace(r *http.Request, companyID, userID int64, expectedRevision *i
 		if err != nil {
 			return err
 		}
-		return syncWorkspaceLedger(r.Context(), tx, companyID, userID, saved.Revision, decodeWorkspaceMap(current.State), decodeWorkspaceMap(saved.State))
+		if err := syncWorkspaceLedger(r.Context(), tx, companyID, userID, saved.Revision, decodeWorkspaceMap(current.State), decodeWorkspaceMap(saved.State)); err != nil {
+			return err
+		}
+		if approval, ok := r.Context().Value(supervisorApprovalKey{}).(supervisorApproval); ok {
+			_, err = tx.ExecContext(r.Context(), `INSERT INTO financial_supervisor_approvals(company_id,revision,approved_by,draft_checksum) VALUES($1,$2,$3,$4)`, companyID, saved.Revision, nullUserID(userID), approval.Checksum)
+			return err
+		}
+		return nil
 	})
 	return saved, err
 }
@@ -332,7 +345,7 @@ func validateWorkspaceState(raw json.RawMessage) (json.RawMessage, string, error
 	if err := decoder.Decode(&state); err != nil || state == nil {
 		return nil, "", errors.New("Workspace state must be a JSON object")
 	}
-	for _, key := range []string{"invoices", "incomingInvoices", "yarnOutInvoices", "expenses", "receivableDocs", "payableDocs", "accounts", "movements", "ownedInventory", "openingBalances", "smsGroups", "smsBankSenders", "mobileTransactions", "journalEntries", "fiscalPeriods"} {
+	for _, key := range []string{"invoices", "incomingInvoices", "manualCustomers", "yarnOutInvoices", "expenses", "receivableDocs", "payableDocs", "accounts", "movements", "ownedInventory", "openingBalances", "smsGroups", "smsBankSenders", "mobileTransactions", "journalEntries", "fiscalPeriods"} {
 		if value, ok := state[key]; ok {
 			if _, ok := value.([]any); !ok {
 				return nil, "", fmt.Errorf("Workspace field %s must be an array", key)

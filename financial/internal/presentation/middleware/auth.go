@@ -177,10 +177,14 @@ func authorizeRequest(r *http.Request, identity resolvedIdentity) bool {
 
 func requiredPermissions(path string) []string {
 	switch {
+	case path == "/api/supervisor/report":
+		return []string{"financialSupervisor", "financialHealth", "advisor"}
+	case path == "/api/supervisor/preview" || path == "/api/supervisor/commit":
+		return []string{"incomingInvoices"}
 	case path == "/api/workspace":
-		return []string{"dashboard", "financialHealth", "initialData", "incomingInvoices", "yarnOutInvoices", "invoices", "inventory", "costs", "receivableDocs", "payableDocs", "bankCash", "accounting", "reports", "taxReports", "credit", "advisor", "mobileApp"}
+		return []string{"dashboard", "financialHealth", "financialSupervisor", "initialData", "incomingInvoices", "yarnOutInvoices", "invoices", "inventory", "costs", "receivableDocs", "payableDocs", "bankCash", "accounting", "reports", "taxReports", "credit", "advisor", "mobileApp"}
 	case strings.HasPrefix(path, "/api/workspace/"):
-		return []string{"dashboard", "financialHealth", "reports", "taxReports", "credit", "advisor"}
+		return []string{"dashboard", "financialHealth", "financialSupervisor", "reports", "taxReports", "credit", "advisor"}
 	case strings.HasPrefix(path, "/api/accounting/"):
 		return []string{"accounting", "reports"}
 	case strings.HasPrefix(path, "/api/telegram-reports/"):

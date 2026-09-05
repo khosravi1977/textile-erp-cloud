@@ -1,5 +1,5 @@
 const PAGE_IDS = [
-  'dashboard', 'financialHealth', 'initialData', 'operational', 'incomingInvoices',
+  'dashboard', 'financialHealth', 'financialSupervisor', 'initialData', 'operational', 'incomingInvoices',
   'chelleIncomingInvoices', 'yarnOutInvoices', 'invoices', 'inventory', 'costs',
   'receivableDocs', 'payableDocs', 'bankCash', 'accounting', 'reports', 'taxReports',
   'credit', 'advisor', 'telegramReports', 'mobileApp',
@@ -14,6 +14,7 @@ export function normalizeAccessListStrict(list, role = 'viewer') {
     return normalizedRole === 'owner' || normalizedRole === 'admin' ? [...PAGE_IDS] : [];
   }
   const allowed = list.filter(item => PAGE_IDS.includes(item));
+  if ((allowed.includes('financialHealth') || allowed.includes('advisor')) && !allowed.includes('financialSupervisor')) allowed.push('financialSupervisor');
   if (allowed.includes('incomingInvoices') && !allowed.includes('chelleIncomingInvoices')) allowed.push('chelleIncomingInvoices');
   if (allowed.includes('reports') && !allowed.includes('telegramReports')) allowed.push('telegramReports');
   return [...new Set(allowed)];
