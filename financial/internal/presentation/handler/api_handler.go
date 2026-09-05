@@ -24,16 +24,16 @@ import (
 )
 
 type APIHandler struct {
-	productionUC *usecase.ProductionUseCase
-	settlementUC *usecase.SettlementUseCase
-	advisor      *service.FinancialAdvisor
-	costService  *service.CostService
-	inventorySvc *service.InventoryService
-	invoiceSvc   *service.InvoiceService
+	productionUC       *usecase.ProductionUseCase
+	settlementUC       *usecase.SettlementUseCase
+	advisor            *service.FinancialAdvisor
+	costService        *service.CostService
+	inventorySvc       *service.InventoryService
+	invoiceSvc         *service.InvoiceService
 	financeCoreService *financecore.Service
-	operational  *operationalbridge.Bridge
-	telegram     *telegramreport.Service
-	cache        *cache.Client
+	operational        *operationalbridge.Bridge
+	telegram           *telegramreport.Service
+	cache              *cache.Client
 }
 
 func NewAPIHandler(telegram *telegramreport.Service) *APIHandler {
@@ -765,6 +765,38 @@ func (h *APIHandler) ReportOperationalMismatch(w http.ResponseWriter, r *http.Re
 		Message:     req.Message,
 		ReportedBy:  reportedBy,
 	}); err != nil {
+		RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	RespondJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+func (h *APIHandler) ResolveOperationalMismatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		RespondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	bridge, cleanup := h.requireOperational(w, r)
+	if bridge == nil {
+		return
+	}
+	defer cleanup()
+	var req struct {
+		SourceType string `json:"source_type"`
+		SourceID   string `json:"source_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid mismatch resolve payload")
+		return
+	}
+	req.SourceType = strings.TrimSpace(req.SourceType)
+	req.SourceID = strings.TrimSpace(req.SourceID)
+	if req.SourceType == "" || !strings.HasPrefix(req.SourceType, "operational") || req.SourceID == "" {
+		RespondError(w, http.StatusBadRequest, "Operational source is required")
+		return
+	}
+	if err := bridge.ResolveFinancialMismatch(req.SourceType, req.SourceID); err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
