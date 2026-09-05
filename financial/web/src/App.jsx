@@ -7,7 +7,7 @@ import { isDateWithinInclusiveRange } from './dateRange.js';
 import { isValidSayadId, issuedChecksForCheckbook, normalizeSayadId, validateCheckbookUpdate } from './checkbook.js';
 import { compareExpenseRows, expenseTraceId, linkedExpenseTraceId, mapOperationalExpense, matchesExpenseFilters, matchesExpenseTrace } from './expenseMapping.js';
 import { incomingInvoiceSourceLabel, isOperationalInvoiceSource, uniqueSortedNames } from './financeIncoming.js';
-import { incomingInvoiceImpact, suggestIncomingPrice } from './financialSupervisor.js';
+import { suggestIncomingPrice } from './financialSupervisor.js';
 import { formatTableValue, toPersianDigits } from './localization.js';
 import { normalizeEditableJalaliDate } from './persianDateInput.js';
 import { isMonetaryColumn, monetaryColumnTotals, parseLocalizedNumber } from './reportTotals.js';
@@ -3655,7 +3655,7 @@ function IncomingInvoicePage({ finance, setFinance, reviewedSave, revision, only
     setReviewBusy(true);
     try {
       const review = await reviewedSave(proposed);
-      setReviewDraft({ invoice, proposed, review, impact: incomingInvoiceImpact(invoice, finance.accounts), priceSuggestion });
+      setReviewDraft({ invoice, proposed, review, priceSuggestion });
     } catch (error) { setReviewMessage(error.message || 'بررسی پیش از ثبت انجام نشد.'); }
     finally { setReviewBusy(false); }
   };
@@ -3725,6 +3725,7 @@ function IncomingInvoicePage({ finance, setFinance, reviewedSave, revision, only
             </div>
             {priceSuggestion.price > 0 && <div className="rounded-lg border border-blue-800 bg-blue-950/60 p-4 text-sm text-blue-100">
               <div className="flex flex-wrap items-center justify-between gap-3"><div><strong>پیشنهاد ناظر مالی: نرخ {money(priceSuggestion.price)} تومان</strong><div className="mt-1 text-xs text-blue-200">مبنای پیشنهاد: {priceSuggestion.basis} | دامنه سابقه: {money(priceSuggestion.min)} تا {money(priceSuggestion.max)} تومان</div></div><PrimaryButton onClick={() => setForm(current => ({ ...current, unitPrice: priceSuggestion.price, subtotal: '' }))}>اعمال قیمت پیشنهادی</PrimaryButton></div>
+              <details className="mt-3"><summary>مشاهده فاکتورهای مبنای پیشنهاد</summary>{priceSuggestion.samples.map(sample => <div key={sample.id} className="mt-2 text-xs"><bdi>{sample.id}</bdi> | {toJalali(sample.date)} | {sample.customer} | {money(sample.price)} تومان</div>)}</details>
             </div>}
             {form.nonFinancial
               ? <div className="rounded-md border border-emerald-700 bg-emerald-950 p-4 text-sm text-emerald-100">اين فاکتور بدون اثر ريالي ثبت مي‌شود؛ چک، نقد، بدهکاري يا بستانکاري براي مشتري ايجاد نمي‌شود، اما مقدار و ارزش کالا در حساب کالايي و اعتبارسنجي لحاظ مي‌شود.</div>
@@ -3736,7 +3737,7 @@ function IncomingInvoicePage({ finance, setFinance, reviewedSave, revision, only
               <p className="my-3 text-sm leading-7">این جدول از موتور حسابداری سرور است. در ویرایش، فقط تفاوت نسبت به سند قبلی نمایش داده می‌شود. بدهکار/بستانکار ستون‌های سند حسابداری هستند؛ بدهکار شدن دارایی مانند بانک یعنی افزایش آن، و بستانکار شدن یعنی کاهش. پیشنهاد قیمت، قیمت قطعی روز نیست.</p>
               <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr><th>حساب</th><th>شخص</th><th>بدهکار (تومان)</th><th>بستانکار (تومان)</th></tr></thead><tbody>
                 {reviewDraft.review.lines.map((line, index) => <tr key={index}><td className="p-3">{line.accountName}</td><td>{line.party || '—'}</td><td>{money(line.debit)}</td><td>{money(line.credit)}</td></tr>)}
-              </tbody></table></div>
+              </tbody><tfoot><tr className="border-t border-emerald-700 font-bold"><td>جمع اثر</td><td></td><td>{money(reviewDraft.review.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0))}</td><td>{money(reviewDraft.review.lines.reduce((sum, line) => sum + Number(line.credit || 0), 0))}</td></tr></tfoot></table></div>
               {!reviewDraft.review.lines.length && <p className="py-3">تغییر خالص ریالی ندارد؛ اطلاعات غیرریالی و موجودی همچنان باید بررسی شوند.</p>}
               <p className="mt-3 text-sm">کالا: {reviewDraft.invoice.itemName} | مقدار نهایی این سند: {num(reviewDraft.invoice.quantity)} | فروشنده/مالک: {reviewDraft.invoice.customer} | {reviewDraft.invoice.nonFinancial ? 'امانی، بدون اثر ریالی' : 'خرید مالی'}. ثبت مالی، ورود مجدد در انبار عملیاتی ایجاد نمی‌کند.</p>
               <p className="mt-3 text-xs">تأیید تا ده دقیقه و فقط برای همین نسخه معتبر است. هیچ مغایرت عملیاتی صرفاً با ثبت مالی بسته نمی‌شود.</p>
@@ -4707,6 +4708,7 @@ function CostsPage({ finance, setFinance }) {
 
       const expense = {
         id: expenseId, ...form, documentNo, expenseTraceId: traceId, payer: partyName, customer: partyName,
+        verifiedPayment: { accountId: form.accountId, date: form.date, amount: Number(form.amount) },
         amount: Number(form.amount), counterpartyConfirmed: Boolean(partyName),
         counterpartySource: partyName ? 'expense_form' : '', source: 'مالی',
       };

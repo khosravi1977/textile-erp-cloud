@@ -108,3 +108,14 @@ func TestSupervisorRejectsChildOnlyMutationsAndAllowsUnrelatedLegacyWork(t *test
 		t.Fatalf("legacy issue blocked unrelated update: %v", err)
 	}
 }
+
+func TestSupervisorPreventsReissuingPaidChequeDuringInvoiceEdit(t *testing.T) {
+	old := testWorkspace(t, `{"payableDocs":[{"id":"paid","status":"paid","amount":100,"customer":"supplier","checkNo":"42","dueDate":"2026-09-01"}]}`)
+	next := testWorkspace(t, `{"payableDocs":[{"id":"new","status":"open","amount":100,"customer":"supplier","checkNo":"42","dueDate":"2026-09-01"}]}`)
+	if validateWorkspaceSupervisorChanges(old, next) == nil {
+		t.Fatal("paid cheque was silently reissued")
+	}
+	if err := validateWorkspaceSupervisorChanges(old, old); err != nil {
+		t.Fatal(err)
+	}
+}

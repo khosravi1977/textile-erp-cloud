@@ -1,29 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { auditFinancialState, incomingInvoiceImpact, suggestIncomingPrice } from './financialSupervisor.js';
-
-const account = { id: 'bank', name: 'بانک', opening: 1000 };
-
-test('supervisor accepts a fully linked expense and calculates its bank effect', () => {
-  const finance = {
-    accounts: [account],
-    expenses: [{ id: 'e1', date: '2026-09-01', group: 'هزینه', subgroup: 'حمل', amount: 100, accountId: 'bank' }],
-    movements: [{ id: 'm1', date: '2026-09-01', direction: 'out', transactionType: 'expense', amount: 100, accountId: 'bank', sourceExpense: 'e1' }],
-  };
-  const audit = auditFinancialState(finance);
-  assert.equal(audit.critical, 0);
-  assert.equal(audit.balances[0].balance, 900);
-});
-
-test('supervisor detects missing and mismatched expense effects', () => {
-  const audit = auditFinancialState({
-    accounts: [account],
-    expenses: [{ id: 'e1', date: '2026-09-01', group: 'هزینه', subgroup: 'حمل', amount: 100, accountId: 'bank' }],
-    movements: [],
-  });
-  assert.equal(audit.critical, 1);
-  assert.match(audit.findings[0].title, /اعمال نشده/);
-});
+import { suggestIncomingPrice } from './financialSupervisor.js';
 
 test('price suggestion prefers same supplier and item history', () => {
   const suggestion = suggestIncomingPrice({ incomingInvoices: [
@@ -34,17 +11,6 @@ test('price suggestion prefers same supplier and item history', () => {
   assert.equal(suggestion.price, 110);
   assert.equal(suggestion.samples.length, 2);
   assert.equal(suggestion.confidence, 'high');
-});
-
-test('incoming impact explains inventory, payable, bank and tax changes', () => {
-  const impact = incomingInvoiceImpact({ quantity: 10, subtotal: 1000, taxAmount: 100, payments: [
-    { type: 'cash', amount: 400, accountId: 'bank' },
-    { type: 'credit', amount: 700 },
-  ] }, [account]);
-  assert.equal(impact.inventoryQuantity, 10);
-  assert.equal(impact.payable, 700);
-  assert.equal(impact.accountEffects[0].amount, -400);
-  assert.equal(impact.taxCredit, 100);
 });
 
 test('historical pricing excludes future, consignment, other currency/unit and chelle processing', () => {

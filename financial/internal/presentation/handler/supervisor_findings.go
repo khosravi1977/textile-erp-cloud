@@ -67,6 +67,12 @@ func supervisorStateFindings(state map[string]any) []supervisorFinding {
 		}
 	}
 	for id, expense := range expenses {
+		if firstText(expense, "source_type") == "operational_expense" {
+			verified, _ := expense["verifiedPayment"].(map[string]any)
+			if firstText(verified, "accountId") != firstText(expense, "accountId") || firstText(verified, "date") != firstText(expense, "date") || !amountsEqual(number(verified["amount"]), number(expense["amount"])) {
+				add("payment-verification", "warning", "costs", id, "مبدأ عملیاتی بانک پرداخت‌کننده را مشخص نمی‌کند؛ حساب و مبلغ هزینه را در فرم مالی بررسی و ذخیره کنید", firstText(expense, "accountId"))
+			}
+		}
 		linked := filterSupervisorMovements(movements, "sourceExpense", id)
 		if accounts[firstText(expense, "accountId")] == nil {
 			add("account", "critical", "costs", id, "حساب پرداخت هزینه معتبر نیست", firstText(expense, "accountId"))
@@ -93,7 +99,11 @@ func supervisorStateFindings(state map[string]any) []supervisorFinding {
 		for id, invoice := range config.items {
 			linked := filterSupervisorMovements(movements, config.link, id)
 			payments := rowsFrom(invoice, "payments")
-			evidence := []any{normalized(invoice), linked}
+			stableLinked := []map[string]any{}
+			for _, m := range linked {
+				stableLinked = append(stableLinked, normalized(m))
+			}
+			evidence := []any{normalized(invoice), stableLinked}
 			accountSet := map[string]bool{}
 			for key := range accounts {
 				accountSet[key] = true

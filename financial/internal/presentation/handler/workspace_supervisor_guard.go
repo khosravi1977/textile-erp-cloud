@@ -10,6 +10,31 @@ import (
 // It verifies that each new or changed source document has exactly the cash,
 // inventory and trace effects that the UI promised before the state is stored.
 func validateWorkspaceSupervisorChanges(oldState, newState map[string]any) error {
+	// Rebuilding an invoice must not silently erase/reissue a cheque that has
+	// already moved through its lifecycle. Status actions remain available in
+	// the documents screen; changing the original amount/owner needs reversal.
+	for _, field := range []string{"payableDocs", "receivableDocs"} {
+		next := indexSupervisorRows(rowsFrom(newState, field), "id")
+		for _, previous := range rowsFrom(oldState, field) {
+			status := strings.ToLower(firstText(previous, "status"))
+			if status == "" || status == "open" {
+				continue
+			}
+			id := firstText(previous, "id")
+			if id == "" {
+				continue
+			}
+			row := next[id]
+			if row == nil {
+				return fmt.Errorf("ناظر مالی: سند %s در وضعیت %s است؛ حذف یا بازسازی آن از فاکتور مجاز نیست", id, status)
+			}
+			for _, key := range []string{"amount", "checkNo", "customer", "dueDate", "sourceIncomingInvoice", "sourceInvoice"} {
+				if stringValue(row[key]) != stringValue(previous[key]) {
+					return fmt.Errorf("ناظر مالی: مشخصات اصلی سند گردش‌یافته %s نباید با ویرایش فاکتور تغییر کند", id)
+				}
+			}
+		}
+	}
 	previous := map[string]string{}
 	for _, issue := range supervisorStateFindings(oldState) {
 		previous[issue.ID] = issue.Evidence

@@ -74,4 +74,34 @@ func TestSupervisorPreviewCommitAndReplayAreAtomic(t *testing.T) {
 	if getWorkspace(t, server.URL, company)["revision"].(float64) != 2 {
 		t.Fatal("stale preview wrote data")
 	}
+	// The shared save path applies expense + bank + journal changes atomically,
+	// including replacement and deletion, not just a successful HTTP response.
+	expenseState := func(amount float64) map[string]any {
+		return map[string]any{
+			"accounts":  []any{map[string]any{"id": "bank", "name": "test bank", "type": "بانک", "opening": 0}},
+			"expenses":  []any{map[string]any{"id": "expense", "date": "2026-09-01", "group": "test", "subgroup": "test", "amount": amount, "accountId": "bank"}},
+			"movements": []any{map[string]any{"id": "movement", "date": "2026-09-01", "direction": "out", "transactionType": "expense", "amount": amount, "accountId": "bank", "sourceExpense": "expense"}},
+		}
+	}
+	putWorkspace(t, server.URL, company, 2, expenseState(100))
+	putWorkspace(t, server.URL, company, 3, expenseState(150))
+	var expenseNet float64
+	net := func() {
+		t.Helper()
+		if err := db.QueryRow(`SELECT COALESCE(SUM(l.debit-l.credit),0) FROM journal_voucher_lines l JOIN accounts a ON a.id=l.account_id AND a.company_id=l.company_id WHERE l.company_id=$1 AND a.code='5900'`, company).Scan(&expenseNet); err != nil {
+			t.Fatal(err)
+		}
+	}
+	net()
+	if expenseNet != 150 {
+		t.Fatalf("expense edit doubled/missed journal: %v", expenseNet)
+	}
+	deleted := expenseState(150)
+	deleted["expenses"] = []any{}
+	deleted["movements"] = []any{}
+	putWorkspace(t, server.URL, company, 4, deleted)
+	net()
+	if expenseNet != 0 {
+		t.Fatalf("expense delete left ledger effect: %v", expenseNet)
+	}
 }

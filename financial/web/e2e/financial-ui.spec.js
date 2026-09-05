@@ -74,3 +74,30 @@ test('unavailable supervisor never reports financial health', async ({ page }) =
   await expect(page.getByRole('status')).toContainText('ارتباط آزمایشی قطع است');
   await expect(page.getByText('در کنترل‌های اجراشده مغایرت قطعی پیدا نشد.')).toHaveCount(0);
 });
+
+test('expense create edit and delete keep one linked bank movement and retain document trace', async ({ page }) => {
+  const mock = await fixture(page);
+  page.on('dialog', dialog => dialog.accept());
+  await page.goto('/?page=costs');
+  const form = page.locator('form').first();
+  await form.locator('select').nth(0).selectOption({ index: 1 });
+  await form.locator('select').nth(1).selectOption({ index: 1 });
+  await form.getByPlaceholder('مبلغ', { exact: true }).fill('100');
+  await form.getByPlaceholder('شناسه سند هزینه').fill('TEST-EXP-42');
+  await form.getByRole('button', { name: 'ثبت هزينه', exact: true }).click();
+  await expect.poll(() => mock.state().expenses.length).toBe(1);
+  const id = mock.state().expenses[0].id;
+  expect(mock.state().movements.filter(x => x.sourceExpense === id)).toHaveLength(1);
+  expect(mock.state().movements[0].amount).toBe(100);
+  await page.reload();
+  await expect(page.getByRole('cell', { name: 'TEST-EXP-42', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'ویرایش', exact: true }).click();
+  await form.getByPlaceholder('مبلغ', { exact: true }).fill('150');
+  await form.getByRole('button', { name: 'ذخيره ويرايش', exact: true }).click();
+  await expect.poll(() => mock.state().expenses[0]?.amount).toBe(150);
+  expect(mock.state().movements.filter(x => x.sourceExpense === id)).toHaveLength(1);
+  expect(mock.state().movements[0].amount).toBe(150);
+  await page.getByRole('button', { name: 'حذف', exact: true }).click();
+  await expect.poll(() => mock.state().expenses.length).toBe(0);
+  expect(mock.state().movements.filter(x => x.sourceExpense === id)).toHaveLength(0);
+});
