@@ -119,6 +119,7 @@ type projectAccess struct {
 var financialPermissionCatalog = []string{
 	"dashboard",
 	"financialHealth",
+	"financialSupervisor",
 	"initialData",
 	"operational",
 	"incomingInvoices",
@@ -2676,7 +2677,7 @@ func (a *portalApp) teamPage(w http.ResponseWriter, r *http.Request) {
 <section class="card"><div class="toolbar"><div><h2 style="margin:0">کاربران تعریف‌شده</h2><div id="count" class="sub"></div></div><button class="small mutedBtn" id="refreshBtn">بازخوانی</button></div><div id="users"><div class="empty">در حال دریافت کاربران...</div></div></section></div></main>
 <script>
 const state={rows:[],editing:null};const $=id=>document.getElementById(id);const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const permissionCatalog=[['dashboard','داشبورد'],['financialHealth','سلامت مالی'],['initialData','اطلاعات اولیه'],['operational','داده‌های عملیاتی'],['incomingInvoices','فاکتور ورود'],['yarnOutInvoices','خروج نخ'],['invoices','فاکتور مالی'],['inventory','انبار'],['costs','هزینه‌ها'],['receivableDocs','اسناد دریافتی'],['payableDocs','اسناد پرداختی'],['bankCash','بانک و صندوق'],['accounting','دفاتر و تراز'],['reports','گزارش‌ها'],['taxReports','گزارش مالیاتی'],['credit','اعتبارسنجی'],['advisor','مشاور مالی'],['mobileApp','اتصال حسابیار']];
+const permissionCatalog=[['dashboard','داشبورد'],['financialHealth','سلامت مالی'],['financialSupervisor','ناظر مالی'],['initialData','اطلاعات اولیه'],['operational','داده‌های عملیاتی'],['incomingInvoices','فاکتور ورود'],['yarnOutInvoices','خروج نخ'],['invoices','فاکتور مالی'],['inventory','انبار'],['costs','هزینه‌ها'],['receivableDocs','اسناد دریافتی'],['payableDocs','اسناد پرداختی'],['bankCash','بانک و صندوق'],['accounting','دفاتر و تراز'],['reports','گزارش‌ها'],['taxReports','گزارش مالیاتی'],['credit','اعتبارسنجی'],['advisor','مشاور مالی'],['mobileApp','اتصال حسابیار']];
 const rolePermissions={viewer:['dashboard','financialHealth','reports'],accountant:permissionCatalog.map(x=>x[0]).filter(x=>x!=='operational'),manager:permissionCatalog.map(x=>x[0])};
 const permissionHost=document.createElement('div');permissionHost.className='field';permissionHost.innerHTML='<label>دسترسی تب‌های بخش مالی</label><div id="permissionGrid" class="grid"></div><div class="help">فقط تب‌های علامت‌خورده برای این کاربر نمایش داده می‌شود. اتصال حسابیار برای مدیر و حسابدار یک پل مالی اصلی است.</div>';$('canManageTeam').closest('label').before(permissionHost);$('permissionGrid').innerHTML=permissionCatalog.map(([key,label])=>'<label class="check"><input type="checkbox" data-permission="'+key+'"> '+label+'</label>').join('');
 function selectedPermissions(){return [...document.querySelectorAll('[data-permission]:checked')].map(x=>x.dataset.permission);}

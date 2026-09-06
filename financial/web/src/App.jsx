@@ -1,11 +1,13 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 
-import { useRef } from 'react';
+import { useRef, useCallback } from 'react';
 import QRCode from 'qrcode';
 import { confirmMovementCounterparty, confirmedMovementCounterparty, movementCounterpartyLabel, movementNeedsCounterparty } from './counterparty.js';
 import { isDateWithinInclusiveRange } from './dateRange.js';
 import { isValidSayadId, issuedChecksForCheckbook, normalizeSayadId, validateCheckbookUpdate } from './checkbook.js';
 import { compareExpenseRows, expenseTraceId, linkedExpenseTraceId, mapOperationalExpense, matchesExpenseFilters, matchesExpenseTrace } from './expenseMapping.js';
+import { incomingInvoiceSourceLabel, isOperationalInvoiceSource, uniqueSortedNames } from './financeIncoming.js';
+import { suggestIncomingPrice } from './financialSupervisor.js';
 import { formatTableValue, toPersianDigits } from './localization.js';
 import { normalizeEditableJalaliDate } from './persianDateInput.js';
 import { isMonetaryColumn, monetaryColumnTotals, parseLocalizedNumber } from './reportTotals.js';
@@ -60,6 +62,7 @@ async function refreshPortalFinancialToken() {
 const pages = [
   { id: 'dashboard', label: 'داشبورد' },
   { id: 'financialHealth', label: 'سلامت مالی' },
+  { id: 'financialSupervisor', label: 'ناظر مالی' },
   { id: 'initialData', label: 'اطلاعات اولیه' },
   { id: 'operational', label: 'داده های عملیاتی' },
   { id: 'incomingInvoices', label: 'فاکتور ورود' },
@@ -101,6 +104,9 @@ function normalizeAccessList(list) {
   }
   if (allowed.includes('reports') && !allowed.includes('telegramReports')) {
     allowed.push('telegramReports');
+  }
+  if ((allowed.includes('financialHealth') || allowed.includes('advisor')) && !allowed.includes('financialSupervisor')) {
+    allowed.push('financialSupervisor');
   }
   return [...new Set(allowed)];
 }
@@ -617,6 +623,12 @@ function GhostButton({ children, onClick, disabled = false }) {
 
 }
 
+function InlineAddButton({ onClick, title = 'افزودن مورد جدید' }) {
+
+  return <button type="button" title={title} className="rounded-md border border-emerald-700 bg-emerald-950 px-3 py-2 text-lg font-black leading-none text-emerald-100 hover:bg-emerald-900" onClick={onClick}>+</button>;
+
+}
+
 
 
 function DangerButton({ children, onClick, disabled = false }) {
@@ -679,10 +691,16 @@ function useServerWorkspace(initialValue, enabled, writable = true) {
   const revisionRef = useRef(0);
   const skipSaveRef = useRef(false);
   const valueRef = useRef(value);
+  const dirtyRef = useRef(false);
+  const committingRef = useRef(false);
+  const savingRef = useRef(false);
+  const conflictRef = useRef(false);
   valueRef.current = value;
 
   useEffect(() => {
     if (!enabled) {
+      dirtyRef.current = false;
+      conflictRef.current = false;
       loadedRef.current = false;
       revisionRef.current = 0;
       setValue(initialValue);
@@ -717,9 +735,10 @@ function useServerWorkspace(initialValue, enabled, writable = true) {
   useEffect(() => {
     if (!enabled) return;
     const timer = window.setInterval(async () => {
-      if (!loadedRef.current) return;
+      if (!loadedRef.current || dirtyRef.current || committingRef.current || savingRef.current) return;
       try {
         const document = await apiJSON('/workspace');
+        if (dirtyRef.current || committingRef.current) return;
         const revision = Number(document.revision || 0);
         if (revision <= revisionRef.current) return;
         revisionRef.current = revision;
@@ -738,31 +757,60 @@ function useServerWorkspace(initialValue, enabled, writable = true) {
       return;
     }
     const timer = setTimeout(async () => {
+      if (committingRef.current || savingRef.current || conflictRef.current) return;
+      savingRef.current = true;
       setStatus(current => ({ ...current, saving: true, error: '' }));
       try {
+        do {
+        const sentValue = valueRef.current;
         const document = await apiJSON('/workspace', {
           method: 'PUT',
-          body: { state: valueRef.current, revision: revisionRef.current },
+          body: { state: sentValue, revision: revisionRef.current },
         });
         revisionRef.current = Number(document.revision || revisionRef.current);
+        if (valueRef.current === sentValue) dirtyRef.current = false;
+        } while (dirtyRef.current);
         localStorage.removeItem('textile-finance-v3');
         setStatus({ ready: true, saving: false, error: '', revision: revisionRef.current });
       } catch (error) {
         if (error.status === 409 && error.data?.current) {
-          const current = error.data.current;
-          revisionRef.current = Number(current.revision || 0);
-          skipSaveRef.current = true;
-          setValue({ ...initialValue, ...(current.state || {}) });
-          setStatus({ ready: true, saving: false, error: 'اطلاعات توسط کاربر دیگری تغییر کرده بود و آخرین نسخه سرور بارگذاری شد.', revision: revisionRef.current });
+          conflictRef.current = true;
+          setStatus(current => ({ ...current, saving: false, error: 'ثبت هم‌زمان شناسایی شد؛ تغییر شما ذخیره نشده و در این صفحه حفظ شده است. پیش از تازه‌سازی از آن یادداشت بگیرید و با آخرین نسخه تطبیق دهید.' }));
           return;
         }
         setStatus(current => ({ ...current, saving: false, error: error.message || 'ذخیره اطلاعات مالی ناموفق بود' }));
-      }
+      } finally { savingRef.current = false; }
     }, 650);
     return () => clearTimeout(timer);
   }, [enabled, writable, value]);
 
-  return [value, setValue, status];
+  const updateValue = useCallback(next => {
+    if (committingRef.current) return;
+    setValue(current => {
+      const updated = typeof next === 'function' ? next(current) : next;
+      if (updated !== current) dirtyRef.current = true;
+      return updated;
+    });
+  }, []);
+  const reviewedSave = async (state, review = null) => {
+    if (!loadedRef.current || !writable || dirtyRef.current || committingRef.current || savingRef.current || conflictRef.current || status.error) throw new Error('ابتدا ذخیره تغییرات جاری و تازه‌سازی اطلاعات را تکمیل کنید.');
+    if (!review) return apiJSON('/supervisor/preview', { method: 'POST', body: { state, revision: revisionRef.current } });
+    if (review.revision !== revisionRef.current) throw new Error('اطلاعات تغییر کرده است؛ بررسی دوباره لازم است.');
+    committingRef.current = true;
+    setStatus(current => ({ ...current, saving: true }));
+    try {
+      const document = await apiJSON('/supervisor/commit', { method: 'POST', body: { state, revision: review.revision, approval: review.approval } });
+      revisionRef.current = Number(document.revision);
+      skipSaveRef.current = true;
+      setValue({ ...initialValue, ...(document.state || {}) });
+      setStatus({ ready: true, saving: false, error: '', revision: revisionRef.current });
+      return document;
+    } catch (error) {
+      setStatus(current => ({ ...current, saving: false }));
+      throw error;
+    } finally { committingRef.current = false; }
+  };
+  return [value, updateValue, status, reviewedSave];
 }
 
 
@@ -814,6 +862,10 @@ function emptyFinance() {
     invoices: [],
 
     incomingInvoices: [],
+
+    manualCustomers: [],
+
+    manualItems: {},
 
     yarnOutInvoices: [],
 
@@ -1198,7 +1250,7 @@ export default function App() {
   const workspaceWritable = !sessionProfile?.portalLinked || (
     sessionProfile?.portalRole !== 'viewer' && (sessionProfile?.permissions || []).some(permission => writablePermissions.has(permission))
   );
-  const [finance, setFinance, workspaceStatus] = useServerWorkspace(emptyFinance(), isLoggedIn && !authBooting, workspaceWritable);
+  const [finance, setFinance, workspaceStatus, reviewedSave] = useServerWorkspace(emptyFinance(), isLoggedIn && !authBooting, workspaceWritable);
 
   const safeFinance = { ...emptyFinance(), ...finance };
   const updateFinance = updater => setFinance(prev => updater({ ...emptyFinance(), ...prev }));
@@ -1468,11 +1520,12 @@ export default function App() {
 
         {currentPage === 'dashboard' && <Dashboard finance={safeFinance} />}
         {currentPage === 'financialHealth' && <FinancialHealthPage finance={safeFinance} />}
+        {currentPage === 'financialSupervisor' && <FinancialSupervisorPage revision={workspaceStatus.revision} allowedPageIds={allowedPageIds} onGo={setCurrentPage} />}
         {currentPage === 'initialData' && <InitialDataPage finance={safeFinance} setFinance={updateFinance} />}
         {currentPage === 'operational' && <OperationalPage />}
         {currentPage === 'invoices' && <InvoicePage finance={safeFinance} setFinance={updateFinance} />}
-        {currentPage === 'incomingInvoices' && <IncomingInvoicePage finance={safeFinance} setFinance={updateFinance} />}
-        {currentPage === 'chelleIncomingInvoices' && <IncomingInvoicePage finance={safeFinance} setFinance={updateFinance} onlySource="chelle" />}
+        {currentPage === 'incomingInvoices' && <IncomingInvoicePage finance={safeFinance} setFinance={updateFinance} reviewedSave={reviewedSave} revision={workspaceStatus.revision} />}
+        {currentPage === 'chelleIncomingInvoices' && <IncomingInvoicePage finance={safeFinance} setFinance={updateFinance} reviewedSave={reviewedSave} revision={workspaceStatus.revision} onlySource="chelle" />}
         {currentPage === 'yarnOutInvoices' && <YarnOutInvoicePage finance={safeFinance} setFinance={updateFinance} />}
         {currentPage === 'inventory' && <InventoryPage finance={safeFinance} />}
         {currentPage === 'costs' && <CostsPage finance={safeFinance} setFinance={updateFinance} />}
@@ -3313,7 +3366,7 @@ function YarnOutInvoiceTable({ rows, onEdit, onDelete }) {
 
 
 
-function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
+function IncomingInvoicePage({ finance, setFinance, reviewedSave, revision, onlySource = '' }) {
 
   const { data, loading, error } = useOperationalData();
 
@@ -3323,14 +3376,19 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
   const [form, setForm] = useState({ date: today(), operationalDate: '', customer: '', inventoryType: 'yarn', itemName: '', quantity: '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'manual', sourceId: '', description: '', nonFinancial: false });
 
-  const customers = [...new Set([
+  const [reviewDraft, setReviewDraft] = useState(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewMessage, setReviewMessage] = useState('');
+
+  const customers = uniqueSortedNames([
+    ...(finance.manualCustomers || []),
     ...data.customers.map(x => x.name),
     ...data.chelleIn.map(x => x.warper),
     ...finance.invoices.map(x => x.customer),
     ...finance.incomingInvoices.map(x => x.customer),
     ...finance.payableDocs.map(x => x.customer),
     ...finance.receivableDocs.map(x => x.assignedTo),
-  ].filter(Boolean))];
+  ]);
 
   const rows = onlySource === 'chelle'
     ? (finance.incomingInvoices || []).filter(x => x.source_type === 'operational_chelle_in')
@@ -3360,7 +3418,11 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
     ? pendingOperationalAll.filter(x => x.pendingType === 'operational_chelle_in')
     : pendingOperationalAll.filter(x => x.pendingType !== 'operational_chelle_in');
 
-  const sourceItems = form.inventoryType === 'yarn' ? data.yarn : form.inventoryType === 'fabric' ? data.kala : form.inventoryType === 'spare_part' ? data.spareParts.map(x => ({ id: x.id, name: x.part_name || x.part_number })) : [];
+  const manualItems = finance.manualItems || {};
+
+  const baseSourceItems = form.inventoryType === 'yarn' ? data.yarn : form.inventoryType === 'fabric' ? data.kala : form.inventoryType === 'spare_part' ? data.spareParts.map(x => ({ id: x.id, name: x.part_name || x.part_number })) : [];
+
+  const sourceItems = uniqueSortedNames([...baseSourceItems.map(x => x.name), ...(manualItems[form.inventoryType] || [])]).map(name => baseSourceItems.find(x => x.name === name) || { id: `manual-${form.inventoryType}-${name}`, name });
 
   const subtotal = Number(form.subtotal || 0) || (Number(form.quantity || 0) * Number(form.unitPrice || 0));
 
@@ -3372,6 +3434,8 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
   const invoiceTotal = form.nonFinancial ? subtotal : amount;
 
+  const priceSuggestion = useMemo(() => suggestIncomingPrice(finance, { ...form, id: editingId }), [finance.incomingInvoices, form, editingId]);
+
   const paid = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
 
   const openReceivableDocs = finance.receivableDocs.filter(x => x.status === 'open');
@@ -3380,11 +3444,94 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
   const removePayment = id => setPayments(prev => prev.filter(p => p.id !== id));
 
+  useEffect(() => { setReviewDraft(null); }, [form, payments, revision]);
+
+  const quickAddCustomer = () => {
+
+    const name = String(window.prompt('نام شخص / فروشنده جدید را وارد کنید', form.customer || '') || '').trim();
+
+    if (!name) return;
+
+    setFinance(prev => ({ ...prev, manualCustomers: uniqueSortedNames([...(prev.manualCustomers || []), name]) }));
+
+    setForm(current => ({ ...current, customer: name }));
+
+  };
+
+  const quickAddItem = () => {
+
+    const labels = { yarn: 'نوع نخ', fabric: 'نام کالا / پارچه', spare_part: 'نام قطعه یدکی', other: 'شرح سایر' };
+
+    const name = String(window.prompt(`${labels[form.inventoryType] || 'مورد'} جدید را وارد کنید`, form.itemName || '') || '').trim();
+
+    if (!name) return;
+
+    setFinance(prev => {
+      const currentItems = prev.manualItems || {};
+      return { ...prev, manualItems: { ...currentItems, [form.inventoryType]: uniqueSortedNames([...(currentItems[form.inventoryType] || []), name]) } };
+    });
+
+    setForm(current => ({ ...current, itemName: name }));
+
+  };
+
+  const quickAddAccount = () => {
+
+    const name = String(window.prompt('نام بانک یا صندوق جدید را وارد کنید') || '').trim();
+
+    if (!name) return;
+
+    const account = { id: uid('acc'), name, type: 'بانک', opening: 0, source: 'quick_add' };
+
+    setFinance(prev => ({ ...prev, accounts: [account, ...(prev.accounts || [])] }));
+
+    setPayments(prev => prev.map((payment, index) => index === 0 && payment.type === 'cash' && !payment.accountId ? { ...payment, accountId: account.id } : payment));
+
+  };
+
+  const reportOperationalMismatch = async row => {
+
+    const sourceType = row.pendingType || row.source_type || '';
+
+    const sourceID = String(row.pendingType ? row.id : row.sourceId || '').trim();
+
+    if (!isOperationalInvoiceSource(sourceType) || !sourceID) {
+      window.alert('این ردیف به منبع عملیاتی وصل نیست.');
+      return;
+    }
+
+    const defaultMessage = `مغایرت در ${row.actionLabel || incomingInvoiceSourceLabel(sourceType)}؛ شخص: ${row.customer || row.customer_name || row.warper || row.vendor_name || '-'}، کالا: ${row.itemName || row.title || row.yarn_name || row.part_name || '-'}، مقدار: ${row.quantity || row.weight || row.quantityLabel || '-'}`;
+
+    const message = window.prompt('شرح مغایرت برای ارسال به بخش عملیاتی', defaultMessage);
+
+    if (message === null) return;
+
+    try {
+      await apiJSON('/operational/mismatch', {
+        method: 'POST',
+        body: {
+          source_type: sourceType,
+          source_id: sourceID,
+          invoice_no: row.pendingType ? '' : row.id,
+          invoice_kind: onlySource === 'chelle' ? 'فاکتور ورود چله' : 'فاکتور ورود',
+          title: 'مغایرت فاکتور ورود',
+          message: String(message || defaultMessage).trim(),
+        },
+      });
+      window.alert('اعلان مغایرت برای بخش عملیاتی ثبت شد.');
+    } catch (err) {
+      window.alert(err.message || 'ثبت اعلان مغایرت انجام نشد.');
+    }
+
+  };
+
   const resetForm = () => {
 
     setEditingId('');
 
     setPayments([newPaymentLine('credit')]);
+
+    setReviewDraft(null);
 
     setForm({ date: today(), operationalDate: '', customer: '', inventoryType: 'yarn', itemName: '', quantity: '', unitPrice: '', subtotal: '', taxable: false, taxRate: '', source_type: 'manual', sourceId: '', description: '', nonFinancial: false });
 
@@ -3424,9 +3571,11 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
   };
 
-  const save = e => {
+  const save = async e => {
 
     e.preventDefault();
+    if (reviewBusy) return;
+    setReviewMessage('');
 
     if (!form.date) { window.alert('تاریخ فاکتور ورود الزامی است.'); return; }
 
@@ -3450,7 +3599,7 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
     const invoice = { ...form, id: editingId || shortId('IN'), subtotal, taxAmount: form.nonFinancial ? 0 : taxAmount, taxRate: form.nonFinancial ? 0 : taxRate, taxable: !form.nonFinancial && !!form.taxable, amount: invoiceTotal, quantity: Number(form.quantity || 0), unitPrice: Number(form.unitPrice || 0), payments: cleanPayments, nonFinancial: !!form.nonFinancial };
 
-    setFinance(prev => {
+    const proposed = ((prev) => {
 
       const sourceId = invoice.id;
 
@@ -3502,10 +3651,26 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
 
       return { ...prev, incomingInvoices: [invoice, ...prev.incomingInvoices.filter(x => x.id !== sourceId)], movements, payableDocs, receivableDocs, ownedInventory };
 
-    });
+    })(finance);
+    setReviewBusy(true);
+    try {
+      const review = await reviewedSave(proposed);
+      setReviewDraft({ invoice, proposed, review, priceSuggestion });
+    } catch (error) { setReviewMessage(error.message || 'بررسی پیش از ثبت انجام نشد.'); }
+    finally { setReviewBusy(false); }
+  };
 
-    resetForm();
-
+  const commitReviewed = async () => {
+    if (!reviewDraft || reviewBusy) return;
+    setReviewBusy(true);
+    try {
+      const receipt = await reviewedSave(reviewDraft.proposed, reviewDraft.review);
+      resetForm();
+      setReviewMessage('ثبت نهایی و اعمال سند حسابداری روی سرور انجام شد؛ نسخه ' + receipt.revision);
+    } catch (error) {
+      setReviewMessage(error.message || 'ثبت نهایی انجام نشد؛ داده‌ها تغییر نکرده‌اند.');
+      setReviewDraft(null);
+    } finally { setReviewBusy(false); }
   };
 
   const edit = row => {
@@ -3543,13 +3708,13 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
           <form className="space-y-4" onSubmit={save}>
             <div className="grid grid-cols-3 gap-3">
               <label className="text-sm text-slate-300"><span className="mb-2 block">تاريخ کمکي</span><DateInput className="w-full" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></label>
-              {!onlySource && form.source_type === 'manual' ? <label className="text-sm text-slate-300">شخص / فروشنده<TextInput className="mt-2 w-full" list="manual-yarn-in-customers" placeholder="انتخاب یا درج شخص" value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })} /><datalist id="manual-yarn-in-customers">{customers.map(c => <option key={c} value={c} />)}</datalist></label> : <SelectInput value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })}><option value="">انتخاب مشتري/شخص</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput>}
+              {!onlySource && form.source_type === 'manual' ? <label className="text-sm text-slate-300">شخص / فروشنده<div className="mt-2 flex gap-2"><TextInput className="w-full" list="manual-yarn-in-customers" placeholder="انتخاب یا درج شخص" value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })} /><InlineAddButton title="افزودن شخص / فروشنده" onClick={quickAddCustomer} /></div><datalist id="manual-yarn-in-customers">{customers.map(c => <option key={c} value={c} />)}</datalist></label> : <div className="flex gap-2"><SelectInput className="min-w-0 flex-1" value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })}><option value="">انتخاب مشتري/شخص</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><InlineAddButton title="افزودن شخص / فروشنده" onClick={quickAddCustomer} /></div>}
               <SelectInput value={form.inventoryType} onChange={e => setForm({ ...form, inventoryType: e.target.value, itemName: '' })}><option value="yarn">نخ</option><option value="fabric">پارچه</option><option value="spare_part">قطعه یدکی</option><option value="other">ساير</option></SelectInput>
               {!onlySource && form.source_type === 'manual' && form.inventoryType === 'yarn'
-                ? <label className="text-sm text-slate-300">نوع نخ<TextInput className="mt-2 w-full" list="manual-yarn-in-items" placeholder="انتخاب یا درج نوع نخ" value={form.itemName} onChange={e => setForm({ ...form, itemName: e.target.value })} /><datalist id="manual-yarn-in-items">{sourceItems.map(x => <option key={x.id || x.name} value={x.name} />)}</datalist></label>
+                ? <label className="text-sm text-slate-300">نوع نخ<div className="mt-2 flex gap-2"><TextInput className="w-full" list="manual-yarn-in-items" placeholder="انتخاب یا درج نوع نخ" value={form.itemName} onChange={e => setForm({ ...form, itemName: e.target.value })} /><InlineAddButton title="افزودن نوع نخ" onClick={quickAddItem} /></div><datalist id="manual-yarn-in-items">{sourceItems.map(x => <option key={x.id || x.name} value={x.name} />)}</datalist></label>
                 : form.inventoryType === 'other'
-                ? <TextInput placeholder="شرح ساير" value={form.itemName} onChange={e => setForm({ ...form, itemName: e.target.value })} />
-                : <SelectInput value={form.itemName} onChange={e => setForm({ ...form, itemName: e.target.value })}><option value="">انتخاب نوع</option>{form.itemName && !sourceItems.some(x => x.name === form.itemName) && <option value={form.itemName}>{form.itemName}</option>}{sourceItems.map(x => <option key={x.id || x.name} value={x.name}>{x.name}</option>)}</SelectInput>}
+                ? <div className="flex gap-2"><TextInput className="min-w-0 flex-1" placeholder="شرح ساير" value={form.itemName} onChange={e => setForm({ ...form, itemName: e.target.value })} /><InlineAddButton title="افزودن شرح سایر" onClick={quickAddItem} /></div>
+                : <div className="flex gap-2"><SelectInput className="min-w-0 flex-1" value={form.itemName} onChange={e => setForm({ ...form, itemName: e.target.value })}><option value="">انتخاب نوع</option>{form.itemName && !sourceItems.some(x => x.name === form.itemName) && <option value={form.itemName}>{form.itemName}</option>}{sourceItems.map(x => <option key={x.id || x.name} value={x.name}>{x.name}</option>)}</SelectInput><InlineAddButton title="افزودن کالا / قطعه" onClick={quickAddItem} /></div>}
               <TextInput type="number" placeholder="مقدار" value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value, subtotal: '' })} />
               <TextInput type="number" placeholder="نرخ واحد" value={form.unitPrice} onChange={e => setForm({ ...form, unitPrice: e.target.value, subtotal: '' })} />
               <TextInput type="number" placeholder="مبلغ قبل از مالیات" value={subtotal || ''} onChange={e => setForm({ ...form, subtotal: e.target.value })} />
@@ -3558,19 +3723,35 @@ function IncomingInvoicePage({ finance, setFinance, onlySource = '' }) {
               <label className="col-span-3 flex items-center gap-3 rounded-md border border-blue-700 bg-blue-950 p-3 text-sm text-blue-100"><input type="checkbox" disabled={form.nonFinancial} checked={!!form.taxable && !form.nonFinancial} onChange={e => setForm({ ...form, taxable: e.target.checked })} /><span>خرید مشمول مالیات بر ارزش افزوده است؛ مبلغ {money(taxAmount)} تومان به اعتبار مالیاتی خرید ثبت می‌شود.</span></label>
               <label className="col-span-3 flex items-center gap-3 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm text-amber-100"><input type="checkbox" checked={!!form.nonFinancial} onChange={e => setForm({ ...form, nonFinancial: e.target.checked, taxable: e.target.checked ? false : form.taxable })} /><span>نخ/کالاي اماني کارمزدي؛ مبلغ فقط براي ارزش کالايي و اعتبارسنجي ثبت شود و در صورتحساب ريالي مشتري اثر نگذارد.</span></label>
             </div>
+            {priceSuggestion.price > 0 && <div className="rounded-lg border border-blue-800 bg-blue-950/60 p-4 text-sm text-blue-100">
+              <div className="flex flex-wrap items-center justify-between gap-3"><div><strong>پیشنهاد ناظر مالی: نرخ {money(priceSuggestion.price)} تومان</strong><div className="mt-1 text-xs text-blue-200">مبنای پیشنهاد: {priceSuggestion.basis} | دامنه سابقه: {money(priceSuggestion.min)} تا {money(priceSuggestion.max)} تومان</div></div><PrimaryButton onClick={() => setForm(current => ({ ...current, unitPrice: priceSuggestion.price, subtotal: '' }))}>اعمال قیمت پیشنهادی</PrimaryButton></div>
+              <details className="mt-3"><summary>مشاهده فاکتورهای مبنای پیشنهاد</summary>{priceSuggestion.samples.map(sample => <div key={sample.id} className="mt-2 text-xs"><bdi>{sample.id}</bdi> | {toJalali(sample.date)} | {sample.customer} | {money(sample.price)} تومان</div>)}</details>
+            </div>}
             {form.nonFinancial
               ? <div className="rounded-md border border-emerald-700 bg-emerald-950 p-4 text-sm text-emerald-100">اين فاکتور بدون اثر ريالي ثبت مي‌شود؛ چک، نقد، بدهکاري يا بستانکاري براي مشتري ايجاد نمي‌شود، اما مقدار و ارزش کالا در حساب کالايي و اعتبارسنجي لحاظ مي‌شود.</div>
-              : <div className="rounded-md border border-slate-700 bg-slate-900 p-4"><div className="mb-3 flex items-center justify-between"><h4 className="font-bold">رديف هاي تسويه فاکتور ورود</h4><PrimaryButton onClick={() => setPayments(prev => [...prev, newPaymentLine('credit')])}>افزودن رديف</PrimaryButton></div><div className="space-y-3">{payments.map(p => <IncomingPaymentLine key={p.id} payment={p} accounts={finance.accounts} receivableDocs={openReceivableDocs} onChange={patch => updatePayment(p.id, patch)} onRemove={() => removePayment(p.id)} />)}</div></div>}
+              : <div className="rounded-md border border-slate-700 bg-slate-900 p-4"><div className="mb-3 flex items-center justify-between"><h4 className="font-bold">رديف هاي تسويه فاکتور ورود</h4><PrimaryButton onClick={() => setPayments(prev => [...prev, newPaymentLine('credit')])}>افزودن رديف</PrimaryButton></div><div className="space-y-3">{payments.map(p => <IncomingPaymentLine key={p.id} payment={p} accounts={finance.accounts} receivableDocs={openReceivableDocs} onChange={patch => updatePayment(p.id, patch)} onRemove={() => removePayment(p.id)} onAddAccount={quickAddAccount} />)}</div></div>}
             <div className="grid grid-cols-5 gap-3"><Field label="مبلغ قبل مالیات" value={money(subtotal) + ' تومان'} /><Field label="مالیات/عوارض" value={money(form.nonFinancial ? 0 : taxAmount) + ' تومان'} tone="text-blue-300" /><Field label="جمع فاکتور" value={money(invoiceTotal) + ' تومان'} /><Field label="جمع تسويه" value={money(form.nonFinancial ? 0 : paid) + ' تومان'} tone={form.nonFinancial || paid === invoiceTotal ? 'text-emerald-300' : 'text-amber-300'} /><Field label={form.nonFinancial ? 'اثر ريالي' : 'مانده'} value={form.nonFinancial ? 'بدون اثر در صورتحساب' : money(invoiceTotal - paid) + ' تومان'} tone={form.nonFinancial || invoiceTotal - paid === 0 ? 'text-emerald-300' : 'text-red-300'} /></div>
-            <PrimaryButton className="w-full" type="submit">{onlySource === 'chelle' ? 'ثبت فاکتور ورود چله و اعمال مالی' : 'ثبت فاکتور ورود و اعمال مالي'}</PrimaryButton>
+            {reviewMessage && <div role="status" className="rounded-md border border-blue-700 bg-slate-950 p-4 text-blue-100">{reviewMessage}</div>}
+            {reviewDraft && <div className="rounded-lg border border-emerald-700 bg-emerald-950/60 p-5 text-emerald-50">
+              <h3 className="font-bold">اثر خالص ثبت پیشنهادی — هنوز ذخیره نشده است</h3>
+              <p className="my-3 text-sm leading-7">این جدول از موتور حسابداری سرور است. در ویرایش، فقط تفاوت نسبت به سند قبلی نمایش داده می‌شود. بدهکار/بستانکار ستون‌های سند حسابداری هستند؛ بدهکار شدن دارایی مانند بانک یعنی افزایش آن، و بستانکار شدن یعنی کاهش. پیشنهاد قیمت، قیمت قطعی روز نیست.</p>
+              <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr><th>حساب</th><th>شخص</th><th>بدهکار (تومان)</th><th>بستانکار (تومان)</th></tr></thead><tbody>
+                {reviewDraft.review.lines.map((line, index) => <tr key={index}><td className="p-3">{line.accountName}</td><td>{line.party || '—'}</td><td>{money(line.debit)}</td><td>{money(line.credit)}</td></tr>)}
+              </tbody><tfoot><tr className="border-t border-emerald-700 font-bold"><td>جمع اثر</td><td></td><td>{money(reviewDraft.review.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0))}</td><td>{money(reviewDraft.review.lines.reduce((sum, line) => sum + Number(line.credit || 0), 0))}</td></tr></tfoot></table></div>
+              {!reviewDraft.review.lines.length && <p className="py-3">تغییر خالص ریالی ندارد؛ اطلاعات غیرریالی و موجودی همچنان باید بررسی شوند.</p>}
+              <p className="mt-3 text-sm">کالا: {reviewDraft.invoice.itemName} | مقدار نهایی این سند: {num(reviewDraft.invoice.quantity)} | فروشنده/مالک: {reviewDraft.invoice.customer} | {reviewDraft.invoice.nonFinancial ? 'امانی، بدون اثر ریالی' : 'خرید مالی'}. ثبت مالی، ورود مجدد در انبار عملیاتی ایجاد نمی‌کند.</p>
+              <p className="mt-3 text-xs">تأیید تا ده دقیقه و فقط برای همین نسخه معتبر است. هیچ مغایرت عملیاتی صرفاً با ثبت مالی بسته نمی‌شود.</p>
+              <div className="mt-4 flex flex-wrap gap-3"><PrimaryButton disabled={reviewBusy} onClick={commitReviewed}>تأیید نهایی و ثبت روی سرور</PrimaryButton><GhostButton disabled={reviewBusy} onClick={() => setReviewDraft(null)}>بازگشت و اصلاح</GhostButton></div>
+            </div>}
+            {!reviewDraft && <PrimaryButton disabled={reviewBusy} className="w-full" type="submit">{reviewBusy ? 'در حال بررسی…' : 'بررسی ناظر مالی و نمایش اثر ثبت'}</PrimaryButton>}
           </form>
         </Card>
 
-        <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">عمليات در انتظار تعيين تکليف</h3><span className="text-xs text-slate-400">{loading ? 'در حال دريافت...' : num(pendingOperational.length) + ' مورد'}</span></div>{error && <ErrorBox message={error} />}<div className="max-h-[620px] space-y-2 overflow-auto">{pendingOperational.length ? pendingOperational.map(row => <button key={`${row.pendingType}-${row.id}`} type="button" className="w-full rounded-md border border-slate-700 bg-slate-900 p-3 text-right text-sm hover:border-blue-500" onClick={() => selectOperational(row)}><div className="flex items-center justify-between gap-2"><span className="font-bold text-blue-200">{row.actionLabel}: {row.title || '-'}</span><span className="rounded-full bg-slate-950 px-2 py-1 text-xs text-amber-200">{row.quantityLabel}</span></div><div className="mt-1 text-xs text-slate-400">{row.subtitle}</div><div className="mt-1 text-xs text-slate-500">تاريخ: {row.date || '-'}</div></button>) : <EmptyState />}</div></Card>
+        <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">عمليات در انتظار تعيين تکليف</h3><span className="text-xs text-slate-400">{loading ? 'در حال دريافت...' : num(pendingOperational.length) + ' مورد'}</span></div>{error && <ErrorBox message={error} />}<div className="max-h-[620px] space-y-2 overflow-auto">{pendingOperational.length ? pendingOperational.map(row => <div key={`${row.pendingType}-${row.id}`} className="rounded-md border border-slate-700 bg-slate-900 p-3 text-right text-sm hover:border-blue-500"><button type="button" className="w-full text-right" onClick={() => selectOperational(row)}><div className="flex items-center justify-between gap-2"><span className="font-bold text-blue-200">{row.actionLabel}: {row.title || '-'}</span><span className="rounded-full bg-slate-950 px-2 py-1 text-xs text-amber-200">{row.quantityLabel}</span></div><div className="mt-1 text-xs text-slate-400">{row.subtitle}</div><div className="mt-1 text-xs text-slate-500">تاريخ: {row.date || '-'}</div></button><div className="mt-3"><GhostButton onClick={() => reportOperationalMismatch(row)}>اعلام مغایرت به عملیات</GhostButton></div></div>) : <EmptyState />}</div></Card>
 
       </div>
 
-      <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">{onlySource === 'chelle' ? 'لیست فاکتورهای ورود چله ثبت شده' : 'ليست فاکتورهاي ورود ثبت شده'}</h3><div className="flex gap-2"><PrimaryButton onClick={printIncoming}>چاپ گزارش</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش فاکتور ورود', rows.map(row => ({ ...row, settlement: (row.payments || []).map(payment => payment.type).join('، ') })), [['date','تاریخ'],['customer','شخص'],['itemName','کالا یا قطعه'],['subtotal','قبل مالیات'],['taxAmount','مالیات'],['amount','جمع'],['settlement','تسویه']])}>خروجی اکسل</PrimaryButton></div></div><IncomingInvoiceTable rows={rows} onEdit={edit} onDelete={remove} /></Card>
+      <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">{onlySource === 'chelle' ? 'لیست فاکتورهای ورود چله ثبت شده' : 'ليست فاکتورهاي ورود ثبت شده'}</h3><div className="flex gap-2"><PrimaryButton onClick={printIncoming}>چاپ گزارش</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش فاکتور ورود', rows.map(row => ({ ...row, settlement: (row.payments || []).map(payment => payment.type).join('، ') })), [['date','تاریخ'],['customer','شخص'],['itemName','کالا یا قطعه'],['subtotal','قبل مالیات'],['taxAmount','مالیات'],['amount','جمع'],['settlement','تسویه']])}>خروجی اکسل</PrimaryButton></div></div><IncomingInvoiceTable rows={rows} onEdit={edit} onDelete={remove} onMismatch={reportOperationalMismatch} /></Card>
 
     </div>
 
@@ -4130,7 +4311,7 @@ function InvoicePage({ finance, setFinance }) {
 
 
 
-function IncomingPaymentLine({ payment, accounts, receivableDocs, onChange, onRemove }) {
+function IncomingPaymentLine({ payment, accounts, receivableDocs, onChange, onRemove, onAddAccount }) {
 
   const type = payment.type;
 
@@ -4148,7 +4329,36 @@ function IncomingPaymentLine({ payment, accounts, receivableDocs, onChange, onRe
 
   const chooseDoc = doc => onChange({ docId: doc.id, checkNo: doc.checkNo || '', amount: doc.amount || '', bankName: doc.bank || '', dueDate: doc.dueDate || '', dueJalali: doc.dueJalali || '' });
 
-  return <div className="rounded-md border border-slate-700 bg-slate-950 p-3"><div className="grid grid-cols-5 gap-2"><SelectInput value={type} onChange={e => changeType(e.target.value)}><option value="credit">نسيه/بستانکاري شخص</option><option value="cash">نقدي از بانک/صندوق</option><option value="check">چک پرداختي جديد</option><option value="assign_receivable">واگذاري چک دريافتي</option></SelectInput><TextInput type="number" placeholder="مبلغ" value={payment.amount} onChange={e => onChange({ amount: e.target.value })} readOnly={type === 'assign_receivable'} />{type === 'cash' && <SelectInput value={payment.accountId} onChange={e => onChange({ accountId: e.target.value })}><option value="">انتخاب بانک/صندوق</option>{accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput>}{type === 'cash' && <TextInput placeholder="شماره رهگيري" value={payment.trackingNo} onChange={e => onChange({ trackingNo: e.target.value })} />}{type === 'check' && <TextInput placeholder="شماره چک" value={payment.checkNo} onChange={e => onChange({ checkNo: e.target.value })} />}{type === 'check' && <TextInput placeholder="نام بانک" value={payment.bankName} onChange={e => onChange({ bankName: e.target.value })} />}{type === 'check' && <TextInput placeholder="سررسيد شمسي" value={payment.dueJalali} onChange={e => onChange({ dueJalali: e.target.value })} />}{type === 'check' && <DateInput value={payment.dueDate} onChange={e => onChange({ dueDate: e.target.value })} />}{type === 'assign_receivable' && <TextInput placeholder="شماره چک دریافتی را وارد کنید" value={payment.checkNo} onChange={e => onChange({ checkNo: e.target.value, docId: '', amount: '' })} />}{type === 'assign_receivable' && <div className="col-span-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-xs text-slate-200">{selectedDoc ? <div className="grid grid-cols-5 gap-2"><span>از: {selectedDoc.customer || '-'}</span><span>مبلغ: {money(selectedDoc.amount)}</span><span>بانک: {selectedDoc.bank || '-'}</span><span>سررسيد: {selectedDoc.dueJalali || toJalali(selectedDoc.dueDate) || '-'}</span><GhostButton onClick={() => chooseDoc(selectedDoc)}>انتخاب اين چک</GhostButton></div> : typedNo ? <span className="text-amber-200">چکي با اين شماره پيدا نشد يا چند مورد مشابه وجود دارد. از ليست زير انتخاب کنيد.</span> : <span>شماره چک را وارد کنيد تا مشخصات نمايش داده شود.</span>}{matchingDocs.length > 1 && <div className="mt-2 space-y-2">{matchingDocs.map(doc => <button key={doc.id} type="button" className="w-full rounded-md border border-slate-600 bg-slate-950 p-2 text-right hover:border-blue-500" onClick={() => chooseDoc(doc)}>شماره {doc.checkNo} | {doc.customer || '-'} | {money(doc.amount)} | {doc.bank || '-'}</button>)}</div>}</div>}<GhostButton onClick={onRemove}>حذف رديف</GhostButton></div></div>;
+  return (
+    <div className="rounded-md border border-slate-700 bg-slate-950 p-3">
+      <div className="grid grid-cols-5 gap-2">
+        <SelectInput value={type} onChange={e => changeType(e.target.value)}>
+          <option value="credit">نسيه/بستانکاري شخص</option>
+          <option value="cash">نقدي از بانک/صندوق</option>
+          <option value="check">چک پرداختي جديد</option>
+          <option value="assign_receivable">واگذاري چک دريافتي</option>
+        </SelectInput>
+        <TextInput type="number" placeholder="مبلغ" value={payment.amount} onChange={e => onChange({ amount: e.target.value })} readOnly={type === 'assign_receivable'} />
+        {type === 'cash' && (
+          <div className="flex gap-2">
+            <SelectInput className="min-w-0 flex-1" value={payment.accountId} onChange={e => onChange({ accountId: e.target.value })}>
+              <option value="">انتخاب بانک/صندوق</option>
+              {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </SelectInput>
+            <InlineAddButton title="افزودن بانک/صندوق" onClick={onAddAccount} />
+          </div>
+        )}
+        {type === 'cash' && <TextInput placeholder="شماره رهگيري" value={payment.trackingNo} onChange={e => onChange({ trackingNo: e.target.value })} />}
+        {type === 'check' && <TextInput placeholder="شماره چک" value={payment.checkNo} onChange={e => onChange({ checkNo: e.target.value })} />}
+        {type === 'check' && <TextInput placeholder="نام بانک" value={payment.bankName} onChange={e => onChange({ bankName: e.target.value })} />}
+        {type === 'check' && <TextInput placeholder="سررسيد شمسي" value={payment.dueJalali} onChange={e => onChange({ dueJalali: e.target.value })} />}
+        {type === 'check' && <DateInput value={payment.dueDate} onChange={e => onChange({ dueDate: e.target.value })} />}
+        {type === 'assign_receivable' && <TextInput placeholder="شماره چک دریافتی را وارد کنید" value={payment.checkNo} onChange={e => onChange({ checkNo: e.target.value, docId: '', amount: '' })} />}
+        {type === 'assign_receivable' && <div className="col-span-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-xs text-slate-200">{selectedDoc ? <div className="grid grid-cols-5 gap-2"><span>از: {selectedDoc.customer || '-'}</span><span>مبلغ: {money(selectedDoc.amount)}</span><span>بانک: {selectedDoc.bank || '-'}</span><span>سررسيد: {selectedDoc.dueJalali || toJalali(selectedDoc.dueDate) || '-'}</span><GhostButton onClick={() => chooseDoc(selectedDoc)}>انتخاب اين چک</GhostButton></div> : typedNo ? <span className="text-amber-200">چکي با اين شماره پيدا نشد يا چند مورد مشابه وجود دارد. از ليست زير انتخاب کنيد.</span> : <span>شماره چک را وارد کنيد تا مشخصات نمايش داده شود.</span>}{matchingDocs.length > 1 && <div className="mt-2 space-y-2">{matchingDocs.map(doc => <button key={doc.id} type="button" className="w-full rounded-md border border-slate-600 bg-slate-950 p-2 text-right hover:border-blue-500" onClick={() => chooseDoc(doc)}>شماره {doc.checkNo} | {doc.customer || '-'} | {money(doc.amount)} | {doc.bank || '-'}</button>)}</div>}</div>}
+        <GhostButton onClick={onRemove}>حذف رديف</GhostButton>
+      </div>
+    </div>
+  );
 
 }
 
@@ -4498,6 +4708,7 @@ function CostsPage({ finance, setFinance }) {
 
       const expense = {
         id: expenseId, ...form, documentNo, expenseTraceId: traceId, payer: partyName, customer: partyName,
+        verifiedPayment: { accountId: form.accountId, date: form.date, amount: Number(form.amount) },
         amount: Number(form.amount), counterpartyConfirmed: Boolean(partyName),
         counterpartySource: partyName ? 'expense_form' : '', source: 'مالی',
       };
@@ -5452,6 +5663,55 @@ function CreditPage({ finance }) {
 
 
 
+function FinancialSupervisorPage({ revision, allowedPageIds, onGo }) {
+  const [report, setReport] = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(true);
+  const [filter, setFilter] = useState('all');
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setBusy(true);
+    setError('');
+    apiJSON('/supervisor/report').then(result => { if (active) setReport(result); })
+      .catch(err => { if (active) setError(err.message || 'ناظر در دسترس نیست.'); })
+      .finally(() => { if (active) setBusy(false); });
+    return () => { active = false; };
+  }, [revision, refresh]);
+  const findings = report?.findings || [];
+  const critical = findings.filter(x => x.severity === 'critical').length;
+  const warnings = findings.filter(x => x.severity === 'warning').length;
+  const fresh = !busy && !error && report?.revision === revision && report?.complete;
+  const visible = filter === 'all' ? findings : findings.filter(x => x.severity === filter);
+  const openFinding = item => {
+    if (!allowedPageIds.includes(item.page)) return;
+    if (item.page === 'costs') { try { localStorage.setItem('textile-expense-trace-filter', item.reference); } catch {} }
+    onGo(item.page);
+  };
+  return <div className="space-y-5">
+    <Card>
+      <div className="flex flex-wrap justify-between gap-3"><h2 className="text-xl font-bold">ناظر مالی و صف رسیدگی</h2><PrimaryButton disabled={busy} onClick={() => setRefresh(x => x + 1)}>بررسی دوباره</PrimaryButton></div>
+      <p className="mt-3 text-sm leading-7 text-slate-300">کنترل قاعده‌محور ارتباط اسناد و اثر ثبت؛ جایگزین مسئولیت حسابدار یا حسابرس مستقل نیست. نرخ پیشنهادی از سابقه فاکتور است، نه قیمت قطعی بازار. تشخیص مالکیت کالا، ماهیت نامشخص و تصمیم نهایی با شماست.</p>
+      <div role="status" className={'mt-4 rounded-lg border p-4 ' + (fresh && !critical ? 'border-emerald-700 text-emerald-200' : 'border-amber-700 text-amber-200')}>
+        {busy ? 'در حال بررسی سرور؛ هنوز نتیجه قطعی نیست…' : error || (!fresh ? 'پوشش بررسی ناقص یا نسخه داده تغییر کرده است؛ سلامت قابل تأیید نیست.' : critical ? num(critical) + ' مغایرت برای رسیدگی شناسایی شد.' : 'در کنترل‌های اجراشده مغایرت قطعی پیدا نشد.')}
+        <div className="mt-2 text-xs">نسخه بررسی: {report?.revision ?? '—'} | زمان بررسی: {report?.checkedAt ? new Date(report.checkedAt).toLocaleString('fa-IR') : '—'} | تعداد رکورد بررسی‌شده: {num(report?.checked || 0)}</div>
+      </div>
+      <p className="mt-3 text-sm">پایش پس‌زمینه سرور هر ۵ دقیقه بدون نیاز به باز بودن صفحه انجام می‌شود و فقط گزارش تشخیصی ذخیره می‌کند؛ ثبت یا اصلاح خودکار وجه انجام نمی‌دهد.</p>
+      <p className="mt-2 text-xs text-slate-400">آخرین گزارش پس‌زمینه: {report?.backgroundCheckedAt ? new Date(report.backgroundCheckedAt).toLocaleString('fa-IR') : 'هنوز دریافت نشده؛ اجرای پس‌زمینه قابل تأیید نیست'}</p>
+      {report?.backgroundCheckedAt && Date.now() - new Date(report.backgroundCheckedAt).getTime() > 600000 && <p className="mt-2 text-sm text-amber-300">گزارش پس‌زمینه بیش از ده دقیقه به‌روز نشده است؛ سلامت پایش خودکار باید بررسی شود.</p>}
+      <ul className="mt-3 list-inside list-disc text-sm text-slate-400">{(report?.coverage || []).map((item, i) => <li key={i}>{item}</li>)}</ul>
+    </Card>
+    <div className="grid grid-cols-2 gap-4"><Field label="مغایرت قطعی" value={num(critical)} tone="text-red-300" /><Field label="هشدار بررسی انسانی" value={num(warnings)} tone="text-amber-300" /></div>
+    <Card>
+      <div className="mb-4 flex flex-wrap justify-between gap-3"><h3 className="font-bold">صف رسیدگی — هیچ داده‌ای با مشاهده گزارش تغییر نمی‌کند</h3><div className="flex gap-2"><GhostButton onClick={() => setFilter('all')}>همه</GhostButton><GhostButton onClick={() => setFilter('critical')}>مغایرت</GhostButton><GhostButton onClick={() => setFilter('warning')}>هشدار</GhostButton></div></div>
+      <div className="space-y-3">{visible.map(item => <article key={item.id} className={'rounded-lg border p-4 ' + (item.severity === 'critical' ? 'border-red-800 text-red-200' : 'border-amber-800 text-amber-200')}>
+        <div className="flex flex-wrap justify-between gap-3"><div><h4 className="font-bold">{item.title}</h4><div className="mt-2 text-sm">شناسه سند: <bdi>{item.reference}</bdi></div></div>{allowedPageIds.includes(item.page) ? <GhostButton onClick={() => openFinding(item)}>باز کردن بخش مربوطه</GhostButton> : <span className="text-xs">اصلاح این مورد به دسترسی بخش مربوطه نیاز دارد.</span>}</div>
+      </article>)}</div>
+      {!visible.length && <p className="p-4 text-slate-400">{fresh ? 'در این فیلتر موردی پیدا نشد.' : 'تا تکمیل بررسی، خالی بودن لیست نشانه سلامت نیست.'}</p>}
+    </Card>
+  </div>;
+}
+
 function AdvisorPage({ finance }) {
 
   const { data } = useOperationalData();
@@ -5711,11 +5971,11 @@ function ExpensesTable({ rows, onEdit, onDelete, onImport, highlightTrace = '' }
 
 
 
-function IncomingInvoiceTable({ rows, onEdit, onDelete }) {
+function IncomingInvoiceTable({ rows, onEdit, onDelete, onMismatch }) {
 
   if (!rows.length) return <EmptyState />;
 
-  return <div className="overflow-auto"><table className="w-full border-collapse text-sm"><thead><tr className="border-b border-slate-700 text-slate-400"><th className="p-3 text-right">تاريخ</th><th className="p-3 text-right">شخص</th><th className="p-3 text-right">کالا/قطعه</th><th className="p-3 text-right">مقدار</th><th className="p-3 text-right">نرخ</th><th className="p-3 text-right">مبلغ</th><th className="p-3 text-right">منبع</th><th className="p-3 text-right">عمليات</th></tr></thead><tbody>{rows.map(row => <tr key={row.id} className="border-b border-slate-800"><td className="p-3">{toJalali(row.date)}</td><td className="p-3">{row.customer}</td><td className="p-3">{row.itemName}</td><td className="p-3">{num(row.quantity)}</td><td className="p-3">{money(row.unitPrice)}</td><td className="p-3 font-bold text-emerald-200">{money(row.amount)}</td><td className="p-3">{row.source_type === 'operational_misc' ? 'ورودي عملياتي' : 'ثبت مالي'}</td><td className="p-3"><div className="flex gap-2"><GhostButton onClick={() => onEdit(row)}>ويرايش</GhostButton><DangerButton onClick={() => onDelete(row.id)}>حذف</DangerButton></div></td></tr>)}</tbody></table></div>;
+  return <div className="overflow-auto"><table className="w-full border-collapse text-sm"><thead><tr className="border-b border-slate-700 text-slate-400"><th className="p-3 text-right">تاريخ</th><th className="p-3 text-right">شخص</th><th className="p-3 text-right">کالا/قطعه</th><th className="p-3 text-right">مقدار</th><th className="p-3 text-right">نرخ</th><th className="p-3 text-right">مبلغ</th><th className="p-3 text-right">منبع</th><th className="p-3 text-right">عمليات</th></tr></thead><tbody>{rows.map(row => <tr key={row.id} className="border-b border-slate-800"><td className="p-3">{toJalali(row.date)}</td><td className="p-3">{row.customer}</td><td className="p-3">{row.itemName}</td><td className="p-3">{num(row.quantity)}</td><td className="p-3">{money(row.unitPrice)}</td><td className="p-3 font-bold text-emerald-200">{money(row.amount)}</td><td className="p-3">{incomingInvoiceSourceLabel(row.source_type)}</td><td className="p-3"><div className="flex flex-wrap gap-2"><GhostButton onClick={() => onEdit(row)}>ويرايش</GhostButton>{isOperationalInvoiceSource(row) && <GhostButton onClick={() => onMismatch(row)}>اعلام مغایرت</GhostButton>}<DangerButton onClick={() => onDelete(row.id)}>حذف</DangerButton></div></td></tr>)}</tbody></table></div>;
 
 }
 

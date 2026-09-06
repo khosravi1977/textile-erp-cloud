@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/erpsystem/textile-erp/internal/application/telegramreport"
 	"github.com/erpsystem/textile-erp/internal/infrastructure/persistence/postgres"
+	"github.com/erpsystem/textile-erp/internal/presentation/handler"
 	"github.com/erpsystem/textile-erp/internal/presentation/router"
 	"log"
 	"net/http"
@@ -42,6 +43,7 @@ func main() {
 
 	telegramReports := telegramreport.New(db, telegramreport.ConfigFromEnv())
 	telegramReports.Start(context.Background())
+	handler.StartSupervisorWorker(context.Background())
 
 	// Setup router
 	r := router.SetupRouter(telegramReports)

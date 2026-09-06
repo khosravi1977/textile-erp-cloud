@@ -42,6 +42,9 @@ func SetupRouter(services ...*telegramreport.Service) http.Handler {
 	mux.HandleFunc("/api/inventory/alerts", h.GetStockAlerts)
 	mux.HandleFunc("/api/inventory/transactions", h.GetInventoryTransactions)
 	mux.HandleFunc("/api/workspace", h.WorkspaceRootAutomated)
+	mux.HandleFunc("/api/supervisor/report", h.SupervisorReport)
+	mux.HandleFunc("/api/supervisor/preview", h.SupervisorReview)
+	mux.HandleFunc("/api/supervisor/commit", h.SupervisorReview)
 	mux.HandleFunc("/api/workspace/history", h.GetWorkspaceHistory)
 	mux.HandleFunc("/api/workspace/summary", h.GetWorkspaceSummaryAccurate)
 	mux.HandleFunc("/api/workspace/alerts", h.GetWorkspaceAlertsAccurate)
@@ -80,6 +83,8 @@ func SetupRouter(services ...*telegramreport.Service) http.Handler {
 	mux.HandleFunc("/api/operational/expenses", h.GetOperationalExpenses)
 	mux.HandleFunc("/api/operational/misc-incoming", h.GetOperationalMiscIncoming)
 	mux.HandleFunc("/api/operational/spare-parts-inventory", h.GetOperationalSparePartsInventory)
+	mux.HandleFunc("/api/operational/mismatch", h.ReportOperationalMismatch)
+	mux.HandleFunc("/api/operational/mismatch/resolve", h.ResolveOperationalMismatch)
 
 	// Financial-compatible aliases used by the previous financial UI.
 	mux.HandleFunc("/api/financial/lookups/customers", h.GetOperationalCustomers)
