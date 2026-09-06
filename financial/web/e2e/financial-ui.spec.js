@@ -42,6 +42,42 @@ test('every permitted finance tab renders without a JavaScript crash', async ({ 
   }
 });
 
+test('report cash and cheque totals align in filtered table, print and Excel', async ({ page }) => {
+  const mock = await fixture(page);
+  mock.state().invoices.push(...[1000, 2000].map((total, i) => ({ id: `report-${i}`, number: `R-${i}`, customer: i ? 'شخص دوم' : 'شخص اول', date: '1405/06/24', item: 'پارچه آزمایشی', total, payments: [], paymentTerms: { cashPercent: 20, checkPercent: 80, checkMonths: 1 } })));
+  await page.goto('/?page=reports');
+  const table = page.locator('table').filter({ has: page.getByRole('columnheader', { name: 'نقد طبق قرار', exact: true }) });
+  const verify = async (target, cash, cheque) => {
+    const headings = await target.locator('thead th').allTextContents();
+    const cells = target.locator('tfoot td');
+    const normalized = value => value.replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))).replace(/[,٬\s]/g, '');
+    expect(normalized(await cells.nth(headings.indexOf('نقد طبق قرار')).innerText())).toBe(String(cash));
+    expect(normalized(await cells.nth(headings.indexOf('چک طبق قرار')).innerText())).toBe(String(cheque));
+    await expect(cells.last()).toBeEmpty();
+  };
+  await verify(table, 600, 2400);
+  await page.locator('select').filter({ has: page.locator('option[value="all"]', { hasText: 'همه مشتريان' }) }).selectOption({ label: 'شخص اول' });
+  await verify(table, 200, 800);
+  await page.context().addInitScript(() => { window.print = () => {}; });
+  const popupPromise = page.waitForEvent('popup');
+  await page.getByRole('button', { name: 'چاپ ريز گزارش', exact: true }).click();
+  const popup = await popupPromise;
+  await verify(popup.locator('table'), 200, 800);
+  await popup.screenshot({ path: 'test-results/report-payment-totals.png', fullPage: true });
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'خروجی اکسل', exact: true }).click();
+  const download = await downloadPromise;
+  const stream = await download.createReadStream();
+  let xml = '';
+  for await (const chunk of stream) xml += chunk.toString();
+  const lastRow = [...xml.matchAll(/<Row>(.*?)<\/Row>/g)].at(-1)[1];
+  const values = [...lastRow.matchAll(/<Data[^>]*>(.*?)<\/Data>/g)].map(match => match[1]);
+  expect(values[11]).toBe('200');
+  expect(values[12]).toBe('800');
+  expect(values[13]).toBe('');
+  expect(mock.requests.filter(request => request.method !== 'GET')).toHaveLength(0);
+});
+
 test('incoming form uses Persian date, previews without write, then saves exact reviewed invoice', async ({ page }) => {
   const mock = await fixture(page);
   await page.goto('/?page=incomingInvoices');
