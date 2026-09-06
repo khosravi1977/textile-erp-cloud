@@ -41,6 +41,8 @@ type Config struct {
 	RelayURL    string
 	RelayToken  string
 	RelayMode   string
+	RubikaToken string
+	RubikaChat  string
 }
 
 func ConfigFromEnv() Config {
@@ -52,6 +54,8 @@ func ConfigFromEnv() Config {
 		RelayURL:    strings.TrimSpace(os.Getenv("TEXTILE_TELEGRAM_RELAY_URL")),
 		RelayToken:  strings.TrimSpace(os.Getenv("TEXTILE_TELEGRAM_RELAY_TOKEN")),
 		RelayMode:   strings.TrimSpace(os.Getenv("TEXTILE_TELEGRAM_RELAY_MODE")),
+		RubikaToken: strings.TrimSpace(os.Getenv("TEXTILE_RUBIKA_BOT_TOKEN")),
+		RubikaChat:  strings.TrimSpace(os.Getenv("TEXTILE_RUBIKA_CHAT_ID")),
 	}
 }
 
@@ -617,14 +621,18 @@ func (s *Service) SendTest(ctx context.Context, companyID int64) error {
 			lastErr = err
 			continue
 		}
-		if _, err := s.sendMessage(ctx, chatID, formatTextileReport(snapshot, "test")); err != nil {
+		textileText := formatTextileReport(snapshot, "test")
+		if _, err := s.sendMessage(ctx, chatID, textileText); err != nil {
 			lastErr = err
 			continue
 		}
-		if _, err := s.sendMessage(ctx, chatID, formatAccountingReport(snapshot, "test")); err != nil {
+		s.mirrorRubika(ctx, textileText)
+		accountingText := formatAccountingReport(snapshot, "test")
+		if _, err := s.sendMessage(ctx, chatID, accountingText); err != nil {
 			lastErr = err
 			continue
 		}
+		s.mirrorRubika(ctx, accountingText)
 		sent++
 	}
 	if sent == 0 {
@@ -957,7 +965,11 @@ func (s *Service) sendAccountingAlert(
 	if affected, _ := result.RowsAffected(); affected == 0 {
 		return
 	}
-	messageID, sendErr := s.sendMessage(ctx, chatID, formatAccountingOverdueAlert(snapshot))
+	alertText := formatAccountingOverdueAlert(snapshot)
+	messageID, sendErr := s.sendMessage(ctx, chatID, alertText)
+	if sendErr == nil {
+		s.mirrorRubika(ctx, alertText)
+	}
 	status, errorText := "sent", ""
 	if sendErr != nil {
 		status, errorText = "failed", cleanText(sendErr.Error(), 500)
@@ -987,11 +999,19 @@ func (s *Service) sendPeriodic(ctx context.Context, companyID, recipientID int64
 	}
 	snapshot, reportErr := s.collectPeriod(ctx, companyID, start, end, accountingSLADays)
 	var messageID int64
+	textileText := formatTextileReport(snapshot, reportType)
 	if reportErr == nil {
-		messageID, reportErr = s.sendMessage(ctx, chatID, formatTextileReport(snapshot, reportType))
+		messageID, reportErr = s.sendMessage(ctx, chatID, textileText)
 	}
 	if reportErr == nil {
-		_, reportErr = s.sendMessage(ctx, chatID, formatAccountingReport(snapshot, reportType))
+		s.mirrorRubika(ctx, textileText)
+	}
+	accountingText := formatAccountingReport(snapshot, reportType)
+	if reportErr == nil {
+		_, reportErr = s.sendMessage(ctx, chatID, accountingText)
+	}
+	if reportErr == nil {
+		s.mirrorRubika(ctx, accountingText)
 	}
 	status, errText := "sent", ""
 	if reportErr != nil {
@@ -1983,6 +2003,33 @@ func dayStart(value time.Time) time.Time {
 
 func dayEnd(value time.Time) time.Time {
 	return dayStart(value).Add(24*time.Hour - time.Nanosecond)
+}
+
+// mirrorRubika best-effort delivers the same report text to the Rubika bot
+// (TEXTILE_RUBIKA_BOT_TOKEN / TEXTILE_RUBIKA_CHAT_ID). Empty config = disabled.
+// Never fails the Telegram path.
+func (s *Service) mirrorRubika(ctx context.Context, text string) {
+	token := strings.TrimSpace(s.cfg.RubikaToken)
+	chat := strings.TrimSpace(s.cfg.RubikaChat)
+	if token == "" || chat == "" {
+		return
+	}
+	payload, err := json.Marshal(map[string]any{"chat_id": chat, "text": text})
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://botapi.rubika.ir/v3/"+token+"/sendMessage", bytes.NewReader(payload))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		log.Printf("rubika mirror send failed: %v", err)
+		return
+	}
+	resp.Body.Close()
 }
 
 func (s *Service) sendMessage(ctx context.Context, chatID, text string) (int64, error) {

@@ -63,6 +63,8 @@ services:
     env_file:
       - path: ${TEXTILE_TELEGRAM_ENV_FILE:-/var/tmp/textile-telegram.env}
         required: false
+      - path: ${TEXTILE_RUBIKA_ENV_FILE:-/var/tmp/textile-rubika.env}
+        required: false
     environment:
       DB_HOST: postgres
       DB_PORT: 5432

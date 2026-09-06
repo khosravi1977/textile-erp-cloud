@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -57,6 +58,7 @@ func (h *APIHandler) WorkspaceRoot(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		doc, err := loadWorkspace(r, requestctx.CompanyID(r.Context()))
 		if err != nil {
+			log.Printf("workspace GET failed company=%d user=%d: %s", requestctx.CompanyID(r.Context()), requestctx.UserID(r.Context()), err.Error())
 			RespondError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -74,6 +76,7 @@ func (h *APIHandler) WorkspaceRoot(w http.ResponseWriter, r *http.Request) {
 		}
 		state, checksum, err := validateWorkspaceState(request.State)
 		if err != nil {
+			log.Printf("workspace PUT rejected payload company=%d user=%d: %s", requestctx.CompanyID(r.Context()), requestctx.UserID(r.Context()), err.Error())
 			RespondError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -90,6 +93,7 @@ func (h *APIHandler) WorkspaceRoot(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
+			log.Printf("workspace PUT save failed company=%d user=%d: %s", requestctx.CompanyID(r.Context()), requestctx.UserID(r.Context()), err.Error())
 			RespondError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

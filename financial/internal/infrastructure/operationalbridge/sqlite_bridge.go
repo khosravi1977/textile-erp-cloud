@@ -578,6 +578,69 @@ func (b *Bridge) ReportFinancialMismatch(report FinancialMismatchReport) error {
 	return err
 }
 
+type MismatchReportRow struct {
+	ID          int64  `json:"id"`
+	SourceType  string `json:"source_type"`
+	SourceID    string `json:"source_id"`
+	InvoiceNo   string `json:"invoice_no"`
+	InvoiceKind string `json:"invoice_kind"`
+	Title       string `json:"title"`
+	Message     string `json:"message"`
+	Status      string `json:"status"`
+	ReportedBy  string `json:"reported_by"`
+	ReportedAt  string `json:"reported_at"`
+}
+
+func (b *Bridge) MismatchReports(limit int) ([]MismatchReportRow, error) {
+	if b == nil {
+		return nil, sql.ErrConnDone
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	if err := b.ensureMismatchTable(); err != nil {
+		return nil, err
+	}
+	rows, err := b.query(`SELECT id, source_type, source_id, COALESCE(invoice_no,''), COALESCE(invoice_kind,''), title, message, status, COALESCE(reported_by,''), COALESCE(reported_at,'') FROM financial_mismatch_reports WHERE status IN ('open','resolved') ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]MismatchReportRow, 0, 32)
+	for rows.Next() {
+		var r MismatchReportRow
+		if err := rows.Scan(&r.ID, &r.SourceType, &r.SourceID, &r.InvoiceNo, &r.InvoiceKind, &r.Title, &r.Message, &r.Status, &r.ReportedBy, &r.ReportedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (b *Bridge) SetMismatchReportStatus(id int64, status string) error {
+	if b == nil {
+		return sql.ErrConnDone
+	}
+	status = strings.TrimSpace(status)
+	if status != "open" && status != "resolved" && status != "closed" {
+		return errors.New("invalid mismatch status")
+	}
+	if err := b.ensureMismatchTable(); err != nil {
+		return err
+	}
+	_, err := b.exec(`UPDATE financial_mismatch_reports SET status=? WHERE id=?`, status, id)
+	return err
+}
+
+func (b *Bridge) ensureMismatchTable() error {
+	if b.dialect == "postgres" {
+		_, err := b.exec(`CREATE TABLE IF NOT EXISTS financial_mismatch_reports (id BIGSERIAL PRIMARY KEY, source_type TEXT NOT NULL, source_id TEXT NOT NULL, invoice_no TEXT, invoice_kind TEXT, title TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', reported_by TEXT, reported_at TEXT)`)
+		return err
+	}
+	_, err := b.exec(`CREATE TABLE IF NOT EXISTS financial_mismatch_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, source_type TEXT NOT NULL, source_id TEXT NOT NULL, invoice_no TEXT, invoice_kind TEXT, title TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', reported_by TEXT, reported_at TEXT)`)
+	return err
+}
+
 func (b *Bridge) ResolveFinancialMismatch(sourceType, sourceID string) error {
 	if b == nil {
 		return sql.ErrConnDone
