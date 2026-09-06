@@ -38,6 +38,7 @@ func AdminAuth(next http.Handler) http.Handler {
 			r.URL.Path == "/" ||
 			strings.HasPrefix(r.URL.Path, "/metrics") ||
 			strings.HasPrefix(r.URL.Path, "/api/auth/login") ||
+			r.URL.Path == "/api/management-report" ||
 			r.URL.Path == "/api/mobile/pair" {
 			next.ServeHTTP(w, r)
 			return
