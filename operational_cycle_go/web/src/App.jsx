@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import { createRoot } from 'react-dom/client';
 
@@ -38,7 +38,7 @@ function normalizeMachineNumber(value) {
 
 const tabs = [
 
-  ['formulas', 'فرمول پیش‌فرض ماشین‌ها'],
+  ['formulas', 'فرمول تولید ماشین‌ها'],
 
   ['dashboard', 'داشبورد'],
 
@@ -122,7 +122,7 @@ const sidebarTabs = [
 
   ['nakh-salon', 'ورود نخ سالن'],
 
-  ['formulas', 'فرمول پیش‌فرض ماشین‌ها'],
+  ['formulas', 'فرمول تولید ماشین‌ها'],
 
   ['salon', 'سالن تولید'],
 
@@ -144,7 +144,9 @@ const sidebarTabs = [
 
   ['machinery-services', 'خدمات ماشین‌آلات'],
 
-  ['spare-parts', 'موجودی انبار قطعات']
+  ['spare-parts', 'موجودی انبار قطعات'],
+
+  ['users', 'مدیریت کاربران']
 
 ];
 
@@ -164,7 +166,16 @@ function App() {
 
   const [error, setError] = useState('');
 
-  const [operationalAlerts, setOperationalAlerts] = useState([]);
+  const [mismatchReports, setMismatchReports] = useState([]);
+
+  const mismatchTabMap = { operational_yarn_in: ['nakh-vor', 'ورود نخ'], operational_yarn_out: ['yarn-out', 'خروج نخ'], operational_chelle_in: ['chelle', 'ورود چله'], operational_out_invoice: ['out-invoice', 'فاکتور خروج'], operational_spare_part: ['spare-parts', 'ورود قطعه'] };
+
+  const resolveMismatchReport = (row) => {
+    api('/mismatch-reports/' + row.id, { method: 'POST' }).then(() => {
+      notify('اعلان مغایرت رفع شد؛ پس از اصلاح و ثبت رکورد، فاکتور اصلاح‌شده به بخش مالی ارسال می‌شود.');
+      setMismatchReports(prev => prev.map(x => x.id === row.id ? { ...x, status: 'resolved' } : x));
+    }).catch(err => notify('رفع اعلان انجام نشد: ' + (err && err.message ? err.message : '')));
+  };
 
   const [status, setStatus] = useState({ go: false, db: false, message: 'در حال بررسی ارتباط...' });
 
@@ -200,38 +211,27 @@ function App() {
 
   };
 
-  const refreshOperationalAlerts = async () => {
-
-    try {
-      const data = await api('/dashboard');
-      setOperationalAlerts((data.notifications || []).filter(item => String(item.code || '').startsWith('financial-mismatch')).slice(0, 5));
-    } catch {
-      setOperationalAlerts([]);
-    }
-
-  };
-
-
-
   useEffect(() => {
 
     if (session) {
 
       refreshLookups();
-      refreshOperationalAlerts();
 
       return;
 
     }
 
     setLookups({});
-    setOperationalAlerts([]);
 
   }, [session]);
+
   useEffect(() => {
-    if (!session) return;
-    const timer = setInterval(refreshOperationalAlerts, 30000);
-    return () => clearInterval(timer);
+    if (!session) { setMismatchReports([]); return; }
+    let alive = true;
+    const load = () => api('/mismatch-reports').then(rows => { if (alive) setMismatchReports(Array.isArray(rows) ? rows : []); }).catch(() => {});
+    load();
+    const t = setInterval(load, 60000);
+    return () => { alive = false; clearInterval(t); };
   }, [session]);
 
   useEffect(() => {
@@ -464,7 +464,7 @@ function App() {
 
   const allowedTabs = new Set((session.menus || []).map(m => m.menu_key));
 
-  const visibleTabs = sidebarTabs.filter(([id]) => allowedTabs.has(id));
+  const visibleTabs = sidebarTabs.filter(([id]) => allowedTabs.size === 0 || allowedTabs.has(id));
 
   if (visibleTabs.length && !visibleTabs.some(([id]) => id === tab)) {
 
@@ -512,13 +512,23 @@ function App() {
 
         {toast && <div className="toast">{toast}</div>}
 
-        {!!operationalAlerts.length && <section className="financial-alerts">
-          <div className="financial-alerts-head"><strong>اعلان مغایرت مالی</strong><button onClick={refreshOperationalAlerts}>بروزرسانی</button></div>
-          {operationalAlerts.map(item => <div className="financial-alert" key={item.code}>
-            <div><b>{item.title}</b><span>{item.message}</span></div>
-            <button onClick={() => setTab(tabForAlertPath(item.path))}>مشاهده مبدا</button>
-          </div>)}
-        </section>}
+        {mismatchReports.length > 0 && (
+          <div style={{ border: '1px solid #f59e0b', background: '#fffbeb', borderRadius: 8, padding: '10px 14px', marginBottom: 12 }}>
+            <div style={{ fontWeight: 700, color: '#92400e', marginBottom: 6 }}>اعلان مغایرت از بخش مالی ({mismatchReports.filter(x => x.status === 'open').length} باز)</div>
+            {mismatchReports.map(row => (
+              <div key={row.id} style={{ borderTop: '1px dashed #fcd34d', padding: '6px 0' }}>
+                <div style={{ fontWeight: 700, color: '#92400e' }}>{row.title}{row.status === 'open' ? '' : ' — اصلاح شد'}</div>
+                <div style={{ fontSize: 13, color: '#1f2937', fontWeight: 700, marginTop: 2 }}>رکورد موردنظر: {row.record_summary || ('شناسه ' + row.source_id)}</div>
+                <div style={{ fontSize: 13, color: '#57534e' }}>{row.message}</div>
+                <div style={{ fontSize: 12, color: '#78716c', marginTop: 4 }}>ثبت: {row.reported_at || '-'} · نوع: {mismatchTabMap[row.source_type] ? mismatchTabMap[row.source_type][1] : row.source_type}</div>
+                <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {mismatchTabMap[row.source_type] && <button onClick={() => setTab(mismatchTabMap[row.source_type][0])}>رفتن به «{mismatchTabMap[row.source_type][1]}»</button>}
+                  {row.status === 'open' && <button onClick={() => resolveMismatchReport(row)}>اعلان را رفع کن (رکورد اصلاح شد)</button>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         <ActiveTab tab={tab} lookups={lookups} notify={notify} refreshLookups={refreshLookups} />
 
@@ -565,6 +575,7 @@ function ActiveTab({ tab, lookups, notify, refreshLookups }) {
     case 'out-invoice': return <OutInvoicePro lookups={lookups} notify={notify} refreshLookups={refreshLookups} />;
 
     case 'expenses': return <Expenses lookups={lookups} notify={notify} refreshLookups={refreshLookups} />;
+    case 'users': return <UsersManager notify={notify} />;
 
     case 'database': return <DatabaseManager notify={notify} />;
 
@@ -575,20 +586,6 @@ function ActiveTab({ tab, lookups, notify, refreshLookups }) {
     default: return <DashboardMother />;
 
   }
-
-}
-
-
-
-function tabForAlertPath(path) {
-
-  return ({
-    '/out-invoice': 'out-invoice',
-    '/nakh-khor': 'yarn-out',
-    '/nakh-vor': 'nakh-vor',
-    '/v-kh-moto': 'v-kh-moto',
-    '/reports': 'reports',
-  })[path] || String(path || '').replace(/^\/+/, '') || 'reports';
 
 }
 
@@ -1129,6 +1126,8 @@ function NakhSalon({ lookups, notify, refreshLookups }) {
 
   const [movements, setMovements] = useState([]);
 
+  const approvedOwnerMismatches = useRef(new Set());
+
   const load = () => Promise.all([api('/nakh-salon?chelles=1'), api('/nakh-khor?inventory=1'), api('/nakh-salon')])
     .then(([activeChelles, yarnInventory, salonMovements]) => {
       setChelles((activeChelles || []).map(x => ({ ...x, machine: normalizeMachineNumber(x.machine) })));
@@ -1150,6 +1149,29 @@ function NakhSalon({ lookups, notify, refreshLookups }) {
     notify={notify}
 
     afterSave={load}
+
+    beforeSave={form => {
+      const selected = chelles.find(x => Number(x.id) === Number(form.chelle_id));
+      const chelleOwner = String(selected?.mosh_name || '').trim();
+      const yarnOwner = String(form.mosh_name || '').trim();
+      const approvalKey = [
+        Number(form.id || 0),
+        Number(form.chelle_id || 0),
+        chelleOwner,
+        yarnOwner,
+      ].join('|');
+      const ownerMismatch = chelleOwner && yarnOwner && chelleOwner !== yarnOwner;
+      if (ownerMismatch && !approvedOwnerMismatches.current.has(approvalKey)) {
+        const accepted = window.confirm(
+          `مالک نخ «${yarnOwner}» با مالک چله «${chelleOwner}» متفاوت است.\n` +
+          'آیا با وجود این مغایرت، انتخاب نخ برای این چله تأیید می‌شود؟'
+        );
+        if (!accepted) return false;
+        approvedOwnerMismatches.current.add(approvalKey);
+        return { ...form, allow_owner_mismatch: true };
+      }
+      return { ...form, allow_owner_mismatch: ownerMismatch };
+    }}
 
     filters={[['machine','ماشین'],['ham_nakh','همبافت نخ'],['nakh_name','نوع نخ'],['shom_chelle','چله'],['mosh_name','مالک نخ'],['vor_khor','نوع']]}
 
@@ -4056,7 +4078,7 @@ function UsersManager({ notify }) {
 
 
 
-function CrudPage({ title, endpoint, empty, renderForm, columns, notify, afterSave, mapEdit, filters = [], extraSections = null }) {
+function CrudPage({ title, endpoint, empty, renderForm, columns, notify, afterSave, mapEdit, beforeSave, filters = [], extraSections = null }) {
 
   const [items, setItems] = useState([]);
 
@@ -4087,9 +4109,11 @@ function CrudPage({ title, endpoint, empty, renderForm, columns, notify, afterSa
   const save = async () => {
 
     if (busy) return;
+    const prepared = beforeSave ? await beforeSave(form, editing) : form;
+    if (prepared === false) return;
     setBusy(true);
     try {
-      await api(endpoint, { method: 'POST', body: form });
+      await api(endpoint, { method: 'POST', body: prepared || form });
       setForm(empty);
       setEditing(false);
       await load();

@@ -97,6 +97,9 @@ func SetupRouter(services ...*telegramreport.Service) http.Handler {
 	mux.HandleFunc("/api/financial/operational/expenses", h.GetOperationalExpenses)
 	mux.HandleFunc("/api/financial/operational/misc-incoming", h.GetOperationalMiscIncoming)
 	mux.HandleFunc("/api/financial/operational/spare-parts-inventory", h.GetOperationalSparePartsInventory)
+	// Financial mismatch reports: financial web reports source-data discrepancies for the operational section.
+	mux.HandleFunc("/api/operational/mismatch-reports", h.OperationalMismatchReports)
+	mux.HandleFunc("/api/financial/operational/mismatch-reports", h.OperationalMismatchReports)
 	mux.HandleFunc("/", h.Root)
 
 	var handler http.Handler = mux

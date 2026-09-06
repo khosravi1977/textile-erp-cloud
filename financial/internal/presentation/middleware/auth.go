@@ -203,6 +203,8 @@ func requiredPermissions(path string) []string {
 		return []string{"operational", "yarnOutInvoices"}
 	case strings.Contains(path, "/operational/expenses"):
 		return []string{"operational", "costs"}
+	case strings.Contains(path, "/operational/mismatch-reports"):
+		return []string{"operational", "initialData", "incomingInvoices", "chelleIncomingInvoices", "invoices", "yarnOutInvoices", "inventory", "costs"}
 	case strings.Contains(path, "/operational/spare-parts-inventory"):
 		return []string{"operational", "inventory"}
 	case strings.HasPrefix(path, "/api/operational/") || strings.HasPrefix(path, "/api/financial/lookups/") || strings.HasPrefix(path, "/api/financial/operational/"):

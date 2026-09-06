@@ -771,6 +771,86 @@ func (h *APIHandler) ReportOperationalMismatch(w http.ResponseWriter, r *http.Re
 	RespondJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 
+func (h *APIHandler) OperationalMismatchReports(w http.ResponseWriter, r *http.Request) {
+	bridge, cleanup := h.requireOperational(w, r)
+	if bridge == nil {
+		return
+	}
+	defer cleanup()
+	switch r.Method {
+	case http.MethodGet:
+		reports, err := bridge.MismatchReports(parseLimit(r, 200))
+		if err != nil {
+			RespondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		RespondJSON(w, http.StatusOK, map[string]any{"success": true, "rows": reports, "total": len(reports)})
+	case http.MethodPost:
+		var req struct {
+			ID          int64  `json:"id"`
+			Status      string `json:"status"`
+			SourceType  string `json:"source_type"`
+			SourceID    string `json:"source_id"`
+			InvoiceNo   string `json:"invoice_no"`
+			InvoiceKind string `json:"invoice_kind"`
+			Title       string `json:"title"`
+			Message     string `json:"message"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			RespondError(w, http.StatusBadRequest, "Invalid mismatch report payload")
+			return
+		}
+		if req.ID > 0 {
+			if strings.TrimSpace(req.Status) == "" {
+				req.Status = "resolved"
+			}
+			if err := bridge.SetMismatchReportStatus(req.ID, req.Status); err != nil {
+				RespondError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			RespondJSON(w, http.StatusOK, map[string]any{"success": true})
+			return
+		}
+		req.SourceType = strings.TrimSpace(req.SourceType)
+		req.SourceID = strings.TrimSpace(req.SourceID)
+		req.InvoiceNo = strings.TrimSpace(req.InvoiceNo)
+		req.InvoiceKind = strings.TrimSpace(req.InvoiceKind)
+		req.Title = strings.TrimSpace(req.Title)
+		req.Message = strings.TrimSpace(req.Message)
+		if req.SourceType == "" || !strings.HasPrefix(req.SourceType, "operational") || req.SourceID == "" || req.Message == "" {
+			RespondError(w, http.StatusBadRequest, "Operational source and mismatch message are required")
+			return
+		}
+		if req.Title == "" {
+			req.Title = "گزارش مغایرت مالی"
+		}
+		if req.InvoiceKind == "" {
+			req.InvoiceKind = "فاکتور عملیاتی"
+		}
+		if len([]rune(req.Message)) > 1200 {
+			runes := []rune(req.Message)
+			req.Message = string(runes[:1200])
+		}
+		reportedBy := fmt.Sprintf("user:%d", requestctx.UserID(r.Context()))
+		if err := bridge.ReportFinancialMismatch(operationalbridge.FinancialMismatchReport{
+			SourceType:  req.SourceType,
+			SourceID:    req.SourceID,
+			InvoiceNo:   req.InvoiceNo,
+			InvoiceKind: req.InvoiceKind,
+			Title:       req.Title,
+			Message:     req.Message,
+			ReportedBy:  reportedBy,
+		}); err != nil {
+			RespondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		RespondJSON(w, http.StatusOK, map[string]any{"success": true})
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		RespondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	}
+}
+
 func (h *APIHandler) ResolveOperationalMismatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")

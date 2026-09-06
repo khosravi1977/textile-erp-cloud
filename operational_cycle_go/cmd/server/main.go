@@ -443,6 +443,8 @@ func (a *app) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/nakh-khor", a.requireMenu("yarn-out", a.nakhKhor))
 	mux.HandleFunc("/api/nakh-khor/", a.requireMenu("yarn-out", a.nakhKhorByID))
 	mux.HandleFunc("/api/warper-yarn-balance", a.requireMenu("yarn-out", a.warperYarnBalance))
+	mux.HandleFunc("/api/v-kh-moto", a.requireMenu("v-kh-moto", a.vKhMoto))
+	mux.HandleFunc("/api/v-kh-moto/", a.requireMenu("v-kh-moto", a.vKhMotoByID))
 	mux.HandleFunc("/api/empty-beam-out", a.requireMenu("empty-beam-out", a.emptyBeamOut))
 	mux.HandleFunc("/api/empty-beam-out/", a.requireMenu("empty-beam-out", a.emptyBeamOutByID))
 	mux.HandleFunc("/api/salon", a.requireMenu("salon", a.salon))
@@ -468,7 +470,10 @@ func (a *app) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/production-waste/", a.requireMenu("consumption", a.productionWasteByID))
 	mux.HandleFunc("/api/advisor", a.requireMenu("advisor", a.managementReport))
 	mux.HandleFunc("/api/management-report", a.requireMenu("reports", a.managementReport))
+	mux.HandleFunc("/api/management-lineage", a.requireMenu("reports", a.managementLineage))
 	mux.HandleFunc("/api/reset-cycle", a.requireMenu("initial", a.resetCycle))
+	mux.HandleFunc("/api/mismatch-reports", a.requireAuth(a.mismatchReports))
+	mux.HandleFunc("/api/mismatch-reports/", a.requireAuth(a.mismatchReportByID))
 	mux.HandleFunc("/", staticHandler())
 }
 
@@ -608,6 +613,7 @@ func isSecureRequest(r *http.Request) bool {
 func (a *app) migrate() error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS mosh_name (id_mosh_name INTEGER PRIMARY KEY AUTOINCREMENT, name_mosh TEXT UNIQUE)`,
+		`CREATE TABLE IF NOT EXISTS financial_mismatch_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, source_type TEXT NOT NULL, source_id TEXT NOT NULL, invoice_no TEXT, invoice_kind TEXT, title TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', reported_by TEXT, reported_at TEXT)`,
 		`CREATE TABLE IF NOT EXISTS nakh_name (id_nakh_name INTEGER PRIMARY KEY AUTOINCREMENT, name_nakh_name TEXT UNIQUE)`,
 		`CREATE TABLE IF NOT EXISTS kala_name (id_kala_name INTEGER PRIMARY KEY AUTOINCREMENT, name_kala_name TEXT UNIQUE)`,
 		`CREATE TABLE IF NOT EXISTS chellepich (id_chellepich INTEGER PRIMARY KEY AUTOINCREMENT, name_chellepich TEXT UNIQUE)`,
@@ -1039,7 +1045,7 @@ func (a *app) seedMenus() error {
 		{"chelle", "ورود چله", "/chelle", "📦", 0, 4},
 		{"gere", "گره", "/gere", "🪢", 0, 5},
 		{"nakh-salon", "ورود نخ سالن", "/nakh-salon", "🧶", 0, 6},
-		{"formulas", "فرمول پیش‌فرض ماشین‌ها", "/formulas", "📐", 0, 7},
+		{"formulas", "فرمول تولید ماشین‌ها", "/formulas", "📐", 0, 7},
 		{"salon", "سالن تولید", "/salon", "🏭", 0, 8},
 		{"consumption", "مصرف تار و پود", "/consumption", "📊", 0, 9},
 		{"yarn-out", "خروج نخ", "/yarn-out", "🚪", 0, 10},
@@ -1671,6 +1677,9 @@ func (a *app) nakhVor(w http.ResponseWriter, r *http.Request) {
 		}
 		if p.ID > 0 {
 			_, err = a.exec(`UPDATE nakh_vor SET hambaft_nakh_vor=?, w_vor_nakh_vor=?, moshname_nakh_vor=?, nakh_name_nakh_vor=? WHERE id_nakh_vor=?`, p.Hambaft, p.Weight, mosh, nakh, p.ID)
+			if err == nil {
+				a.resolveMismatchReports("operational_yarn_in", p.ID)
+			}
 		} else {
 			_, err = a.exec(`INSERT INTO nakh_vor (tarikh_nakh_vor,hambaft_nakh_vor,w_vor_nakh_vor,moshname_nakh_vor,nakh_name_nakh_vor) VALUES (?,?,?,?,?)`, jalaliToday(), p.Hambaft, p.Weight, mosh, nakh)
 		}
@@ -1769,6 +1778,9 @@ func (a *app) chelle(w http.ResponseWriter, r *http.Request) {
 		var err error
 		if p.ID > 0 {
 			_, err = a.exec(`UPDATE chelle SET shom_chelle=?, nakh_chelle=?, w_chelle=?, pich_chelle=?, mosh_chelle=?, hambaft_chelle=?, codnavard_chelle=? WHERE id_chelle=?`, p.ShomChelle, nakh, p.Weight, pich, mosh, p.Hambaft, kod, p.ID)
+			if err == nil {
+				a.resolveMismatchReports("operational_chelle_in", p.ID)
+			}
 		} else {
 			_, err = a.exec(`INSERT INTO chelle (tarikh_chelle,shom_chelle,nakh_chelle,w_chelle,pich_chelle,mosh_chelle,hambaft_chelle,codnavard_chelle,machin_chelle) VALUES (?,?,?,?,?,?,?,?,?)`, jalaliToday(), p.ShomChelle, nakh, p.Weight, pich, mosh, p.Hambaft, kod, "")
 		}
@@ -1915,14 +1927,15 @@ func (a *app) nakhSalon(w http.ResponseWriter, r *http.Request) {
 		writeRows(w, rows, err, []string{"id", "tarikh", "machine", "ham_nakh", "weight", "shom_chelle", "mosh_name", "vor_khor", "chelle_id", "nakh_name"})
 	case http.MethodPost:
 		var p struct {
-			ID       int64   `json:"id"`
-			Machine  string  `json:"machine"`
-			HamNakh  string  `json:"ham_nakh"`
-			Weight   float64 `json:"weight"`
-			ChelleID int64   `json:"chelle_id"`
-			MoshName string  `json:"mosh_name"`
-			NakhName string  `json:"nakh_name"`
-			VorKhor  string  `json:"vor_khor"`
+			ID                 int64   `json:"id"`
+			Machine            string  `json:"machine"`
+			HamNakh            string  `json:"ham_nakh"`
+			Weight             float64 `json:"weight"`
+			ChelleID           int64   `json:"chelle_id"`
+			MoshName           string  `json:"mosh_name"`
+			NakhName           string  `json:"nakh_name"`
+			VorKhor            string  `json:"vor_khor"`
+			AllowOwnerMismatch bool    `json:"allow_owner_mismatch"`
 		}
 		if !decode(w, r, &p) {
 			return
@@ -1950,8 +1963,8 @@ func (a *app) nakhSalon(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "چله انتخاب‌شده روی این ماشین فعال نیست")
 			return
 		}
-		if !sameText(chelleOwner, p.MoshName) {
-			fail(w, 400, "مالک نخ با مالک چله فعال تطابق ندارد")
+		if strings.TrimSpace(chelleOwner) != "" && strings.TrimSpace(chelleOwner) != p.MoshName && !p.AllowOwnerMismatch {
+			fail(w, 409, fmt.Sprintf("مالک نخ با مالک چله متفاوت است؛ تأیید مغایرت لازم است (مالک چله: %s)", chelleOwner))
 			return
 		}
 		// Hall yarn is weft yarn. Its hambaft is an independent inventory
@@ -2047,6 +2060,9 @@ func (a *app) nakhKhor(w http.ResponseWriter, r *http.Request) {
 		var err error
 		if p.ID > 0 {
 			_, err = a.exec(`UPDATE nakh_khor SET hambaft_nakh_khor=?, w_vor_nakh_khor=?, moshname_nakh_khor=?, nakh_name_nakh_khor=?, owner_mosh_nakh_khor=?, destination_type_nakh_khor=? WHERE id_nakh_khor=?`, p.Hambaft, -p.Weight, p.MoshName, p.NakhName, p.OwnerMosh, p.DestinationType, p.ID)
+			if err == nil {
+				a.resolveMismatchReports("operational_yarn_out", p.ID)
+			}
 		} else {
 			_, err = a.exec(`INSERT INTO nakh_khor (tarikh_nakh_khor,hambaft_nakh_khor,w_vor_nakh_khor,moshname_nakh_khor,nakh_name_nakh_khor,owner_mosh_nakh_khor,destination_type_nakh_khor) VALUES (?,?,?,?,?,?,?)`, jalaliToday(), p.Hambaft, -p.Weight, p.MoshName, p.NakhName, p.OwnerMosh, p.DestinationType)
 		}
@@ -3992,7 +4008,11 @@ func (a *app) spareParts(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if p.ID > 0 {
-			writeSave(w, execErr(a.exec(`UPDATE spare_parts_inventory SET spare_part_id=?, part_name=?, part_number=?, quantity=?, condition_status=?, vendor_name=?, description=?, updated_at=datetime('now','localtime') WHERE id_spare_inventory=?`, p.SparePartID, p.PartName, p.PartNumber, p.Quantity, p.ConditionStatus, p.VendorName, p.Description, p.ID)))
+			updErr := execErr(a.exec(`UPDATE spare_parts_inventory SET spare_part_id=?, part_name=?, part_number=?, quantity=?, condition_status=?, vendor_name=?, description=?, updated_at=datetime('now','localtime') WHERE id_spare_inventory=?`, p.SparePartID, p.PartName, p.PartNumber, p.Quantity, p.ConditionStatus, p.VendorName, p.Description, p.ID))
+			if updErr == nil {
+				a.resolveMismatchReports("operational_spare_part", p.ID)
+			}
+			writeSave(w, updErr)
 			return
 		}
 		var existingID int64
@@ -5708,6 +5728,312 @@ func withCORS(next http.Handler) http.Handler {
 	})
 }
 
+func (a *app) vKhMoto(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := a.query(`SELECT id, COALESCE(tarikh_v_kh_moto,'') AS tarikh, COALESCE(operation_type,''), COALESCE(name_kala,''), COALESCE(shomare_kala,''), COALESCE(from_location,''), COALESCE(to_location,''), COALESCE(person,''), COALESCE(status,''), COALESCE(tozih_v_kh_moto,'') AS tozih, COALESCE(tarikh_bazgasht,'') FROM v_kh_moto ORDER BY id DESC LIMIT 300`)
+		writeRows(w, rows, err, []string{"id", "tarikh", "operation_type", "name_kala", "shomare_kala", "from_location", "to_location", "person", "status", "tozih", "tarikh_bazgasht"})
+	case http.MethodPost:
+		var p struct {
+			ID             int64  `json:"id"`
+			Tarikh         string `json:"tarikh"`
+			OperationType  string `json:"operation_type"`
+			NameKala       string `json:"name_kala"`
+			ShomKala       string `json:"shomare_kala"`
+			FromLocation   string `json:"from_location"`
+			ToLocation     string `json:"to_location"`
+			Person         string `json:"person"`
+			Status         string `json:"status"`
+			Tozih          string `json:"tozih"`
+			TarikhBazgasht string `json:"tarikh_bazgasht"`
+		}
+		if !decode(w, r, &p) {
+			return
+		}
+		p.Tarikh = strings.TrimSpace(p.Tarikh)
+		p.OperationType = strings.TrimSpace(p.OperationType)
+		p.NameKala = strings.TrimSpace(p.NameKala)
+		p.ShomKala = strings.TrimSpace(p.ShomKala)
+		p.FromLocation = strings.TrimSpace(p.FromLocation)
+		p.ToLocation = strings.TrimSpace(p.ToLocation)
+		p.Person = strings.TrimSpace(p.Person)
+		p.Status = strings.TrimSpace(p.Status)
+		p.Tozih = strings.TrimSpace(p.Tozih)
+		p.TarikhBazgasht = strings.TrimSpace(p.TarikhBazgasht)
+		if p.Tarikh == "" {
+			p.Tarikh = jalaliToday()
+		}
+		if p.OperationType == "" {
+			fail(w, 400, "نوع عملیات را انتخاب کنید")
+			return
+		}
+		if p.NameKala == "" {
+			fail(w, 400, "نام کالا را وارد کنید")
+			return
+		}
+		if p.ShomKala == "" {
+			fail(w, 400, "شماره/کد کالا را وارد کنید")
+			return
+		}
+		var err error
+		if p.ID > 0 {
+			_, err = a.exec(`UPDATE v_kh_moto SET tarikh_v_kh_moto=?, operation_type=?, name_kala=?, shomare_kala=?, from_location=?, to_location=?, person=?, status=?, tozih_v_kh_moto=?, tarikh_bazgasht=? WHERE id=?`, p.Tarikh, p.OperationType, p.NameKala, p.ShomKala, p.FromLocation, p.ToLocation, p.Person, p.Status, p.Tozih, p.TarikhBazgasht, p.ID)
+		} else {
+			_, err = a.exec(`INSERT INTO v_kh_moto (tarikh_v_kh_moto, operation_type, name_kala, shomare_kala, from_location, to_location, person, status, tozih_v_kh_moto, tarikh_bazgasht) VALUES (?,?,?,?,?,?,?,?,?,?)`, p.Tarikh, p.OperationType, p.NameKala, p.ShomKala, p.FromLocation, p.ToLocation, p.Person, p.Status, p.Tozih, p.TarikhBazgasht)
+		}
+		writeSave(w, err)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *app) vKhMotoByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	id, _ := strconv.Atoi(pathLast(r.URL.Path))
+	writeSave(w, execErr(a.exec(`DELETE FROM v_kh_moto WHERE id=?`, id)))
+}
+
+func (a *app) managementLineage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, record{
+		"detailedInvoices":     a.managementOutInvoices(200),
+		"warps":                a.managementWarps(200),
+		"productionUnits":      a.managementProductionUnits(200),
+		"orders":               a.managementOrders(r, 200),
+		"commitmentsSupported": true,
+	})
+}
+
+func (a *app) managementOutInvoices(limit int) []record {
+	codeList := "GROUP_CONCAT(f.taghe_cod_f_khor)"
+	if a.dialect == "postgres" {
+		codeList = "STRING_AGG(f.taghe_cod_f_khor, ',' ORDER BY f.id_f_khor)"
+	}
+	rows, err := a.query(`SELECT f.shom_f_khor, MIN(f.tarikh_f_khor), MIN(f.mosh_f_khor), MIN(f.shomare_sanad), MIN(COALESCE(f.kala_name_f_khor,'')), COUNT(*), COALESCE(SUM(s.metr_salon),0), COALESCE(SUM(s.w_salon),0), `+codeList+`
+		FROM f_khor f LEFT JOIN salon s ON s.id_salon=CAST(f.taghe_cod_f_khor AS INTEGER)
+		GROUP BY f.shom_f_khor ORDER BY MAX(f.id_f_khor) DESC LIMIT ?`, limit)
+	if err != nil {
+		return []record{}
+	}
+	defer rows.Close()
+	items := []record{}
+	for rows.Next() {
+		var no, date, customer, documentNo, product, codes string
+		var count int64
+		var meters, weight float64
+		if rows.Scan(&no, &date, &customer, &documentNo, &product, &count, &meters, &weight, &codes) == nil {
+			items = append(items, record{"id": no, "invoice_no": no, "tarikh": date, "mosh": customer, "sanad": documentNo, "kala": product, "taghe_count": count, "metr": meters, "weight": weight, "codes": codes})
+		}
+	}
+	return items
+}
+
+func (a *app) managementWarps(limit int) []record {
+	rows, err := a.query(`SELECT id_chelle,COALESCE(tarikh_chelle,''),COALESCE(shom_chelle,''),COALESCE(nakh_chelle,''),COALESCE(w_chelle,0),COALESCE(pich_chelle,''),COALESCE(mosh_chelle,''),COALESCE(hambaft_chelle,''),COALESCE(codnavard_chelle,''),COALESCE(machin_chelle,'') FROM chelle ORDER BY id_chelle DESC LIMIT ?`, limit)
+	if err != nil {
+		return []record{}
+	}
+	defer rows.Close()
+	items := []record{}
+	for rows.Next() {
+		var id int64
+		var date, warp, yarn, warper, customer, batch, beam, machine string
+		var weight float64
+		if rows.Scan(&id, &date, &warp, &yarn, &weight, &warper, &customer, &batch, &beam, &machine) == nil {
+			items = append(items, record{"id": id, "tarikh": date, "shom_chelle": warp, "nakh": yarn, "weight": weight, "pich": warper, "mosh": customer, "hambaft": batch, "kod_navard": beam, "machine": machine})
+		}
+	}
+	return items
+}
+
+func (a *app) managementProductionUnits(limit int) []record {
+	rows, err := a.query(`SELECT id_salon,COALESCE(tarikh_salon,''),COALESCE(metr_salon,0),COALESCE(w_salon,0),COALESCE(machin_salon,''),COALESCE(user_salon,''),COALESCE(kala_salon,''),COALESCE(ham_pod_salon,''),COALESCE(ham_chelle_salon,''),COALESCE(shom_chelle_salon,'') FROM salon ORDER BY id_salon DESC LIMIT ?`, limit)
+	if err != nil {
+		return []record{}
+	}
+	defer rows.Close()
+	items := []record{}
+	for rows.Next() {
+		var id int64
+		var date, machine, operator, product, weftBatch, warpBatch, warp string
+		var meters, weight float64
+		if rows.Scan(&id, &date, &meters, &weight, &machine, &operator, &product, &weftBatch, &warpBatch, &warp) == nil {
+			items = append(items, record{"id": id, "tarikh": date, "metr": meters, "weight": weight, "machine": machine, "user": operator, "kala": product, "ham_pod": weftBatch, "ham_chelle": warpBatch, "shom_chelle": warp})
+		}
+	}
+	return items
+}
+
+func (a *app) managementOrders(r *http.Request, limit int) []record {
+	if a.dialect != "postgres" {
+		return []record{}
+	}
+	session, ok := a.currentSession(r)
+	if !ok || session.CompanyID <= 0 {
+		return []record{}
+	}
+	rows, err := a.query(`SELECT o.id,o.order_no,o.customer_party_id,COALESCE(c.name,''),o.product_item_id,COALESCE(i.name,''),COALESCE(o.status,''),o.commitment_date,COALESCE(o.total_yarn_input,0),COALESCE(o.total_fabric_output,0)
+		FROM public.production_orders o
+		LEFT JOIN public.parties c ON c.id=o.customer_party_id AND c.company_id=o.company_id
+		LEFT JOIN public.items i ON i.id=o.product_item_id AND i.company_id=o.company_id
+		WHERE o.company_id=? ORDER BY o.created_at DESC LIMIT ?`, session.CompanyID, limit)
+	if err != nil {
+		return []record{}
+	}
+	defer rows.Close()
+	items := []record{}
+	for rows.Next() {
+		var id, customerID, productID int64
+		var orderNo, customer, product, status string
+		var commitmentDate sql.NullTime
+		var yarnInput, fabricOutput float64
+		if rows.Scan(&id, &orderNo, &customerID, &customer, &productID, &product, &status, &commitmentDate, &yarnInput, &fabricOutput) != nil {
+			continue
+		}
+		item := record{"id": id, "order_no": orderNo, "customer_id": customerID, "customer_name": customer, "product_id": productID, "product": product, "status": status, "yarn_input": yarnInput, "produced_quantity": fabricOutput}
+		if commitmentDate.Valid {
+			item["commitment_date"] = commitmentDate.Time.UTC().Format(time.RFC3339)
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+// mismatchRecordSummary returns a human-readable identification of the operational
+// record referenced by a financial mismatch report (party, item, quantity, date).
+func (a *app) mismatchRecordSummary(sourceType, sourceID string) string {
+	id, err := strconv.ParseInt(strings.TrimSpace(sourceID), 10, 64)
+	if err != nil || id <= 0 {
+		return ""
+	}
+	var mosh, nakh, tarikh, w string
+	switch sourceType {
+	case "operational_yarn_in":
+		if err := a.queryRow(`SELECT COALESCE(moshname_nakh_vor,''), COALESCE(nakh_name_nakh_vor,''), COALESCE(tarikh_nakh_vor,''), CAST(COALESCE(w_vor_nakh_vor,0) AS TEXT) FROM nakh_vor WHERE id_nakh_vor=?`, id).Scan(&mosh, &nakh, &tarikh, &w); err != nil {
+			return ""
+		}
+		return fmt.Sprintf("رکورد %d: نخ %s، شخص %s، وزن %s کیلو، تاریخ %s", id, dashIfEmpty(nakh), dashIfEmpty(mosh), w, dashIfEmpty(tarikh))
+	case "operational_chelle_in":
+		var shom string
+		if err := a.queryRow(`SELECT COALESCE(mosh_chelle,''), COALESCE(nakh_chelle,''), COALESCE(tarikh_chelle,''), CAST(COALESCE(w_chelle,0) AS TEXT), COALESCE(shom_chelle,'') FROM chelle WHERE id_chelle=?`, id).Scan(&mosh, &nakh, &tarikh, &w, &shom); err != nil {
+			return ""
+		}
+		return fmt.Sprintf("رکورد %d: چله %s، نخ %s، شخص %s، وزن %s کیلو، تاریخ %s", id, dashIfEmpty(shom), dashIfEmpty(nakh), dashIfEmpty(mosh), w, dashIfEmpty(tarikh))
+	case "operational_yarn_out":
+		if err := a.queryRow(`SELECT COALESCE(moshname_nakh_khor,''), COALESCE(nakh_name_nakh_khor,''), COALESCE(tarikh_nakh_khor,''), CAST(ABS(COALESCE(w_vor_nakh_khor,0)) AS TEXT) FROM nakh_khor WHERE id_nakh_khor=?`, id).Scan(&mosh, &nakh, &tarikh, &w); err != nil {
+			return ""
+		}
+		return fmt.Sprintf("رکورد %d: نخ %s، شخص %s، وزن %s کیلو، تاریخ %s", id, dashIfEmpty(nakh), dashIfEmpty(mosh), w, dashIfEmpty(tarikh))
+	case "operational_spare_part":
+		var part, vendor, cond string
+		if err := a.queryRow(`SELECT COALESCE(sp.name_spare_part, spi.part_name, ''), COALESCE(spi.vendor_name,''), COALESCE(spi.condition_status,''), CAST(COALESCE(spi.quantity,0) AS TEXT) FROM spare_parts_inventory spi LEFT JOIN spare_part sp ON sp.id_spare_part=spi.spare_part_id WHERE spi.id_spare_inventory=?`, id).Scan(&part, &vendor, &cond, &w); err != nil {
+			return ""
+		}
+		summary := fmt.Sprintf("رکورد %d: قطعه %s، موجودی %s", id, dashIfEmpty(part), w)
+		if strings.TrimSpace(vendor) != "" {
+			summary += fmt.Sprintf("، فروشنده %s", vendor)
+		}
+		if strings.TrimSpace(cond) != "" {
+			summary += fmt.Sprintf("، وضعیت %s", cond)
+		}
+		return summary
+	case "operational_out_invoice":
+		var shom string
+		if err := a.queryRow(`SELECT COALESCE(shom_f_khor,''), COALESCE(mosh_f_khor,''), COALESCE(tarikh_f_khor,'') FROM f_khor WHERE id_f_khor=?`, id).Scan(&shom, &mosh, &tarikh); err != nil {
+			return ""
+		}
+		return fmt.Sprintf("رکورد %d: فاکتور شماره %s، مشتری %s، تاریخ %s", id, dashIfEmpty(shom), dashIfEmpty(mosh), dashIfEmpty(tarikh))
+	}
+	return ""
+}
+
+func dashIfEmpty(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return strings.TrimSpace(s)
+}
+
+func (a *app) mismatchReports(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := a.query(`SELECT id, source_type, source_id, COALESCE(invoice_no,''), COALESCE(invoice_kind,''), title, message, status, COALESCE(reported_at,'') FROM financial_mismatch_reports WHERE status IN ('open','resolved') ORDER BY id DESC LIMIT 100`)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		defer rows.Close()
+		type misRow struct {
+			id                                  int64
+			sourceType, sourceID, invoiceNo     string
+			invoiceKind, title, message, status string
+			reportedAt                          string
+		}
+		var pending []misRow
+		for rows.Next() {
+			var m misRow
+			if scanErr := rows.Scan(&m.id, &m.sourceType, &m.sourceID, &m.invoiceNo, &m.invoiceKind, &m.title, &m.message, &m.status, &m.reportedAt); scanErr != nil {
+				continue
+			}
+			pending = append(pending, m)
+		}
+		rows.Close()
+		list := []record{}
+		for _, m := range pending {
+			list = append(list, record{
+				"id":             m.id,
+				"source_type":    m.sourceType,
+				"source_id":      m.sourceID,
+				"invoice_no":     m.invoiceNo,
+				"invoice_kind":   m.invoiceKind,
+				"title":          m.title,
+				"message":        m.message,
+				"status":         m.status,
+				"reported_at":    m.reportedAt,
+				"record_summary": a.mismatchRecordSummary(m.sourceType, m.sourceID),
+			})
+		}
+		writeJSON(w, list)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *app) mismatchReportByID(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/mismatch-reports/"), "/")
+		parts := strings.Split(path, "/")
+		id, err := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
+		if err != nil || id <= 0 {
+			fail(w, http.StatusBadRequest, "\u0634\u0646\u0627\u0633\u0647 \u0627\u0639\u0644\u0627\u0646 \u0645\u0639\u062a\u0628\u0631 \u0646\u06cc\u0633\u062a")
+			return
+		}
+		if _, err := a.exec(`UPDATE financial_mismatch_reports SET status='resolved' WHERE id=? AND status='open'`, id); err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, record{"success": true})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// resolveMismatchReports clears open financial mismatch notices once the matching
+// operational record is corrected and re-registered by the user.
+func (a *app) resolveMismatchReports(sourceType string, sourceID int64) {
+	if sourceID <= 0 {
+		return
+	}
+	_, _ = a.exec(`UPDATE financial_mismatch_reports SET status='resolved' WHERE source_type=? AND source_id=? AND status='open'`, sourceType, strconv.FormatInt(sourceID, 10))
+}
 func staticHandler() http.HandlerFunc {
 	dist := filepath.Join("web", "dist")
 	return func(w http.ResponseWriter, r *http.Request) {

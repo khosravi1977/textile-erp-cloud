@@ -187,7 +187,10 @@ func TestAcceptanceSalonYarnRequiresActiveChelleOnSameMachineAndLimitsReturns(t 
 	payload["machine"] = "M-1"
 	payload["ham_nakh"] = "HB-POD"
 	payload["mosh_name"] = "مالک نامعتبر"
+	requireStatus(t, callOperationalJSON(t, f.app.nakhSalon, http.MethodPost, "/api/nakh-salon", payload), http.StatusConflict)
+	payload["allow_owner_mismatch"] = true
 	requireStatus(t, callOperationalJSON(t, f.app.nakhSalon, http.MethodPost, "/api/nakh-salon", payload), http.StatusBadRequest)
+	delete(payload, "allow_owner_mismatch")
 	payload["mosh_name"] = "مالک الف"
 	payload["nakh_name"] = "نخ نامعتبر"
 	requireStatus(t, callOperationalJSON(t, f.app.nakhSalon, http.MethodPost, "/api/nakh-salon", payload), http.StatusBadRequest)
