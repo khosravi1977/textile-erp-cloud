@@ -2203,21 +2203,30 @@ function EmptyBeamOut({ lookups, notify, refreshLookups }) {
 
 function Expenses({ lookups, notify, refreshLookups }) {
 
+  // Same account list the financial هزینه‌ها form uses, served from the
+  // financial workspace; the chosen account is what financial stamps as
+  // verifiedPayment so the two sections stay aligned.
+  const [financialAccounts, setFinancialAccounts] = useState([]);
+
+  useEffect(() => { api('/financial-accounts').then(d => setFinancialAccounts(d.accounts || [])).catch(() => {}); }, []);
+
   return <CrudPage
 
     title="هزینه‌ها"
 
     endpoint="/expenses"
 
-    empty={{ hazine_id: '', operator_id: '', weaver_id: '', mablagh: '', description: '', sanad_no: '' }}
+    empty={{ hazine_id: '', operator_id: '', weaver_id: '', mablagh: '', description: '', sanad_no: '', tarikh: '', pay_account: '', pay_account_name: '' }}
 
     notify={notify}
 
     filters={[['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','زیرگروه'],['shomare_sanad','شماره سند']]}
 
-    mapEdit={row => ({ id: row.id, hazine_id: row.hazine_id || '', operator_id: row.operator_id || '', weaver_id: row.weaver_id || '', mablagh: Number(row.mablagh || 0), description: row.tozih || '', sanad_no: row.shomare_sanad || '' })}
+    mapEdit={row => ({ id: row.id, hazine_id: row.hazine_id || '', operator_id: row.operator_id || '', weaver_id: row.weaver_id || '', mablagh: Number(row.mablagh || 0), description: row.tozih || '', sanad_no: row.shomare_sanad || '', tarikh: row.tarikh || '', pay_account: row.pay_account || '', pay_account_name: row.pay_account_name || '' })}
 
     renderForm={(form, set) => <>
+
+      <Input label="تاریخ (۱۴۰۵/۰۶/۱۵)" value={form.tarikh} onChange={v => set('tarikh', v)} hint="خالی = تاریخ امروز" />
 
       <Select label="عنوان هزینه" value={form.hazine_id} onChange={v => set('hazine_id', Number(v))} items={lookups.costs} basicKind="costs" refreshLookups={refreshLookups} notify={notify} />
 
@@ -2227,13 +2236,17 @@ function Expenses({ lookups, notify, refreshLookups }) {
 
       <Input label="مبلغ" type="number" value={form.mablagh} onChange={v => set('mablagh', Number(v))} />
 
+      <Select label="حساب پرداخت‌کننده" value={form.pay_account} onChange={v => { const acc = financialAccounts.find(a => String(a.id) === String(v)) || {}; set('pay_account', v); set('pay_account_name', acc.name || ''); }} items={financialAccounts} />
+
       <Input label="شماره سند" value={form.sanad_no} onChange={v => set('sanad_no', v)} />
 
       <Input label="توضیحات" value={form.description} onChange={v => set('description', v)} />
 
+      <div className="lookup-field" style={{ gridColumn: '1 / -1' }}><span style={{ fontSize: 12, opacity: 0.75 }}>با انتخاب حساب پرداخت‌کننده و تاریخ، هزینه دقیقاً با همین مشخصات در بخش مالی (هزینه‌ها + گردش بانک/صندوق) ثبت می‌شود و نیازی به ثبت مجدد در مالی نیست.</span></div>
+
     </>}
 
-    columns={[['tarikh','تاریخ'],['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','زیرگروه'],['mablagh','مبلغ'],['shomare_sanad','شماره سند'],['tozih','توضیحات']]}
+    columns={[['tarikh','تاریخ'],['onvan_hazine','عنوان هزینه'],['operator_name','ثبت کننده'],['weaver_name','زیرگروه'],['mablagh','مبلغ'],['pay_account_name','حساب پرداخت‌کننده'],['shomare_sanad','شماره سند'],['tozih','توضیحات']]}
 
   />;
 

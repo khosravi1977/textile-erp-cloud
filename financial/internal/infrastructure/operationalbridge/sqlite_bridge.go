@@ -57,6 +57,11 @@ type ExpenseRow struct {
 	Amount      float64 `json:"amount"`
 	Description string  `json:"description"`
 	DocNo       string  `json:"doc_no"`
+	// Paying account chosen in the operational expense form; the financial
+	// sync stamps verifiedPayment from it so the supervisor payment check
+	// clears without a second financial-side save.
+	PayAccountID   string `json:"pay_account"`
+	PayAccountName string `json:"pay_account_name"`
 }
 
 type MiscIncomingRow struct {
@@ -394,19 +399,33 @@ func (b *Bridge) Expenses(limit int) ([]ExpenseRow, error) {
 	}
 	rows, err := b.query(`
 		SELECT id_h_rozmare, COALESCE(tarikh_h_rozmare,''), COALESCE(onvan_hazine,''), COALESCE(operator_name,''),
-		       COALESCE(weaver_name,''), COALESCE(mablagh_h_rozmare,0), COALESCE(tozih_h_rozmare,''), COALESCE(shomare_sanad,'')
+		       COALESCE(weaver_name,''), COALESCE(mablagh_h_rozmare,0), COALESCE(tozih_h_rozmare,''), COALESCE(shomare_sanad,''),
+		       COALESCE(pay_account,''), COALESCE(pay_account_name,'')
 		FROM h_rozmare
 		ORDER BY id_h_rozmare DESC
 		LIMIT ?
 	`, limit)
 	if err != nil {
-		return nil, err
+		// Older operational schemas predate the paying-account columns; degrade
+		// to the legacy shape instead of blocking the whole expense sync until
+		// the operational app has migrated.
+		rows, err = b.query(`
+			SELECT id_h_rozmare, COALESCE(tarikh_h_rozmare,''), COALESCE(onvan_hazine,''), COALESCE(operator_name,''),
+			       COALESCE(weaver_name,''), COALESCE(mablagh_h_rozmare,0), COALESCE(tozih_h_rozmare,''), COALESCE(shomare_sanad,''),
+			       '', ''
+			FROM h_rozmare
+			ORDER BY id_h_rozmare DESC
+			LIMIT ?
+		`, limit)
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer rows.Close()
 	out := make([]ExpenseRow, 0, limit)
 	for rows.Next() {
 		var r ExpenseRow
-		if err := rows.Scan(&r.ID, &r.Date, &r.Title, &r.Operator, &r.Weaver, &r.Amount, &r.Description, &r.DocNo); err != nil {
+		if err := rows.Scan(&r.ID, &r.Date, &r.Title, &r.Operator, &r.Weaver, &r.Amount, &r.Description, &r.DocNo, &r.PayAccountID, &r.PayAccountName); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

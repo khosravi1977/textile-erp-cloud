@@ -567,3 +567,110 @@ func TestSalonPodOptionsAllowsPreviousOfTwoRecentChelles(t *testing.T) {
 		t.Fatalf("previous chelle was not accepted for production: id=%d shom=%q err=%v", id, shom, err)
 	}
 }
+
+func TestExpensesSavePersistsTarikhAndPayAccount(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:expenses-pay-account-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	application := &app{db: db, dialect: "sqlite", dbLabel: "test", sessions: map[string]sessionInfo{}}
+	if err := application.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec(`INSERT INTO hazine (onvan_hazine) VALUES ('برق')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec(`INSERT INTO operator_name (name_operator) VALUES ('جواد')`); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/expenses", bytes.NewBufferString(`{
+		"hazine_id":1,"operator_id":1,"weaver_id":0,"mablagh":250000,"description":"صورت حساب برق","sanad_no":"S-1",
+		"tarikh":"۱۴۰۵/۰۶/۱۰","pay_account":"bank-melli","pay_account_name":"بانک ملی"
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	application.expenses(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expense save failed: %d %s", response.Code, response.Body.String())
+	}
+	var tarikh, payAccount, payName string
+	if err := application.queryRow(`SELECT tarikh_h_rozmare, pay_account, pay_account_name FROM h_rozmare WHERE shomare_sanad='S-1'`).Scan(&tarikh, &payAccount, &payName); err != nil {
+		t.Fatal(err)
+	}
+	if tarikh != "1405/06/10" || payAccount != "bank-melli" || payName != "بانک ملی" {
+		t.Fatalf("expense row wrong: tarikh=%q pay=%q name=%q", tarikh, payAccount, payName)
+	}
+
+	update := httptest.NewRequest(http.MethodPost, "/api/expenses", bytes.NewBufferString(`{
+		"id":1,"hazine_id":1,"operator_id":1,"weaver_id":0,"mablagh":260000,"description":"اصلاح","sanad_no":"S-1",
+		"tarikh":"2026-09-01","pay_account":"bank-melli","pay_account_name":"بانک ملی"
+	}`))
+	update.Header.Set("Content-Type", "application/json")
+	updateResponse := httptest.NewRecorder()
+	application.expenses(updateResponse, update)
+	if updateResponse.Code != http.StatusOK {
+		t.Fatalf("expense update failed: %d %s", updateResponse.Code, updateResponse.Body.String())
+	}
+	if err := application.queryRow(`SELECT tarikh_h_rozmare, mablagh_h_rozmare FROM h_rozmare WHERE id_h_rozmare=1`).Scan(&tarikh, new(float64)); err != nil {
+		t.Fatal(err)
+	}
+	if tarikh != "1405/06/10" {
+		t.Fatalf("gregorian tarikh was not converted to jalali on update: %q", tarikh)
+	}
+}
+
+func TestFinancialAccountsHandlerReturnsEmptyOnSQLite(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:financial-accounts-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	application := &app{db: db, dialect: "sqlite", dbLabel: "test", sessions: map[string]sessionInfo{}}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/financial-accounts", nil)
+	application.financialAccounts(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("financial accounts failed: %d", response.Code)
+	}
+	var payload struct {
+		Accounts []map[string]any `json:"accounts"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Accounts) != 0 {
+		t.Fatalf("sqlite must return an empty account list, got %#v", payload.Accounts)
+	}
+}
+
+func TestNormalizeExpenseTarikhAcceptsJalaliGregorianAndPersianDigits(t *testing.T) {
+	cases := map[string]string{
+		"1405/06/10": "1405/06/10",
+		"۱۴۰۵/۶/۱۰": "1405/06/10",
+		"1405-6-10":  "1405/06/10",
+		"":           "",
+	}
+	for input, want := range cases {
+		got, err := normalizeExpenseTarikh(input)
+		if err != nil {
+			t.Fatalf("normalizeExpenseTarikh(%q) failed: %v", input, err)
+		}
+		if want != "" && got != want {
+			t.Fatalf("normalizeExpenseTarikh(%q) = %q, want %q", input, got, want)
+		}
+		if want == "" && len(got) != 10 {
+			t.Fatalf("empty input must default to today (YYYY/MM/DD), got %q", got)
+		}
+	}
+	if _, err := normalizeExpenseTarikh("1405/13/40"); err == nil {
+		t.Fatal("invalid jalali month/day must be rejected")
+	}
+	if _, err := normalizeExpenseTarikh("not-a-date"); err == nil {
+		t.Fatal("garbage must be rejected")
+	}
+	if got, err := normalizeExpenseTarikh("2026-09-01"); err != nil || got != "1405/06/10" {
+		t.Fatalf("gregorian conversion wrong: %q err=%v", got, err)
+	}
+}

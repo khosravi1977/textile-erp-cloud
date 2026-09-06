@@ -454,6 +454,7 @@ func (a *app) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/loading/", a.loadingMobile)
 	mux.HandleFunc("/api/expenses", a.requireMenu("reports", a.expenses))
 	mux.HandleFunc("/api/expenses/", a.requireMenu("reports", a.expenseByID))
+	mux.HandleFunc("/api/financial-accounts", a.requireMenu("reports", a.financialAccounts))
 	mux.HandleFunc("/api/formulas", a.requireMenu("formulas", a.formulas))
 	mux.HandleFunc("/api/formulas/", a.requireMenu("formulas", a.formulaByID))
 	mux.HandleFunc("/api/database/", a.requireMenu("database", a.databaseTools))
@@ -695,6 +696,8 @@ func (a *app) migrate() error {
 		{"salon", "chelle_id_salon", "INTEGER"},
 		{"production_waste", "chelle_id_waste", "INTEGER"},
 		{"production_waste", "corrective_action", "TEXT"},
+		{"h_rozmare", "pay_account", "TEXT"},
+		{"h_rozmare", "pay_account_name", "TEXT"},
 	} {
 		if err := a.ensureColumn(col.table, col.name, col.typ); err != nil {
 			return err
@@ -3246,17 +3249,20 @@ func (taghe tagheData) record() record {
 func (a *app) expenses(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.query(`SELECT h.id_h_rozmare, h.tarikh_h_rozmare, h.onvan_hazine, h.operator_name, COALESCE(h.weaver_name,''), h.mablagh_h_rozmare, COALESCE(h.tozih_h_rozmare,''), COALESCE(h.shomare_sanad,''), COALESCE(c.id_hazine,0), COALESCE(o.id_operator,0), COALESCE(wv.id_weaver,0) FROM h_rozmare h LEFT JOIN hazine c ON c.onvan_hazine=h.onvan_hazine LEFT JOIN operator_name o ON o.name_operator=h.operator_name LEFT JOIN weaver_name wv ON wv.name_weaver=h.weaver_name ORDER BY h.id_h_rozmare DESC LIMIT 300`)
-		writeRows(w, rows, err, []string{"id", "tarikh", "onvan_hazine", "operator_name", "weaver_name", "mablagh", "tozih", "shomare_sanad", "hazine_id", "operator_id", "weaver_id"})
+		rows, err := a.query(`SELECT h.id_h_rozmare, h.tarikh_h_rozmare, h.onvan_hazine, h.operator_name, COALESCE(h.weaver_name,''), h.mablagh_h_rozmare, COALESCE(h.tozih_h_rozmare,''), COALESCE(h.shomare_sanad,''), COALESCE(c.id_hazine,0), COALESCE(o.id_operator,0), COALESCE(wv.id_weaver,0), COALESCE(h.pay_account,''), COALESCE(h.pay_account_name,'') FROM h_rozmare h LEFT JOIN hazine c ON c.onvan_hazine=h.onvan_hazine LEFT JOIN operator_name o ON o.name_operator=h.operator_name LEFT JOIN weaver_name wv ON wv.name_weaver=h.weaver_name ORDER BY h.id_h_rozmare DESC LIMIT 300`)
+		writeRows(w, rows, err, []string{"id", "tarikh", "onvan_hazine", "operator_name", "weaver_name", "mablagh", "tozih", "shomare_sanad", "hazine_id", "operator_id", "weaver_id", "pay_account", "pay_account_name"})
 	case http.MethodPost:
 		var p struct {
-			ID          int64   `json:"id"`
-			HazineID    int64   `json:"hazine_id"`
-			OperatorID  int64   `json:"operator_id"`
-			WeaverID    int64   `json:"weaver_id"`
-			Mablagh     float64 `json:"mablagh"`
-			Description string  `json:"description"`
-			SanadNo     string  `json:"sanad_no"`
+			ID             int64   `json:"id"`
+			HazineID       int64   `json:"hazine_id"`
+			OperatorID     int64   `json:"operator_id"`
+			WeaverID       int64   `json:"weaver_id"`
+			Mablagh        float64 `json:"mablagh"`
+			Description    string  `json:"description"`
+			SanadNo        string  `json:"sanad_no"`
+			Tarikh         string  `json:"tarikh"`
+			PayAccount     string  `json:"pay_account"`
+			PayAccountName string  `json:"pay_account_name"`
 		}
 		if !decode(w, r, &p) {
 			return
@@ -3271,16 +3277,116 @@ func (a *app) expenses(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "اطلاعات هزینه کامل نیست")
 			return
 		}
+		// The financial workspace derives the expense date and paying account
+		// (verifiedPayment) straight from these two columns, so both are
+		// normalized here to keep the two sections consistent.
+		tarikh, terr := normalizeExpenseTarikh(p.Tarikh)
+		if terr != nil {
+			fail(w, 400, "تاریخ نامعتبر است؛ قالب درست مثل ۱۴۰۵/۰۶/۱۵")
+			return
+		}
+		payAccount := strings.TrimSpace(p.PayAccount)
+		payAccountName := strings.TrimSpace(p.PayAccountName)
 		var err error
 		if p.ID > 0 {
-			_, err = a.exec(`UPDATE h_rozmare SET onvan_hazine=?, operator_name=?, weaver_name=?, mablagh_h_rozmare=?, tozih_h_rozmare=?, shomare_sanad=? WHERE id_h_rozmare=?`, hazine, operator, weaver, p.Mablagh, p.Description, p.SanadNo, p.ID)
+			_, err = a.exec(`UPDATE h_rozmare SET tarikh_h_rozmare=?, onvan_hazine=?, operator_name=?, weaver_name=?, mablagh_h_rozmare=?, tozih_h_rozmare=?, shomare_sanad=?, pay_account=?, pay_account_name=? WHERE id_h_rozmare=?`, tarikh, hazine, operator, weaver, p.Mablagh, p.Description, p.SanadNo, payAccount, payAccountName, p.ID)
 		} else {
-			_, err = a.exec(`INSERT INTO h_rozmare (tarikh_h_rozmare,onvan_hazine,operator_name,weaver_name,mablagh_h_rozmare,tozih_h_rozmare,shomare_sanad) VALUES (?,?,?,?,?,?,?)`, jalaliToday(), hazine, operator, weaver, p.Mablagh, p.Description, p.SanadNo)
+			_, err = a.exec(`INSERT INTO h_rozmare (tarikh_h_rozmare,onvan_hazine,operator_name,weaver_name,mablagh_h_rozmare,tozih_h_rozmare,shomare_sanad,pay_account,pay_account_name) VALUES (?,?,?,?,?,?,?,?,?)`, tarikh, hazine, operator, weaver, p.Mablagh, p.Description, p.SanadNo, payAccount, payAccountName)
 		}
 		writeSave(w, err)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+// financialAccountsCache caches the financial workspace account list so the
+// expense form does not re-read the workspace JSON on every tab open.
+var financialAccountsCache struct {
+	mu       sync.Mutex
+	accounts []map[string]any
+	fetched  time.Time
+}
+
+// financialAccounts exposes the financial workspace bank/cash accounts so the
+// operational expense form can record the paying account at the source. The
+// financial auto-sync stamps verifiedPayment from it, which clears the
+// supervisor payment-verification warning without a second financial-side save.
+func (a *app) financialAccounts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	financialAccountsCache.mu.Lock()
+	defer financialAccountsCache.mu.Unlock()
+	if a.dialect != "postgres" {
+		writeJSON(w, map[string]any{"accounts": []any{}})
+		return
+	}
+	if time.Since(financialAccountsCache.fetched) > time.Minute || financialAccountsCache.accounts == nil {
+		financialAccountsCache.accounts = a.loadFinancialAccounts()
+		financialAccountsCache.fetched = time.Now()
+	}
+	writeJSON(w, map[string]any{"accounts": financialAccountsCache.accounts})
+}
+
+func (a *app) loadFinancialAccounts() []map[string]any {
+	companyID := int64(0)
+	if err := a.db.QueryRow(`SELECT external_company_id FROM public.operational_tenants WHERE schema_name=? AND active=1 ORDER BY id LIMIT 1`, a.defaultSchema).Scan(&companyID); err != nil || companyID <= 0 {
+		return []map[string]any{}
+	}
+	var raw []byte
+	if err := a.db.QueryRow(`SELECT COALESCE(state->'accounts','[]'::jsonb) FROM public.financial_workspace_states WHERE company_id=?`, companyID).Scan(&raw); err != nil {
+		return []map[string]any{}
+	}
+	var accounts []map[string]any
+	if err := json.Unmarshal(raw, &accounts); err != nil {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(accounts))
+	for _, account := range accounts {
+		id, name := strings.TrimSpace(fmt.Sprint(account["id"])), strings.TrimSpace(fmt.Sprint(account["name"]))
+		if id == "" || name == "" || name == "<nil>" {
+			continue
+		}
+		out = append(out, map[string]any{"id": id, "name": name, "type": strings.TrimSpace(fmt.Sprint(account["type"]))})
+	}
+	return out
+}
+
+// normalizeExpenseTarikh stores the expense date as jalali YYYY/MM/DD, the
+// format every other h_rozmare row (jalaliToday) and the financial bridge
+// already expect. Gregorian input and Persian digits are accepted.
+func normalizeExpenseTarikh(value string) (string, error) {
+	value = strings.TrimSpace(strings.NewReplacer(
+		"۰", "0", "۱", "1", "۲", "2", "۳", "3", "۴", "4",
+		"۵", "5", "۶", "6", "۷", "7", "۸", "8", "۹", "9",
+	).Replace(value))
+	if value == "" {
+		return jalaliToday(), nil
+	}
+	if space := strings.IndexByte(value, ' '); space > 0 {
+		value = strings.TrimSpace(value[:space])
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool { return r == '/' || r == '-' || r == '.' })
+	if len(parts) != 3 {
+		return "", fmt.Errorf("invalid date %q", value)
+	}
+	year, errY := strconv.Atoi(parts[0])
+	month, errM := strconv.Atoi(parts[1])
+	day, errD := strconv.Atoi(parts[2])
+	if errY != nil || errM != nil || errD != nil {
+		return "", fmt.Errorf("invalid date %q", value)
+	}
+	if year >= 1700 {
+		if _, err := time.Parse("2006-01-02", fmt.Sprintf("%04d-%02d-%02d", year, month, day)); err != nil {
+			return "", fmt.Errorf("invalid date %q", value)
+		}
+		jy, jm, jd := gregorianToJalali(year, time.Month(month), day)
+		year, month, day = jy, jm, jd
+	} else if month < 1 || month > 12 || day < 1 || day > 31 {
+		return "", fmt.Errorf("invalid jalali date %q", value)
+	}
+	return fmt.Sprintf("%04d/%02d/%02d", year, month, day), nil
 }
 
 func (a *app) expenseByID(w http.ResponseWriter, r *http.Request) {
