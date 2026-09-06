@@ -153,6 +153,12 @@ func mergeOperationalExpensesIntoState(state map[string]any, source []operationa
 			movementIndex[strings.TrimSpace(stringValue(row["sourceId"]))] = i
 		}
 	}
+	validAccountIDs := map[string]bool{}
+	for _, account := range rowsFrom(state, "accounts") {
+		if id := strings.TrimSpace(stringValue(account["id"])); id != "" {
+			validAccountIDs[id] = true
+		}
+	}
 
 	changed := false
 	for _, row := range source {
@@ -173,6 +179,7 @@ func mergeOperationalExpensesIntoState(state map[string]any, source []operationa
 		expenseID := "exp-operational-" + sourceID
 		accountID := defaultAccountID
 		existingExpense := map[string]any{}
+		financeConfirmed := false
 		if index, ok := expenseIndex[sourceID]; ok {
 			existingExpense = cloneOperationalSyncMap(expenses[index])
 			if id := strings.TrimSpace(stringValue(existingExpense["id"])); id != "" {
@@ -180,6 +187,22 @@ func mergeOperationalExpensesIntoState(state map[string]any, source []operationa
 			}
 			if id := strings.TrimSpace(stringValue(existingExpense["accountId"])); id != "" {
 				accountID = id
+			}
+			// Once finance has saved this expense in the financial form the
+			// verifiedPayment stamp carries the accountant's decision. The
+			// source then stops overriding the account, so the two sections
+			// never fight; a later source date/amount change makes the stamp
+			// stale on purpose so finance re-checks the payment.
+			if verified, _ := existingExpense["verifiedPayment"].(map[string]any); strings.TrimSpace(stringValue(verified["accountId"])) == accountID {
+				financeConfirmed = true
+			}
+		}
+		// An operational pay_account wins over the automatic default (and over
+		// an unconfirmed older value): the employee now names the paying bank
+		// at registration time.
+		if !financeConfirmed {
+			if pay := strings.TrimSpace(row.PayAccountID); pay != "" && validAccountIDs[pay] {
+				accountID = pay
 			}
 		}
 		desiredExpense := cloneOperationalSyncMap(existingExpense)
@@ -195,6 +218,11 @@ func mergeOperationalExpensesIntoState(state map[string]any, source []operationa
 		desiredExpense["documentNo"] = row.DocNo
 		desiredExpense["enteredBy"] = row.Operator
 		desiredExpense["accountId"] = accountID
+		if pay := strings.TrimSpace(row.PayAccountID); pay != "" && validAccountIDs[pay] && !financeConfirmed {
+			desiredExpense["verifiedPayment"] = map[string]any{"accountId": accountID, "date": date, "amount": row.Amount}
+			desiredExpense["payAccountSource"] = pay
+			desiredExpense["payAccountName"] = strings.TrimSpace(row.PayAccountName)
+		}
 		desiredExpense["source_type"] = "operational_expense"
 		desiredExpense["sourceId"] = sourceID
 		desiredExpense["autoPosted"] = true
