@@ -227,3 +227,30 @@ func TestSyncLedgerConvertsJalaliDates(t *testing.T) {
 		t.Fatalf("jalali 1405/06/12 = gregorian 2026-09-03, got %s", got)
 	}
 }
+
+func TestPlanLedgerSyncReversesDateTransitions(t *testing.T) {
+	good := ledgerEntry{Key: "account-opening:bank-1", Date: "2026-08-03", Lines: []ledgerLine{
+		{AccountCode: "112A", Debit: 1000}, {AccountCode: "3100", Credit: 1000},
+	}}
+	broken := good
+	broken.Date = "1405/05/00"
+
+	// bad -> good: the previously posted voucher must be reversed, then reposted
+	ops := planWorkspaceLedgerSync(map[string]ledgerEntry{"account-opening:bank-1": broken}, map[string]ledgerEntry{"account-opening:bank-1": good})
+	if len(ops) != 1 || ops[0].reversal == nil || ops[0].posted == nil {
+		t.Fatalf("bad->good transition needs reversal + posting, got %#v", ops)
+	}
+
+	// good -> bad: reversal plus a posting the sync loop suppresses because the
+	// new date is unusable (suppression happens at insert time, not in the plan)
+	ops = planWorkspaceLedgerSync(map[string]ledgerEntry{"account-opening:bank-1": good}, map[string]ledgerEntry{"account-opening:bank-1": broken})
+	if len(ops) != 1 || ops[0].reversal == nil || ops[0].posted == nil {
+		t.Fatalf("good->bad transition needs reversal + suppressed posting, got %#v", ops)
+	}
+
+	// unchanged: no action
+	ops = planWorkspaceLedgerSync(map[string]ledgerEntry{"account-opening:bank-1": good}, map[string]ledgerEntry{"account-opening:bank-1": good})
+	if len(ops) != 0 {
+		t.Fatalf("unchanged entry must not be re-synced, got %#v", ops)
+	}
+}
