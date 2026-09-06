@@ -9,7 +9,7 @@ import { compareExpenseRows, expenseTraceId, linkedExpenseTraceId, mapOperationa
 import { incomingInvoiceSourceLabel, isOperationalInvoiceSource, uniqueSortedNames } from './financeIncoming.js';
 import { suggestIncomingPrice } from './financialSupervisor.js';
 import { formatTableValue, toPersianDigits } from './localization.js';
-import { normalizeEditableJalaliDate } from './persianDateInput.js';
+import { normalizeEditableJalaliDate, finalizeJalaliDate } from './persianDateInput.js';
 import { isMonetaryColumn, monetaryColumnTotals, parseLocalizedNumber } from './reportTotals.js';
 
 const FINANCIAL_DEV_ORIGIN = `${window.location.protocol}//${window.location.hostname}:5173`;
@@ -595,7 +595,13 @@ function DateInput({ value, onChange, className = '', ...props }) {
     onChange({ target: { value: normalizeEditableJalaliDate(e.target.value) } });
   };
 
-  return <TextInput {...props} className={className} type="text" dir="ltr" inputMode="numeric" placeholder="1405/06/08" value={displayValue} onChange={handleChange} />;
+  const handleBlur = e => {
+    if (!onChange) return;
+    const finalized = finalizeJalaliDate(e.target.value);
+    if (finalized !== e.target.value) onChange({ target: { value: finalized } });
+  };
+
+  return <TextInput {...props} className={className} type="text" dir="ltr" inputMode="numeric" placeholder="1405/06/08" value={displayValue} onChange={handleChange} onBlur={handleBlur} />;
 
 }
 
@@ -684,105 +690,353 @@ async function apiJSON(path, options = {}) {
   return data;
 }
 
+function workspaceRowKey(row) {
+
+  const r = row && typeof row === 'object' ? row : {};
+
+  const id = r.id ?? r.number ?? r.sourceId ?? r.checkNo ?? r.trackingNo;
+
+  return id !== undefined && String(id).trim() !== '' ? String(id) : 'json:' + JSON.stringify(r);
+
+}
+
+function mergeWorkspace3Way(base, server, local) {
+
+  const out = { ...(server || {}) };
+
+  const keys = new Set([...Object.keys(local || {}), ...Object.keys(server || {})]);
+
+  keys.forEach(key => {
+
+    const lv = local ? local[key] : undefined;
+
+    const sv = server ? server[key] : undefined;
+
+    const bv = base ? base[key] : undefined;
+
+    if (Array.isArray(lv) || Array.isArray(sv)) {
+
+      const localRows = Array.isArray(lv) ? lv : [];
+
+      const serverRows = Array.isArray(sv) ? sv : [];
+
+      const baseMap = new Map((Array.isArray(bv) ? bv : []).map(r => [workspaceRowKey(r), r]));
+
+      const localMap = new Map(localRows.map(r => [workspaceRowKey(r), r]));
+
+      const seen = new Set();
+
+      const merged = [];
+
+      serverRows.forEach(r => {
+
+        const k = workspaceRowKey(r);
+
+        seen.add(k);
+
+        const lr = localMap.get(k);
+
+        if (lr !== undefined && JSON.stringify(lr) !== JSON.stringify(baseMap.get(k))) merged.push(lr);
+
+        else merged.push(r);
+
+      });
+
+      localRows.forEach(r => {
+
+        const k = workspaceRowKey(r);
+
+        if (!seen.has(k)) merged.push(r);
+
+      });
+
+      out[key] = merged;
+
+      return;
+
+    }
+
+    if (JSON.stringify(lv) !== JSON.stringify(bv)) { out[key] = lv; return; }
+
+    if (JSON.stringify(sv) !== JSON.stringify(bv)) { out[key] = sv; return; }
+
+    out[key] = lv !== undefined ? lv : sv;
+
+  });
+
+  return out;
+
+}
+
 function useServerWorkspace(initialValue, enabled, writable = true) {
+
   const [value, setValue] = useState(initialValue);
+
   const [status, setStatus] = useState({ ready: false, saving: false, error: '', revision: 0 });
+
   const loadedRef = useRef(false);
+
   const revisionRef = useRef(0);
+
   const skipSaveRef = useRef(false);
+
   const valueRef = useRef(value);
   const dirtyRef = useRef(false);
   const committingRef = useRef(false);
+  const conflictRef = useRef(false);  valueRef.current = value;
+
   const savingRef = useRef(false);
-  const conflictRef = useRef(false);
-  valueRef.current = value;
+
+  const baseDocRef = useRef(null);
+
+  const conflictAttemptsRef = useRef(0);
+
+  const hasUnsavedChanges = () => loadedRef.current && JSON.stringify(valueRef.current) !== JSON.stringify(baseDocRef.current);
+
+  const adoptServerState = next => {
+
+    baseDocRef.current = next;
+
+    conflictAttemptsRef.current = 0;
+
+    skipSaveRef.current = true;
+
+    setValue(next);
+
+  };
 
   useEffect(() => {
+
     if (!enabled) {
       dirtyRef.current = false;
       conflictRef.current = false;
       loadedRef.current = false;
+
       revisionRef.current = 0;
-      setValue(initialValue);
+
+      adoptServerState(initialValue);
+
       setStatus({ ready: false, saving: false, error: '', revision: 0 });
+
       return;
+
     }
+
     let cancelled = false;
+
     setStatus(current => ({ ...current, ready: false, error: '' }));
+
     apiJSON('/workspace')
+
       .then(document => {
+
         if (cancelled) return;
+
         const serverState = document.state && typeof document.state === 'object' ? document.state : {};
+
         let next = { ...initialValue, ...serverState };
+
         if (!hasFinanceData(next)) {
+
           try {
+
             const legacy = JSON.parse(localStorage.getItem('textile-finance-v3') || 'null');
+
             if (hasFinanceData(legacy)) next = { ...initialValue, ...legacy };
+
           } catch {}
+
         }
+
         revisionRef.current = Number(document.revision || 0);
-        skipSaveRef.current = true;
-        setValue(next);
+
+        adoptServerState(next);
+
         loadedRef.current = true;
+
         setStatus({ ready: true, saving: false, error: '', revision: revisionRef.current });
+
       })
+
       .catch(error => {
+
         if (!cancelled) setStatus({ ready: false, saving: false, error: error.message || 'خطا در دریافت اطلاعات مالی', revision: 0 });
+
       });
+
     return () => { cancelled = true; };
+
   }, [enabled]);
 
   useEffect(() => {
+
     if (!enabled) return;
+
     const timer = window.setInterval(async () => {
       if (!loadedRef.current || dirtyRef.current || committingRef.current || savingRef.current) return;
       try {
+
         const document = await apiJSON('/workspace');
         if (dirtyRef.current || committingRef.current) return;
         const revision = Number(document.revision || 0);
+
         if (revision <= revisionRef.current) return;
+
+        const serverState = { ...initialValue, ...(document.state || {}) };
+
+        if (hasUnsavedChanges()) {
+
+          const merged = mergeWorkspace3Way(baseDocRef.current, serverState, valueRef.current);
+
+          revisionRef.current = revision;
+
+          adoptServerState(merged);
+
+          skipSaveRef.current = false;
+
+          setStatus(current => ({ ...current, ready: true, error: '', revision }));
+
+          return;
+
+        }
+
         revisionRef.current = revision;
-        skipSaveRef.current = true;
-        setValue({ ...initialValue, ...(document.state || {}) });
+
+        adoptServerState(serverState);
+
         setStatus({ ready: true, saving: false, error: '', revision });
+
       } catch {}
+
     }, 10000);
+
     return () => window.clearInterval(timer);
+
   }, [enabled]);
 
   useEffect(() => {
+
     if (!enabled || !writable || !loadedRef.current) return;
+
     if (skipSaveRef.current) {
+
       skipSaveRef.current = false;
+
       return;
+
     }
+
     const timer = setTimeout(async () => {
-      if (committingRef.current || savingRef.current || conflictRef.current) return;
-      savingRef.current = true;
-      setStatus(current => ({ ...current, saving: true, error: '' }));
+      if (committingRef.current || conflictRef.current) return;
+
+      while (savingRef.current) await new Promise(resolve => setTimeout(resolve, 250));
+
+      savingRef.current = true;      setStatus(current => ({ ...current, saving: true, error: '' }));
+
       try {
         do {
         const sentValue = valueRef.current;
         const document = await apiJSON('/workspace', {
+
           method: 'PUT',
           body: { state: sentValue, revision: revisionRef.current },
         });
+
         revisionRef.current = Number(document.revision || revisionRef.current);
         if (valueRef.current === sentValue) dirtyRef.current = false;
         } while (dirtyRef.current);
         localStorage.removeItem('textile-finance-v3');
+
+        conflictAttemptsRef.current = 0;
+
+        baseDocRef.current = valueRef.current;
+
         setStatus({ ready: true, saving: false, error: '', revision: revisionRef.current });
+
       } catch (error) {
+
         if (error.status === 409 && error.data?.current) {
-          conflictRef.current = true;
-          setStatus(current => ({ ...current, saving: false, error: 'ثبت هم‌زمان شناسایی شد؛ تغییر شما ذخیره نشده و در این صفحه حفظ شده است. پیش از تازه‌سازی از آن یادداشت بگیرید و با آخرین نسخه تطبیق دهید.' }));
+
+          const current = error.data.current;
+
+          const serverState = current.state && typeof current.state === 'object' ? { ...initialValue, ...current.state } : { ...initialValue };
+
+          const merged = mergeWorkspace3Way(baseDocRef.current, serverState, valueRef.current);
+
+          revisionRef.current = Number(current.revision || 0);
+
+          baseDocRef.current = serverState;
+
+          conflictAttemptsRef.current += 1;
+
+          if (conflictAttemptsRef.current <= 5) {
+
+            skipSaveRef.current = false;
+
+            setValue(merged);
+
+            setStatus({ ready: true, saving: false, error: '', revision: revisionRef.current });
+
+          } else {
+
+            skipSaveRef.current = true;
+
+            setValue(valueRef.current);
+
+            setStatus(current => ({ ...current, saving: false, error: 'ذخیره چند بار با تضاد نسخه مواجه شد؛ اطلاعات شما حفظ شده و چند لحظه بعد دوباره ذخیره می‌شود.', revision: revisionRef.current }));
+
+            setTimeout(() => {
+
+              conflictAttemptsRef.current = 0;
+
+              skipSaveRef.current = false;
+
+              setValue({ ...valueRef.current });
+
+            }, 5000);
+
+          }
+
           return;
+
         }
-        setStatus(current => ({ ...current, saving: false, error: error.message || 'ذخیره اطلاعات مالی ناموفق بود' }));
-      } finally { savingRef.current = false; }
+
+        setStatus(current => ({ ...current, saving: false, error: error.message || 'ذخیره اطلاعات مالی ناموفق بود؛ اطلاعات شما حفظ شده و با ذخیره بعدی دوباره تلاش می‌شود.' }));
+
+      } finally {
+
+        savingRef.current = false;
+
+      }
+
     }, 650);
+
     return () => clearTimeout(timer);
+
   }, [enabled, writable, value]);
+
+  useEffect(() => {
+
+    if (!enabled) return;
+
+    const handler = event => {
+
+      if (hasUnsavedChanges()) {
+
+        event.preventDefault();
+
+        event.returnValue = '';
+
+      }
+
+    };
+
+    window.addEventListener('beforeunload', handler);
+
+    return () => window.removeEventListener('beforeunload', handler);
+
+  }, [enabled]);
+
 
   const updateValue = useCallback(next => {
     if (committingRef.current) return;
@@ -2307,9 +2561,113 @@ function TeamAccessPage({ sessionProfile }) {
   );
 }
 
+function operationalSourceQuantity(data, sourceType, sourceId) {
+
+  const idNum = Number(sourceId);
+
+  const list = sourceType === 'operational_yarn_in' ? (data.yarnIn || []) : sourceType === 'operational_chelle_in' ? (data.chelleIn || []) : sourceType === 'operational_spare_part' ? (data.spareParts || []) : sourceType === 'operational_yarn_out' ? (data.yarnOut || []) : [];
+
+  const row = list.find(x => Number(x.id) === idNum);
+
+  if (!row) return null;
+
+  return Math.abs(Number(row.weight !== undefined ? row.weight : row.quantity) || 0);
+
+}
+
+const operationalSourceKindLabels = { operational_yarn_in: 'ورود نخ', operational_chelle_in: 'ورود چله', operational_spare_part: 'ورود قطعه', operational_yarn_out: 'خروج نخ' };
+
+function buildOperationalMismatch(form, data, editingId) {
+
+  const sourceType = String(form.source_type || '');
+
+  if (editingId || !sourceType.startsWith('operational') || !form.sourceId) return null;
+
+  const expected = operationalSourceQuantity(data, sourceType, form.sourceId);
+
+  if (expected === null) return null;
+
+  const actual = Math.abs(Number(form.quantity || 0));
+
+  if (Math.abs(expected - actual) <= 0.001) return null;
+
+  const kind = operationalSourceKindLabels[sourceType] || 'فاکتور عملیاتی';
+
+  return {
+
+    payload: {
+
+      source_type: sourceType,
+
+      source_id: String(form.sourceId),
+
+      invoice_no: String(form.sourceId),
+
+      invoice_kind: kind,
+
+      title: 'مغایرت مقدار در ' + kind,
+
+      message: `مقدار ثبت‌شده در بخش مالی ${actual.toLocaleString('fa-IR')} در مقابل ${expected.toLocaleString('fa-IR')} در بخش عملیاتی است. لطفاً رکورد عملیاتی را بررسی و اصلاح کنید؛ پس از ثبت اصلاح، فاکتور اصلاح‌شده مجدداً به بخش مالی ارسال می‌شود (بدون ثبت تکراری).`,
+
+    },
+
+    message: `مقدار مالی ${actual.toLocaleString('fa-IR')} در مقابل مقدار عملیاتی ${expected.toLocaleString('fa-IR')}`,
+
+  };
+
+}
+
+function closeMismatchReportsForSource(sourceType, sourceId) {
+
+  if (!sourceType || !String(sourceType).startsWith('operational') || sourceId === '' || sourceId === undefined || sourceId === null) return;
+
+  apiGetSafe('/operational/mismatch-reports').then(list => {
+
+    ((list && list.rows) || []).filter(x => x.status !== 'closed' && x.source_type === String(sourceType) && String(x.source_id) === String(sourceId)).forEach(x => {
+
+      apiJSON('/operational/mismatch-reports', { method: 'POST', body: { id: x.id, status: 'closed' } }).catch(() => {});
+
+    });
+
+  }).catch(() => {});
+
+}
+
+function isOperationalSourceInvoice(invoice) {
+
+  return invoice && String(invoice.source_type || '').startsWith('operational') && invoice.sourceId !== undefined && invoice.sourceId !== null && invoice.sourceId !== '';
+
+}
+
+async function addLookupItem(path, promptTitle, apply) {
+
+  const name = window.prompt(promptTitle);
+
+  const trimmed = String(name || '').trim();
+
+  if (!trimmed) return;
+
+  try {
+
+    const res = await apiJSON(path, { method: 'POST', body: { name: trimmed } });
+
+    const saved = (res && res.item && res.item.name) || trimmed;
+
+    apply(saved);
+
+    window.alert('«' + saved + '» به اطلاعات اولیه اضافه شد.');
+
+  } catch (err) {
+
+    window.alert((err && err.message) || 'افزودن به اطلاعات اولیه انجام نشد.');
+
+  }
+
+}
+
 function useOperationalData() {
 
-  const [data, setData] = useState({ customers: [], kala: [], yarn: [], invoices: [], yarnIn: [], chelleIn: [], yarnOut: [], expenses: [], miscIncoming: [], spareParts: [] });
+  const [data, setData] = useState({ customers: [], kala: [], yarn: [], invoices: [], yarnIn: [], chelleIn: [], yarnOut: [], expenses: [], miscIncoming: [], spareParts: [], mismatchReports: [] });
 
   const [loading, setLoading] = useState(true);
 
@@ -2350,10 +2708,11 @@ function useOperationalData() {
       apiGetSafe('/operational/misc-incoming?limit=200'),
 
       apiGetSafe('/operational/spare-parts-inventory?limit=200'),
+      apiGetSafe('/operational/mismatch-reports'),
 
     ])
 
-      .then(([customers, kala, yarn, invoices, yarnIn, chelleIn, yarnOut, expenses, miscIncoming, spareParts]) => setData({
+      .then(([customers, kala, yarn, invoices, yarnIn, chelleIn, yarnOut, expenses, miscIncoming, spareParts, mismatchReports]) => setData({
 
         customers: payloadRows(customers),
 
@@ -2374,6 +2733,7 @@ function useOperationalData() {
         miscIncoming: payloadRows(miscIncoming),
 
         spareParts: payloadRows(spareParts),
+        mismatchReports: payloadRows(mismatchReports),
 
       }))
 
@@ -3244,7 +3604,7 @@ function YarnOutInvoicePage({ finance, setFinance }) {
 
   ];
 
-  const { data, loading, error } = useOperationalData();
+  const { data, loading, error, refresh: refreshOperational } = useOperationalData();
 
   const [editingId, setEditingId] = useState('');
 
@@ -3252,9 +3612,15 @@ function YarnOutInvoicePage({ finance, setFinance }) {
 
   const rows = finance.yarnOutInvoices || [];
 
+  const mismatchByKey = {};
+
+  (data.mismatchReports || []).forEach(x => { if (x.status !== 'closed') mismatchByKey[`${x.source_type}:${x.source_id}`] = x; });
+
+  const misFlag = (type, id) => { const rep = mismatchByKey[`${type}:${id}`]; return rep ? (rep.status === 'open' ? ' \u26a0\ufe0f مغایرت' : ' \u2705 اصلاح شد') : ''; };
+
   const settledSources = new Set(rows.map(x => `${x.source_type || 'manual'}:${x.sourceId || x.id}`));
 
-  const pendingYarnOut = (data.yarnOut || []).filter(x => !settledSources.has(`operational_yarn_out:${x.id}`));
+  const pendingYarnOut = (data.yarnOut || []).filter(x => !settledSources.has(`operational_yarn_out:${x.id}`) || !!mismatchByKey[`operational_yarn_out:${x.id}`]);
 
   const customers = [...new Set([...(data.customers || []).map(x => x.name), ...(data.yarnOut || []).map(x => x.customer_name), ...(finance.invoices || []).map(x => x.customer), ...(finance.incomingInvoices || []).map(x => x.customer), ...(finance.yarnOutInvoices || []).map(x => x.customer)].filter(Boolean))];
 
@@ -3304,11 +3670,32 @@ function YarnOutInvoicePage({ finance, setFinance }) {
 
     const invoice = { ...form, id: editingId || shortId('YOUT'), quantity, unitPrice: Number(form.unitPrice || 0), costUnitPrice: Number(form.costUnitPrice || 0), costAmount, amount, outMode: form.outMode, outModeLabel: mode.label, stockTypeLabel: stockTypes.find(x => x.id === form.stockType)?.label || form.stockType };
 
+    const mismatchNotice = buildOperationalMismatch(form, data, editingId);
+
+    if (mismatchNotice) {
+
+      if (window.confirm(`مغایرت مقدار با رکورد عملیاتی:\n${mismatchNotice.message}\n\nاعلان مغایرت به بخش عملیاتی ارسال شود؟`)) {
+
+        apiJSON('/operational/mismatch-reports', { method: 'POST', body: mismatchNotice.payload }).then(() => window.alert('اعلان مغایرت به بخش عملیاتی ارسال شد؛ پس از اصلاح رکورد در بخش عملیاتی، نسخه اصلاح‌شده برای ثبت مجدد نمایش داده می‌شود.')).catch(err => window.alert('ارسال اعلان مغایرت انجام نشد: ' + (err.message || '')));
+
+      } else {
+
+        closeMismatchReportsForSource(form.source_type, form.sourceId);
+
+      }
+
+    } else {
+
+      closeMismatchReportsForSource(form.source_type, form.sourceId);
+
+    }
+
+
     setFinance(prev => {
 
       const sourceId = invoice.id;
 
-      const yarnOutInvoices = [invoice, ...(prev.yarnOutInvoices || []).filter(x => x.id !== sourceId)];
+      const yarnOutInvoices = [invoice, ...(prev.yarnOutInvoices || []).filter(x => x.id !== sourceId && !(isOperationalSourceInvoice(invoice) && x.source_type === invoice.source_type && String(x.sourceId) === String(invoice.sourceId)))];
 
       const ownedInventory = (prev.ownedInventory || []).filter(x => x.sourceYarnOutInvoice !== sourceId);
 
@@ -3340,9 +3727,10 @@ function YarnOutInvoicePage({ finance, setFinance }) {
 
       <div className="grid grid-cols-[2fr_0.7fr] gap-4">
 
-        <Card><h3 className="mb-4 font-bold">{form.source_type === 'manual' ? 'صدور فاکتور خروج نخ مستقل' : L.title}</h3><form className="space-y-4" onSubmit={save}><div className="grid grid-cols-3 gap-3"><label className="text-sm text-slate-300"><span className="mb-2 block">{L.date}</span><DateInput className="w-full" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></label>{form.source_type === 'manual' ? <label className="text-sm text-slate-300">شخص / مشتری<TextInput className="mt-2 w-full" list="manual-yarn-out-customers" placeholder={L.selectCustomer} value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })} /><datalist id="manual-yarn-out-customers">{customers.map(c => <option key={c} value={c} />)}</datalist></label> : <SelectInput value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })}><option value="">{L.selectCustomer}</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput>}{form.source_type === 'manual' ? <label className="text-sm text-slate-300">نوع نخ<TextInput className="mt-2 w-full" list="manual-yarn-out-items" placeholder={L.selectYarn} value={form.itemName} onChange={e => { const itemName = e.target.value; setForm({ ...form, itemName, costUnitPrice: averageYarnCost(itemName) || '' }); }} /><datalist id="manual-yarn-out-items">{yarns.map(y => <option key={y} value={y} />)}</datalist></label> : <SelectInput value={form.itemName} onChange={e => { const itemName = e.target.value; setForm({ ...form, itemName, costUnitPrice: averageYarnCost(itemName) || '' }); }}><option value="">{L.selectYarn}</option>{yarns.map(y => <option key={y} value={y}>{y}</option>)}</SelectInput>}<SelectInput value={form.outMode} onChange={e => setForm({ ...form, outMode: e.target.value, unitPrice: '', amount: '' })}>{modes.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</SelectInput><SelectInput value={form.stockType} onChange={e => setForm({ ...form, stockType: e.target.value, costUnitPrice: e.target.value === 'amanat' ? '' : (form.costUnitPrice || averageYarnCost(form.itemName) || '') })}>{stockTypes.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}</SelectInput><TextInput type="number" placeholder={L.quantity} value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value, amount: '' })} />{mode.needsPrice && <><TextInput type="number" placeholder={L.unitPrice} value={form.unitPrice} onChange={e => setForm({ ...form, unitPrice: e.target.value, amount: '' })} /><TextInput type="number" placeholder={L.amount} value={amount || ''} onChange={e => setForm({ ...form, amount: e.target.value })} />{form.stockType !== 'amanat' && <TextInput type="number" min="0" placeholder="بهای تمام‌شده واحد" value={form.costUnitPrice} onChange={e => setForm({ ...form, costUnitPrice: e.target.value })} />}</>}<TextInput className="col-span-3" placeholder={L.desc} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></div><div className={`rounded-md border p-3 text-sm ${mode.needsPrice ? 'border-amber-700 bg-amber-950 text-amber-100' : 'border-emerald-700 bg-emerald-950 text-emerald-100'}`}>{mode.needsPrice ? `${L.priceHelp}${shouldRecognizeYarnCost ? ' بهای تمام‌شده خروج نیز جداگانه در موجودی و هزینه فروش ثبت می‌شود.' : ''}` : L.noPriceHelp}</div><div className="grid grid-cols-4 gap-3"><Field label="مقدار کسر از انبار" value={`${num(Math.abs(Number(form.quantity || 0)))} کيلو`} tone="text-red-300" /><Field label="نرخ فروش/تهاتر" value={mode.needsPrice ? money(form.unitPrice) : '-'} /><Field label="مبلغ فروش/تهاتر" value={mode.needsPrice ? money(amount) + ' تومان' : 'بدون اثر ريالي'} /><Field label="بهای تمام‌شده خروج" value={shouldRecognizeYarnCost ? money(costAmount) + ' تومان' : '-'} tone="text-amber-300" /></div><PrimaryButton className="w-full" type="submit">{editingId ? L.editSave : L.save}</PrimaryButton>{editingId && <GhostButton onClick={resetForm}>{L.reset}</GhostButton>}</form></Card>
+        <Card><h3 className="mb-4 font-bold">{form.source_type === 'manual' ? 'صدور فاکتور خروج نخ مستقل' : L.title}</h3><form className="space-y-4" onSubmit={save}><div className="grid grid-cols-3 gap-3"><label className="text-sm text-slate-300"><span className="mb-2 block">{L.date}</span><DateInput className="w-full" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></label>{form.source_type === 'manual' ? <label className="text-sm text-slate-300">شخص / مشتری<TextInput className="mt-2 w-full" list="manual-yarn-out-customers" placeholder={L.selectCustomer} value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })} /><datalist id="manual-yarn-out-customers">{customers.map(c => <option key={c} value={c} />)}</datalist></label> : <div className="flex items-end gap-2"><SelectInput value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })}><option value="">{L.selectCustomer}</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><button type="button" title="افزودن به اطلاعات اولیه" className="shrink-0 rounded-md border border-amber-700 bg-slate-900 px-3 py-2 text-amber-200 hover:border-amber-400" onClick={() => addLookupItem('/operational/customers', 'نام مشتری / شخص جدید:', name => { setForm({ ...form, customer: name }); refreshOperational(); })}>+</button></div>}{form.source_type === 'manual' ? <label className="text-sm text-slate-300">نوع نخ<TextInput className="mt-2 w-full" list="manual-yarn-out-items" placeholder={L.selectYarn} value={form.itemName} onChange={e => { const itemName = e.target.value; setForm({ ...form, itemName, costUnitPrice: averageYarnCost(itemName) || '' }); }} /><datalist id="manual-yarn-out-items">{yarns.map(y => <option key={y} value={y} />)}</datalist></label> : <div className="flex items-end gap-2"><SelectInput value={form.itemName} onChange={e => { const itemName = e.target.value; setForm({ ...form, itemName, costUnitPrice: averageYarnCost(itemName) || '' }); }}><option value="">{L.selectYarn}</option>{yarns.map(y => <option key={y} value={y}>{y}</option>)}</SelectInput><button type="button" title="افزودن به اطلاعات اولیه" className="shrink-0 rounded-md border border-amber-700 bg-slate-900 px-3 py-2 text-amber-200 hover:border-amber-400" onClick={() => addLookupItem('/operational/yarn-items', 'نوع نخ جدید:', name => { setForm({ ...form, itemName: name, costUnitPrice: averageYarnCost(name) || '' }); refreshOperational(); })}>+</button></div>}<SelectInput value={form.outMode} onChange={e => setForm({ ...form, outMode: e.target.value, unitPrice: '', amount: '' })}>{modes.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</SelectInput><SelectInput value={form.stockType} onChange={e => setForm({ ...form, stockType: e.target.value, costUnitPrice: e.target.value === 'amanat' ? '' : (form.costUnitPrice || averageYarnCost(form.itemName) || '') })}>{stockTypes.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}</SelectInput><TextInput type="number" placeholder={L.quantity} value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value, amount: '' })} />{mode.needsPrice && <><TextInput type="number" placeholder={L.unitPrice} value={form.unitPrice} onChange={e => setForm({ ...form, unitPrice: e.target.value, amount: '' })} /><TextInput type="number" placeholder={L.amount} value={amount || ''} onChange={e => setForm({ ...form, amount: e.target.value })} />{form.stockType !== 'amanat' && <TextInput type="number" min="0" placeholder="بهای تمام‌شده واحد" value={form.costUnitPrice} onChange={e => setForm({ ...form, costUnitPrice: e.target.value })} />}</>}<TextInput className="col-span-3" placeholder={L.desc} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></div><div className={`rounded-md border p-3 text-sm ${mode.needsPrice ? 'border-amber-700 bg-amber-950 text-amber-100' : 'border-emerald-700 bg-emerald-950 text-emerald-100'}`}>{mode.needsPrice ? `${L.priceHelp}${shouldRecognizeYarnCost ? ' بهای تمام‌شده خروج نیز جداگانه در موجودی و هزینه فروش ثبت می‌شود.' : ''}` : L.noPriceHelp}</div><div className="grid grid-cols-4 gap-3"><Field label="مقدار کسر از انبار" value={`${num(Math.abs(Number(form.quantity || 0)))} کيلو`} tone="text-red-300" /><Field label="نرخ فروش/تهاتر" value={mode.needsPrice ? money(form.unitPrice) : '-'} /><Field label="مبلغ فروش/تهاتر" value={mode.needsPrice ? money(amount) + ' تومان' : 'بدون اثر ريالي'} /><Field label="بهای تمام‌شده خروج" value={shouldRecognizeYarnCost ? money(costAmount) + ' تومان' : '-'} tone="text-amber-300" /></div>{(() => { const n = buildOperationalMismatch(form, data, editingId); if (!n) return null; const already = mismatchByKey[`${form.source_type}:${String(form.sourceId)}`]; return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm text-amber-100"><span>⚠️ {n.message}</span>{already ? <span className="text-xs">اعلان این مغایرت قبلاً ارسال شده است.</span> : <button type="button" className="rounded-md border border-amber-500 bg-amber-900 px-3 py-2 text-xs text-amber-100 hover:border-amber-300" onClick={() => apiJSON('/operational/mismatch-reports', { method: 'POST', body: n.payload }).then(() => window.alert('اعلان مغایرت به بخش عملیاتی ارسال شد؛ پس از اصلاح رکورد در بخش عملیاتی، نسخه اصلاح‌شده برای ثبت مجدد نمایش داده می‌شود.')).catch(err => window.alert('ارسال اعلان مغایرت ناموفق بود: ' + ((err && err.message) || '')))}>اعلان مغایرت به بخش عملیاتی</button>}</div>; })()}
+            <PrimaryButton className="w-full" type="submit">{editingId ? L.editSave : L.save}</PrimaryButton>{editingId && <GhostButton onClick={resetForm}>{L.reset}</GhostButton>}</form></Card>
 
-        <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">{L.pending}</h3><span className="text-xs text-slate-400">{loading ? 'در حال دريافت...' : num(pendingYarnOut.length) + ' مورد'}</span></div>{error && <ErrorBox message={error} />}<div className="max-h-[620px] space-y-2 overflow-auto">{pendingYarnOut.length ? pendingYarnOut.map(row => <button key={row.id} type="button" className="w-full rounded-md border border-slate-700 bg-slate-900 p-3 text-right text-sm hover:border-amber-500" onClick={() => selectOperational(row)}><div className="flex items-center justify-between gap-2"><span className="font-bold text-amber-200">{row.yarn_name || '-'}</span><span className="rounded-full bg-slate-950 px-2 py-1 text-xs text-amber-200">{num(row.weight)} کيلو</span></div><div className="mt-1 text-xs text-slate-400">{row.customer_name || '-'} | {row.doc_no || '-'}</div><div className="mt-1 text-xs text-slate-500">{toJalali(row.date)}</div></button>) : <EmptyState />}</div></Card>
+        <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">{L.pending}</h3><span className="text-xs text-slate-400">{loading ? 'در حال دريافت...' : num(pendingYarnOut.length) + ' مورد'}</span></div>{error && <ErrorBox message={error} />}<div className="max-h-[620px] space-y-2 overflow-auto">{pendingYarnOut.length ? pendingYarnOut.map(row => <button key={row.id} type="button" className="w-full rounded-md border border-slate-700 bg-slate-900 p-3 text-right text-sm hover:border-amber-500" onClick={() => selectOperational(row)}><div className="flex items-center justify-between gap-2"><span className="font-bold text-amber-200">{row.yarn_name || '-'}</span><span className="rounded-full bg-slate-950 px-2 py-1 text-xs text-amber-200">{num(row.weight)} کيلو{misFlag('operational_yarn_out', row.id)}</span></div><div className="mt-1 text-xs text-slate-400">{row.customer_name || '-'} | {row.doc_no || '-'}</div><div className="mt-1 text-xs text-slate-500">{toJalali(row.date)}</div></button>) : <EmptyState />}</div></Card>
 
       </div>
 
@@ -3368,7 +3756,7 @@ function YarnOutInvoiceTable({ rows, onEdit, onDelete }) {
 
 function IncomingInvoicePage({ finance, setFinance, reviewedSave, revision, onlySource = '' }) {
 
-  const { data, loading, error } = useOperationalData();
+  const { data, loading, error, refresh: refreshOperational } = useOperationalData();
 
   const [editingId, setEditingId] = useState('');
 
@@ -3396,21 +3784,27 @@ function IncomingInvoicePage({ finance, setFinance, reviewedSave, revision, only
 
   const allRows = finance.incomingInvoices || [];
 
+  const mismatchByKey = {};
+
+  (data.mismatchReports || []).forEach(x => { if (x.status !== 'closed') mismatchByKey[`${x.source_type}:${x.source_id}`] = x; });
+
+  const misFlag = (type, id) => { const rep = mismatchByKey[`${type}:${id}`]; return rep ? (rep.status === 'open' ? ' \u26a0\ufe0f مغایرت' : ' \u2705 اصلاح شد') : ''; };
+
   const settledSources = new Set(allRows.map(x => `${x.source_type || 'manual'}:${x.sourceId || x.id}`));
 
-  const pendingYarnIn = data.yarnIn.filter(x => !settledSources.has(`operational_yarn_in:${x.id}`));
+  const pendingYarnIn = data.yarnIn.filter(x => !settledSources.has(`operational_yarn_in:${x.id}`) || !!mismatchByKey[`operational_yarn_in:${x.id}`]);
 
-  const pendingChelleIn = data.chelleIn.filter(x => !settledSources.has(`operational_chelle_in:${x.id}`));
+  const pendingChelleIn = data.chelleIn.filter(x => !settledSources.has(`operational_chelle_in:${x.id}`) || !!mismatchByKey[`operational_chelle_in:${x.id}`]);
 
-  const pendingSpareParts = data.spareParts.filter(x => !settledSources.has(`operational_spare_part:${x.id}`));
+  const pendingSpareParts = data.spareParts.filter(x => !settledSources.has(`operational_spare_part:${x.id}`) || !!mismatchByKey[`operational_spare_part:${x.id}`]);
 
   const pendingOperationalAll = [
 
-    ...pendingYarnIn.map(x => ({ ...x, pendingType: 'operational_yarn_in', title: x.yarn_name, subtitle: `${x.customer_name || '-'} | همبافت ${x.doc_no || '-'}`, quantityLabel: `${num(x.weight)} کيلو`, actionLabel: 'ورود نخ' })),
+    ...pendingYarnIn.map(x => ({ ...x, pendingType: 'operational_yarn_in', title: x.yarn_name, subtitle: `${x.customer_name || '-'} | همبافت ${x.doc_no || '-'}`, quantityLabel: `${num(x.weight)} کيلو${misFlag('operational_yarn_in', x.id)}`, actionLabel: 'ورود نخ' })),
 
-    ...pendingChelleIn.map(x => ({ ...x, pendingType: 'operational_chelle_in', title: x.doc_no || x.hambaft || x.yarn_name, subtitle: `چله پیچ ${x.warper || '-'} | صاحب نخ ${x.customer_name || '-'} | همبافت ${x.hambaft || '-'}`, quantityLabel: `${num(x.weight)} کيلو`, actionLabel: 'ورود چله' })),
+    ...pendingChelleIn.map(x => ({ ...x, pendingType: 'operational_chelle_in', title: x.doc_no || x.hambaft || x.yarn_name, subtitle: `چله پیچ ${x.warper || '-'} | صاحب نخ ${x.customer_name || '-'} | همبافت ${x.hambaft || '-'}`, quantityLabel: `${num(x.weight)} کيلو${misFlag('operational_chelle_in', x.id)}`, actionLabel: 'ورود چله' })),
 
-    ...pendingSpareParts.map(x => ({ ...x, pendingType: 'operational_spare_part', title: x.part_name, subtitle: `${x.vendor_name || '-'} | ${x.part_number || '-'}`, quantityLabel: `${num(x.quantity)} عدد`, actionLabel: 'قطعه' })),
+    ...pendingSpareParts.map(x => ({ ...x, pendingType: 'operational_spare_part', title: x.part_name, subtitle: `${x.vendor_name || '-'} | ${x.part_number || '-'}`, quantityLabel: `${num(x.quantity)} عدد${misFlag('operational_spare_part', x.id)}`, actionLabel: 'قطعه' })),
 
   ];
 
@@ -3599,8 +3993,29 @@ function IncomingInvoicePage({ finance, setFinance, reviewedSave, revision, only
 
     const invoice = { ...form, id: editingId || shortId('IN'), subtotal, taxAmount: form.nonFinancial ? 0 : taxAmount, taxRate: form.nonFinancial ? 0 : taxRate, taxable: !form.nonFinancial && !!form.taxable, amount: invoiceTotal, quantity: Number(form.quantity || 0), unitPrice: Number(form.unitPrice || 0), payments: cleanPayments, nonFinancial: !!form.nonFinancial };
 
-    const proposed = ((prev) => {
+    const mismatchNotice = buildOperationalMismatch(form, data, editingId);
 
+    if (mismatchNotice) {
+
+      if (window.confirm(`مغایرت مقدار با رکورد عملیاتی:\n${mismatchNotice.message}\n\nاعلان مغایرت به بخش عملیاتی ارسال شود؟`)) {
+
+        apiJSON('/operational/mismatch-reports', { method: 'POST', body: mismatchNotice.payload }).then(() => window.alert('اعلان مغایرت به بخش عملیاتی ارسال شد؛ پس از اصلاح رکورد در بخش عملیاتی، نسخه اصلاح‌شده برای ثبت مجدد نمایش داده می‌شود.')).catch(err => window.alert('ارسال اعلان مغایرت انجام نشد: ' + (err.message || '')));
+
+      } else {
+
+        closeMismatchReportsForSource(form.source_type, form.sourceId);
+
+      }
+
+    } else {
+
+      closeMismatchReportsForSource(form.source_type, form.sourceId);
+
+    }
+
+
+
+    const proposed = ((prev) => {
       const sourceId = invoice.id;
 
       let movements = prev.movements.filter(x => x.sourceIncomingInvoice !== sourceId);
@@ -3649,7 +4064,7 @@ function IncomingInvoicePage({ finance, setFinance, reviewedSave, revision, only
 
       });
 
-      return { ...prev, incomingInvoices: [invoice, ...prev.incomingInvoices.filter(x => x.id !== sourceId)], movements, payableDocs, receivableDocs, ownedInventory };
+      return { ...prev, incomingInvoices: [invoice, ...prev.incomingInvoices.filter(x => x.id !== sourceId && !(isOperationalSourceInvoice(invoice) && x.source_type === invoice.source_type && String(x.sourceId) === String(invoice.sourceId)))], movements, payableDocs, receivableDocs, ownedInventory };
 
     })(finance);
     setReviewBusy(true);
@@ -3731,7 +4146,8 @@ function IncomingInvoicePage({ finance, setFinance, reviewedSave, revision, only
               ? <div className="rounded-md border border-emerald-700 bg-emerald-950 p-4 text-sm text-emerald-100">اين فاکتور بدون اثر ريالي ثبت مي‌شود؛ چک، نقد، بدهکاري يا بستانکاري براي مشتري ايجاد نمي‌شود، اما مقدار و ارزش کالا در حساب کالايي و اعتبارسنجي لحاظ مي‌شود.</div>
               : <div className="rounded-md border border-slate-700 bg-slate-900 p-4"><div className="mb-3 flex items-center justify-between"><h4 className="font-bold">رديف هاي تسويه فاکتور ورود</h4><PrimaryButton onClick={() => setPayments(prev => [...prev, newPaymentLine('credit')])}>افزودن رديف</PrimaryButton></div><div className="space-y-3">{payments.map(p => <IncomingPaymentLine key={p.id} payment={p} accounts={finance.accounts} receivableDocs={openReceivableDocs} onChange={patch => updatePayment(p.id, patch)} onRemove={() => removePayment(p.id)} onAddAccount={quickAddAccount} />)}</div></div>}
             <div className="grid grid-cols-5 gap-3"><Field label="مبلغ قبل مالیات" value={money(subtotal) + ' تومان'} /><Field label="مالیات/عوارض" value={money(form.nonFinancial ? 0 : taxAmount) + ' تومان'} tone="text-blue-300" /><Field label="جمع فاکتور" value={money(invoiceTotal) + ' تومان'} /><Field label="جمع تسويه" value={money(form.nonFinancial ? 0 : paid) + ' تومان'} tone={form.nonFinancial || paid === invoiceTotal ? 'text-emerald-300' : 'text-amber-300'} /><Field label={form.nonFinancial ? 'اثر ريالي' : 'مانده'} value={form.nonFinancial ? 'بدون اثر در صورتحساب' : money(invoiceTotal - paid) + ' تومان'} tone={form.nonFinancial || invoiceTotal - paid === 0 ? 'text-emerald-300' : 'text-red-300'} /></div>
-            {reviewMessage && <div role="status" className="rounded-md border border-blue-700 bg-slate-950 p-4 text-blue-100">{reviewMessage}</div>}
+{(() => { const n = buildOperationalMismatch(form, data, editingId); if (!n) return null; return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm text-amber-100"><span>⚠️ {n.message}</span><button type="button" className="rounded-md border border-amber-500 bg-amber-900 px-3 py-2 text-xs text-amber-100 hover:border-amber-300" onClick={() => apiJSON('/operational/mismatch-reports', { method: 'POST', body: n.payload }).then(() => window.alert('اعلان مغایرت به بخش عملیاتی ارسال شد؛ پس از اصلاح رکورد در بخش عملیاتی، نسخه اصلاح‌شده برای ثبت مجدد نمایش داده می‌شود.')).catch(err => window.alert('ارسال اعلان مغایرت ناموفق بود: ' + ((err && err.message) || '')))}>اعلان مغایرت به بخش عملیاتی</button></div>; })()}
+                        {reviewMessage && <div role="status" className="rounded-md border border-blue-700 bg-slate-950 p-4 text-blue-100">{reviewMessage}</div>}
             {reviewDraft && <div className="rounded-lg border border-emerald-700 bg-emerald-950/60 p-5 text-emerald-50">
               <h3 className="font-bold">اثر خالص ثبت پیشنهادی — هنوز ذخیره نشده است</h3>
               <p className="my-3 text-sm leading-7">این جدول از موتور حسابداری سرور است. در ویرایش، فقط تفاوت نسبت به سند قبلی نمایش داده می‌شود. بدهکار/بستانکار ستون‌های سند حسابداری هستند؛ بدهکار شدن دارایی مانند بانک یعنی افزایش آن، و بستانکار شدن یعنی کاهش. پیشنهاد قیمت، قیمت قطعی روز نیست.</p>
@@ -3763,7 +4179,7 @@ function IncomingInvoicePage({ finance, setFinance, reviewedSave, revision, only
 
 function InvoicePage({ finance, setFinance }) {
 
-  const { data } = useOperationalData();
+  const { data, refresh: refreshOperational } = useOperationalData();
 
   const [rows, setRows] = useState([]);
 
@@ -3827,9 +4243,21 @@ function InvoicePage({ finance, setFinance }) {
 
   const remaining = total - paid;
 
+  const mismatchByKey = {};
+  (data.mismatchReports || []).forEach(x => { if (x.status !== 'closed') mismatchByKey[`${x.source_type}:${x.source_id}`] = x; });
+  const misFlag = (type, id) => { const rep = mismatchByKey[`${type}:${String(id)}`]; return rep ? (rep.status === 'resolved' ? ' ✅ اصلاح شد' : ' ⚠️ مغایرت') : ''; };
+  const openMismatchFor = (type, id) => { const rep = mismatchByKey[`${type}:${String(id)}`]; return rep && rep.status !== 'resolved' ? rep : null; };
+  const liveDiffFor = row => {
+    if (!row) return null;
+    const inv = finance.invoices.find(x => String(x.operationalId) === String(row.id_f_khor));
+    if (!inv) return null;
+    const expected = Math.abs(Number(inv.basis === 'meter' ? row.metr_salon : row.w_salon) || 0);
+    const actual = Math.abs(Number(inv.quantity || 0));
+    return Math.abs(expected - actual) > 0.001 ? { inv, expected, actual } : null;
+  };
   const registeredNumbers = new Set(finance.invoices.map(x => String(x.number)));
 
-  const selectableRows = rows.filter(row => !registeredNumbers.has(String(row.shom_f_khor)) || String(row.shom_f_khor) === String(editingNumber));
+  const selectableRows = rows.filter(row => !registeredNumbers.has(String(row.shom_f_khor)) || String(row.shom_f_khor) === String(editingNumber) || !!openMismatchFor('operational_out_invoice', row.id_f_khor) || !!liveDiffFor(row));
 
   const customerNames = [...new Set((data.customers || []).map(row => row.name || row.mosh_name).filter(Boolean))];
 
@@ -3843,7 +4271,7 @@ function InvoicePage({ finance, setFinance }) {
 
     setEditingNumber('');
 
-    setSelected({ id_f_khor: '', shom_f_khor: shortId('FIN'), tarikh_f_khor: today(), mosh_f_khor: '', kala_name: '', metr_salon: '', w_salon: '', piece_count: '' });
+    setSelected({ id_f_khor: '', shom_f_khor: today().replace(/-/g, '') + String(Math.floor(Math.random() * 900) + 100), tarikh_f_khor: today(), mosh_f_khor: '', kala_name: '', metr_salon: '', w_salon: '', piece_count: '' });
 
     setPricingMode('sale');
 
@@ -3925,6 +4353,20 @@ function InvoicePage({ finance, setFinance }) {
 
     }
 
+    if (manualMode) {
+
+      const noStr = String(selected.shom_f_khor || '').trim();
+
+      if ((!editingNumber || noStr !== String(editingNumber)) && !/^\d+$/.test(noStr)) {
+
+        window.alert('شماره فاکتور باید فقط شامل ارقام باشد.');
+
+        return;
+
+      }
+
+    }
+
     if (!(Number(quantity || 0) > 0) || !(Number(total || 0) > 0)) {
 
       window.alert('مقدار و نرخ واحد باید بیشتر از صفر باشند.');
@@ -3938,6 +4380,48 @@ function InvoicePage({ finance, setFinance }) {
       window.alert('این شماره فاکتور قبلاً ثبت شده است.');
 
       return;
+
+    }
+
+    const srcMismatchId = manualMode ? '' : (selected ? selected.id_f_khor : '');
+
+    const mismatchNotice = (!manualMode && selected) ? (() => {
+
+      const opRow = (data.invoices || []).find(x => String(x.id_f_khor) === String(selected.id_f_khor));
+
+      if (!opRow) return null;
+
+      const expected = Math.abs(Number(basis === 'weight' ? opRow.w_salon : opRow.metr_salon) || 0);
+
+      const actual = Math.abs(Number(quantity || 0));
+
+      if (Math.abs(expected - actual) <= 0.001) return null;
+
+      return {
+
+        payload: { source_type: 'operational_out_invoice', source_id: String(selected.id_f_khor), invoice_no: String(selected.shom_f_khor || ''), invoice_kind: 'فاکتور خروج', title: 'مغایرت مقدار در فاکتور خروج', message: `مقدار ثبت‌شده در بخش مالی ${actual.toLocaleString('fa-IR')} در مقابل ${expected.toLocaleString('fa-IR')} در بخش عملیاتی است. لطفاً رکورد عملیاتی را بررسی و اصلاح کنید؛ پس از اصلاح، فاکتور اصلاح‌شده برای ثبت مجدد ارسال می‌شود.` },
+
+        message: `مقدار مالی ${actual.toLocaleString('fa-IR')} در مقابل مقدار عملیاتی ${expected.toLocaleString('fa-IR')} (مبنا: ${basis === 'weight' ? 'وزن' : 'متر'})`,
+
+      };
+
+    })() : null;
+
+    if (mismatchNotice) {
+
+      if (window.confirm(`مغایرت مقدار با رکورد عملیاتی (فاکتور خروج):\n${mismatchNotice.message}\n\nاعلان مغایرت به بخش عملیاتی ارسال شود؟`)) {
+
+        apiJSON('/operational/mismatch-reports', { method: 'POST', body: mismatchNotice.payload }).then(() => window.alert('اعلان مغایرت به بخش عملیاتی ارسال شد؛ پس از اصلاح رکورد در بخش عملیاتی، نسخه اصلاح‌شده برای ثبت مجدد نمایش داده می‌شود.')).catch(err => window.alert('ارسال اعلان مغایرت ناموفق بود: ' + ((err && err.message) || '')));
+
+      } else {
+
+        closeMismatchReportsForSource('operational_out_invoice', srcMismatchId);
+
+      }
+
+    } else if (!manualMode && selected) {
+
+      closeMismatchReportsForSource('operational_out_invoice', srcMismatchId);
 
     }
 
@@ -4161,7 +4645,7 @@ function InvoicePage({ finance, setFinance }) {
 
             <button key={row.id_f_khor} className={`w-full rounded-md border p-3 text-right ${!manualMode && selected?.id_f_khor === row.id_f_khor ? 'border-blue-500 bg-blue-950' : 'border-slate-700 bg-slate-900 hover:bg-slate-800'}`} onClick={() => { setManualMode(false); setEditingNumber(''); setSelected(row); }}>
 
-              <div className="flex justify-between gap-3"><strong>شماره {row.shom_f_khor}</strong><span className="text-sm text-slate-400">{row.tarikh_f_khor}</span></div>
+              <div className="flex justify-between gap-3"><strong>شماره {row.shom_f_khor}{misFlag('operational_out_invoice', row.id_f_khor) || (liveDiffFor(row) ? ' ⚠️ مغایرت مقدار' : '')}</strong><span className="text-sm text-slate-400">{row.tarikh_f_khor}</span></div>
 
               <div className="mt-2 text-sm text-slate-300">{row.mosh_f_khor}</div>
 
@@ -4193,9 +4677,9 @@ function InvoicePage({ finance, setFinance }) {
 
               <label className="text-sm text-slate-300">تاریخ<DateInput className="mt-2 w-full" value={selected.tarikh_f_khor || today()} onChange={e => updateSelected({ tarikh_f_khor: e.target.value })} /></label>
 
-              <label className="text-sm text-slate-300">شخص / مشتری<TextInput className="mt-2 w-full" list="manual-financial-customers" value={selected.mosh_f_khor || ''} onChange={e => updateSelected({ mosh_f_khor: e.target.value })} /><datalist id="manual-financial-customers">{customerNames.map(name => <option key={name} value={name} />)}</datalist></label>
+              <label className="text-sm text-slate-300">شخص / مشتری<div className="mt-2 flex items-end gap-2"><TextInput className="w-full" list="manual-financial-customers" value={selected.mosh_f_khor || ''} onChange={e => updateSelected({ mosh_f_khor: e.target.value })} /><button type="button" title="افزودن به اطلاعات اولیه" className="shrink-0 rounded-md border border-amber-700 bg-slate-900 px-3 py-2 text-amber-200 hover:border-amber-400" onClick={() => addLookupItem('/operational/customers', 'نام مشتری / شخص جدید:', name => { updateSelected({ mosh_f_khor: name }); refreshOperational(); })}>+</button></div><datalist id="manual-financial-customers">{customerNames.map(name => <option key={name} value={name} />)}</datalist></label>
 
-              <label className="text-sm text-slate-300">کالا یا خدمت<TextInput className="mt-2 w-full" list="manual-financial-items" value={selected.kala_name || ''} onChange={e => updateSelected({ kala_name: e.target.value })} /><datalist id="manual-financial-items">{itemNames.map(name => <option key={name} value={name} />)}</datalist></label>
+              <label className="text-sm text-slate-300">کالا یا خدمت<div className="mt-2 flex items-end gap-2"><TextInput className="w-full" list="manual-financial-items" value={selected.kala_name || ''} onChange={e => updateSelected({ kala_name: e.target.value })} /><button type="button" title="افزودن به اطلاعات اولیه" className="shrink-0 rounded-md border border-amber-700 bg-slate-900 px-3 py-2 text-amber-200 hover:border-amber-400" onClick={() => addLookupItem('/operational/kala-items', 'نام کالا / خدمت جدید:', name => { updateSelected({ kala_name: name }); refreshOperational(); })}>+</button></div><datalist id="manual-financial-items">{itemNames.map(name => <option key={name} value={name} />)}</datalist></label>
 
               <label className="text-sm text-slate-300">وزن<TextInput className="mt-2 w-full" type="number" min="0" step="0.001" value={selected.w_salon || ''} onChange={e => updateSelected({ w_salon: Number(e.target.value || 0) })} /></label>
 
@@ -4217,7 +4701,17 @@ function InvoicePage({ finance, setFinance }) {
 
             </div>}
 
-            <div className="grid grid-cols-6 gap-3">
+{(() => {
+              if (manualMode || !selected) return null;
+              const inv = finance.invoices.find(x => String(x.operationalId) === String(selected.id_f_khor));
+              if (!inv) return null;
+              const expected = Math.abs(Number(inv.basis === 'meter' ? selected.metr_salon : selected.w_salon) || 0);
+              const actual = Math.abs(Number(inv.quantity || 0));
+              if (Math.abs(expected - actual) <= 0.001) return <div className="rounded-md border border-emerald-800 bg-emerald-950 p-3 text-xs text-emerald-200">✅ فاکتور مالی ثبت‌شده ({inv.number}) با رکورد عملیاتی همخوان است.</div>;
+              const payload = { source_type: 'operational_out_invoice', source_id: String(selected.id_f_khor), invoice_no: String(inv.number || ''), invoice_kind: 'فاکتور خروج', title: 'مغایرت مقدار در فاکتور خروج', message: `فاکتور مالی شماره ${inv.number} با مقدار ${actual.toLocaleString('fa-IR')} در مقابل مقدار فعلی ${expected.toLocaleString('fa-IR')} در بخش عملیاتی است. لطفاً رکورد عملیاتی را بررسی و اصلاح کنید؛ پس از اصلاح، ردیف برای ثبت مجدد نمایش داده می‌شود.` };
+              return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm text-amber-100"><span>⚠️ مغایرت مقدار: فاکتور مالی {inv.number} = {actual.toLocaleString('fa-IR')} در مقابل عملیاتی {expected.toLocaleString('fa-IR')}</span><button type="button" className="rounded-md border border-amber-500 bg-amber-900 px-3 py-2 text-xs text-amber-100 hover:border-amber-300" onClick={() => apiJSON('/operational/mismatch-reports', { method: 'POST', body: payload }).then(() => window.alert('اعلان مغایرت به بخش عملیاتی ارسال شد؛ پس از اصلاح، ردیف برای ثبت مجدد نمایش داده می‌شود.')).catch(err => window.alert('ارسال اعلان ناموفق بود: ' + ((err && err.message) || '')))}>اعلان مغایرت به بخش عملیاتی</button></div>;
+            })()}
+                        <div className="grid grid-cols-6 gap-3">
 
               <label className="text-sm text-slate-300">نوع فاکتور<SelectInput className="mt-2 w-full" value={pricingMode} onChange={e => setPricingMode(e.target.value)}><option value="commission">اجرت بافت</option><option value="sale">فروش</option></SelectInput></label>
 
@@ -4436,7 +4930,7 @@ function PaymentLine({ payment, accounts, yarnItems, fabricItems, onChange, onRe
 
 function InventoryPage({ finance }) {
 
-  const { data, loading, error } = useOperationalData();
+  const { data, loading, error, refresh: refreshOperational } = useOperationalData();
 
   const [kindFilter, setKindFilter] = useState('summary');
 
@@ -4574,7 +5068,7 @@ function InventoryPage({ finance }) {
 
 function CostsPage({ finance, setFinance }) {
 
-  const { data, loading, error } = useOperationalData();
+  const { data, loading, error, refresh: refreshOperational } = useOperationalData();
 
   const [term, setTerm] = useState(() => {
     try {
@@ -4593,6 +5087,7 @@ function CostsPage({ finance, setFinance }) {
   const [sourceFilter, setSourceFilter] = useState('all');
 
   const [accountFilter, setAccountFilter] = useState('all');
+  const [partyFilter, setPartyFilter] = useState('all');
 
   const [fromDate, setFromDate] = useState('');
 
@@ -4656,14 +5151,16 @@ function CostsPage({ finance, setFinance }) {
   const subgroupOptions = [...new Set(allExpenseRows.filter(x => categoryFilter === 'all' || x.group === categoryFilter).map(x => x.subgroup).filter(Boolean))];
 
   const sourceOptions = [...new Set(allExpenseRows.map(x => x.source).filter(Boolean))];
+  const expensePartyName = x => String(x.payer || x.customer || x.counterpartyCandidate || '').trim();
+  const partyOptions = [...new Set(allExpenseRows.map(x => expensePartyName(x)).filter(Boolean))];
 
-  const rows = allExpenseRows.filter(x => matchesExpenseFilters(x, { term, group: categoryFilter, subgroup: subgroupFilter, source: sourceFilter, accountId: accountFilter, fromDate, toDate }));
+  const rows = allExpenseRows.filter(x => (partyFilter === 'all' || expensePartyName(x) === partyFilter) && matchesExpenseFilters(x, { term, group: categoryFilter, subgroup: subgroupFilter, source: sourceFilter, accountId: accountFilter, fromDate, toDate }));
 
   const total = rows.reduce((s, x) => s + Number(x.amount || 0), 0);
 
   const printCosts = () => {
 
-    const html = `<p>منبع: ${sourceFilter === 'all' ? 'همه' : sourceFilter} | گروه: ${categoryFilter === 'all' ? 'همه' : categoryFilter} | زیرگروه: ${subgroupFilter === 'all' ? 'همه' : subgroupFilter} | حساب: ${accountFilter === 'all' ? 'همه' : finance.accounts.find(a => a.id === accountFilter)?.name || '-'} | از تاریخ: ${toJalali(fromDate) || '-'} | تا تاریخ: ${toJalali(toDate) || '-'}</p><table><thead><tr><th>منبع</th><th>تاریخ</th><th>شناسه سند</th><th>گروه</th><th>زیرگروه</th><th>مبلغ</th><th>توضیحات</th></tr></thead><tbody>${rows.map(x => `<tr><td>${x.source}</td><td>${expenseDisplayDate(x)}</td><td>${expenseTraceId(x) || '-'}</td><td>${expenseGroup(x)}</td><td>${expenseSubgroup(x)}</td><td>${money(x.amount)}</td><td>${x.description || ''}</td></tr>`).join('')}</tbody></table>`;
+    const html = `<p>منبع: ${sourceFilter === 'all' ? 'همه' : sourceFilter} | گروه: ${categoryFilter === 'all' ? 'همه' : categoryFilter} | زیرگروه: ${subgroupFilter === 'all' ? 'همه' : subgroupFilter} | حساب: ${accountFilter === 'all' ? 'همه' : finance.accounts.find(a => a.id === accountFilter)?.name || '-'} | از تاریخ: ${toJalali(fromDate) || '-'} | تا تاریخ: ${toJalali(toDate) || '-'}</p><table><thead><tr><th>منبع</th><th>تاریخ</th><th>شناسه سند</th><th>گروه</th><th>زیرگروه</th><th>طرف حساب</th><th>مبلغ</th><th>توضیحات</th></tr></thead><tbody>${rows.map(x => `<tr><td>${x.source}</td><td>${expenseDisplayDate(x)}</td><td>${expenseTraceId(x) || '-'}</td><td>${expenseGroup(x)}</td><td>${expenseSubgroup(x)}</td><td>${expensePartyName(x) || '-'}</td><td>${money(x.amount)}</td><td>${x.description || ''}</td></tr>`).join('')}</tbody></table>`;
 
     printSection('گزارش هزينه ها', html);
 
@@ -4851,7 +5348,7 @@ function CostsPage({ finance, setFinance }) {
 
       </Card>
 
-      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ليست هزينه ها</h3><div className="flex flex-wrap gap-2"><SelectInput value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}><option value="all">همه منابع</option>{sourceOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={categoryFilter} onChange={e => { setCategoryFilter(e.target.value); setSubgroupFilter('all'); }}><option value="all">همه گروه‌ها</option>{groupOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={subgroupFilter} onChange={e => setSubgroupFilter(e.target.value)}><option value="all">همه زیرگروه‌ها</option>{subgroupOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={accountFilter} onChange={e => setAccountFilter(e.target.value)}><option value="all">همه بانک/صندوق</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><DateInput value={fromDate} onChange={e => setFromDate(e.target.value)} /><DateInput value={toDate} onChange={e => setToDate(e.target.value)} /><TextInput placeholder="جستجو در گروه، زیرگروه یا شناسه سند" value={term} onChange={e => setTerm(e.target.value)} />{term && <GhostButton onClick={() => setTerm('')}>پاک کردن جستجو</GhostButton>}<PrimaryButton onClick={printCosts}>چاپ</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش هزینه‌ها', rows.map(row => ({ ...row, display_date: expenseDisplayDate(row), trace_id: expenseTraceId(row), group_name: expenseGroup(row), subgroup_name: expenseSubgroup(row) })), [['source','منبع'],['display_date','تاریخ'],['trace_id','شناسه سند'],['group_name','گروه'],['subgroup_name','زیرگروه'],['amount','مبلغ'],['description','توضیحات']], { label: 'جمع کل', amount: total })}>خروجی اکسل</PrimaryButton></div></div>{loading && <p className="text-sm text-slate-400">در حال دريافت...</p>}{error ? <ErrorBox message={error} /> : <ExpensesTable rows={rows} onEdit={editExpense} onDelete={deleteExpense} onImport={importOperationalExpense} highlightTrace={term} />}</Card>
+      <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">ليست هزينه ها</h3><div className="flex flex-wrap gap-2"><SelectInput value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}><option value="all">همه منابع</option>{sourceOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={categoryFilter} onChange={e => { setCategoryFilter(e.target.value); setSubgroupFilter('all'); }}><option value="all">همه گروه‌ها</option>{groupOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={subgroupFilter} onChange={e => setSubgroupFilter(e.target.value)}><option value="all">همه زیرگروه‌ها</option>{subgroupOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={accountFilter} onChange={e => setAccountFilter(e.target.value)}><option value="all">همه بانک/صندوق</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><SelectInput value={partyFilter} onChange={e => setPartyFilter(e.target.value)}><option value="all">همه طرف حساب‌ها</option>{partyOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><DateInput value={fromDate} onChange={e => setFromDate(e.target.value)} /><DateInput value={toDate} onChange={e => setToDate(e.target.value)} /><TextInput placeholder="جستجو در گروه، زیرگروه یا شناسه سند" value={term} onChange={e => setTerm(e.target.value)} />{term && <GhostButton onClick={() => setTerm('')}>پاک کردن جستجو</GhostButton>}<PrimaryButton onClick={printCosts}>چاپ</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش هزینه‌ها', rows.map(row => ({ ...row, display_date: expenseDisplayDate(row), trace_id: expenseTraceId(row), group_name: expenseGroup(row), subgroup_name: expenseSubgroup(row), party_name: expensePartyName(row) })), [['source','منبع'],['display_date','تاریخ'],['trace_id','شناسه سند'],['group_name','گروه'],['subgroup_name','زیرگروه'],['party_name','طرف حساب'],['amount','مبلغ'],['description','توضیحات']], { label: 'جمع کل', amount: total })}>خروجی اکسل</PrimaryButton></div></div>{loading && <p className="text-sm text-slate-400">در حال دريافت...</p>}{error ? <ErrorBox message={error} /> : <ExpensesTable rows={rows} onEdit={editExpense} onDelete={deleteExpense} onImport={importOperationalExpense} highlightTrace={term} />}</Card>
 
     </div>
 
@@ -5287,10 +5784,14 @@ function ProfessionalBankCashPage({ finance, setFinance, onGo }) {
   const { data } = useOperationalData();
   const [account, setAccount] = useState({ name: '', type: 'بانک', opening: 0 });
   const [movement, setMovement] = useState({ accountId: finance.accounts[0]?.id || '', counterAccountId: '', date: today(), direction: 'in', transactionType: 'customer_receipt', amount: '', payer: '', trackingNo: '', description: '' });
-  const [filters, setFilters] = useState({ accountId: 'all', reconciled: 'all', fromDate: '', toDate: '', traceId: '' });
+  const [filters, setFilters] = useState({ accountId: 'all', reconciled: 'all', fromDate: '', toDate: '', traceId: '', counterparty: 'all', nature: 'all' });
   const [pendingCounterparties, setPendingCounterparties] = useState({});
   const [typedLedger, setTypedLedger] = useState([]);
   const [typedLedgerError, setTypedLedgerError] = useState('');
+  const [typedLedgerFilters, setTypedLedgerFilters] = useState({ party: 'all', nature: 'all' });
+  const typedLedgerParties = [...new Set(typedLedger.map(r => String(r.party_name || '').trim()).filter(Boolean))];
+  const typedLedgerNatureKeys = [...new Set(typedLedger.map(r => r.transaction_type).filter(Boolean))];
+  const typedLedgerRows = typedLedger.filter(r => (typedLedgerFilters.party === 'all' || String(r.party_name || '').trim() === typedLedgerFilters.party) && (typedLedgerFilters.nature === 'all' || r.transaction_type === typedLedgerFilters.nature));
   useEffect(() => {
     let cancelled = false;
     apiJSON('/v1/financial/transactions?limit=1000')
@@ -5356,10 +5857,14 @@ function ProfessionalBankCashPage({ finance, setFinance, onGo }) {
     .filter(row => (
       (filters.accountId === 'all' || row.accountId === filters.accountId)
       && (filters.reconciled === 'all' || String(Boolean(row.reconciled)) === filters.reconciled)
+      && (filters.counterparty === 'all' || [row.confirmedCounterparty, row.counterpartyCandidate, row.payer, row.customer].filter(Boolean).map(n => String(n).trim()).includes(filters.counterparty))
+      && (filters.nature === 'all' || (row.typedType || row.transactionType) === filters.nature)
       && (!filters.traceId || String(row.expenseTraceId || '').includes(String(filters.traceId)) || String(row.sourceExpense || '').includes(String(filters.traceId)))
       && isDateWithinInclusiveRange(jalaliSortKey(row.date), jalaliSortKey(filters.fromDate), jalaliSortKey(filters.toDate))
     ))
     .sort((a, b) => jalaliSortKey(b.date).localeCompare(jalaliSortKey(a.date)) || String(b.id || '').localeCompare(String(a.id || '')));
+  const bankCounterpartyOptions = [...new Set(finance.movements.flatMap(x => [confirmedMovementCounterparty(x), x.counterpartyCandidate, x.payer, x.customer]).map(n => String(n || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'fa'));
+  const bankNatureOptions = [...new Set(finance.movements.map(x => x.typedType || x.transactionType).filter(Boolean))];
   const typeLabels = { customer_receipt: 'دریافت از مشتری', supplier_payment: 'پرداخت به فروشنده', transfer: 'انتقال بین حساب‌ها', expense: 'پرداخت هزینه', other_income: 'سایر درآمد', capital: 'آورده/برداشت سرمایه' };
   const movementTypeLabel = row => typedTransactionLabels[row.typedType] || typeLabels[row.transactionType] || row.direction;
   const counterpartyText = row => movementCounterpartyLabel(row);
@@ -5379,12 +5884,12 @@ function ProfessionalBankCashPage({ finance, setFinance, onGo }) {
       <TextInput placeholder="شماره رهگیری" value={movement.trackingNo} onChange={e => setMovement({ ...movement, trackingNo: e.target.value })} />
       <TextInput placeholder="شرح" value={movement.description} onChange={e => setMovement({ ...movement, description: e.target.value })} />
       <PrimaryButton type="submit">ثبت گردش</PrimaryButton>
-    </form><div className="mt-3 rounded-md border border-blue-800 bg-blue-950 p-3 text-xs text-blue-100">فیلد طرف حساب فقط برای ماهیت‌های «دریافت از مشتری» و «پرداخت به فروشنده» الزامی است؛ هزینه مستقیم و سایر درآمدها طرف حساب ندارند. نام‌های دریافتی از حسابیار تا زمان تأیید کاربر در گزارش و مانده اشخاص اعمال نمی‌شوند.</div></Card>
-    <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گردش و مغایرت‌گیری بانک و صندوق</h3><div className="flex flex-wrap items-end gap-2"><SelectInput value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })}><option value="all">همه حساب‌ها</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><SelectInput value={filters.reconciled} onChange={e => setFilters({ ...filters, reconciled: e.target.value })}><option value="all">همه وضعیت‌ها</option><option value="false">تطبیق‌نشده</option><option value="true">تطبیق‌شده</option></SelectInput><TextInput placeholder="شناسه سند هزینه" value={filters.traceId} onChange={e => setFilters({ ...filters, traceId: e.target.value })} /><label className="text-xs text-slate-300"><span className="mb-1 block">از تاریخ</span><DateInput value={filters.fromDate} onChange={e => setFilters({ ...filters, fromDate: e.target.value })} /></label><label className="text-xs text-slate-300"><span className="mb-1 block">تا تاریخ</span><DateInput value={filters.toDate} onChange={e => setFilters({ ...filters, toDate: e.target.value })} /></label><PrimaryButton onClick={printMovements}>چاپ صورت حساب</PrimaryButton><PrimaryButton onClick={() => exportExcel('گردش بانک و صندوق', rows.map(row => ({ ...row, counterparty_text: counterpartyText(row), transaction_text: typedTransactionLabels[row.typedType] || typeLabels[row.transactionType] || row.direction, expense_trace: row.expenseTraceId || '', reconciled_text: row.reconciled ? 'تطبیق شد' : 'باز' })), [['date','تاریخ'],['accountName','حساب'],['transaction_text','ماهیت'],['counterparty_text','طرف حساب'],['amount','مبلغ'],['trackingNo','رهگیری'],['expense_trace','شناسه سند هزینه'],['reconciled_text','تطبیق']])}>خروجی اکسل</PrimaryButton></div></div>
+    </form><div className="mt-3 rounded-md border border-blue-800 bg-blue-950 p-3 text-xs text-blue-100">فیلد طرف حساب فقط برای ماهیت‌های «دریافت از مشتری» و «پرداخت به فروشنده» الزامی است؛ برای سایر ماهیت‌ها (حقوق کارمند، وام، سایر درآمد و...) ثبت طرف حساب اختیاری است. نام طرف حساب دریافتی از حسابیار و پیشنهاد سیستم نمایش داده می‌شود و در جدول زیر می‌توانید بر اساس آن فیلتر کنید.</div></Card>
+    <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گردش و مغایرت‌گیری بانک و صندوق</h3><div className="flex flex-wrap items-end gap-2"><SelectInput value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })}><option value="all">همه حساب‌ها</option>{finance.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput><SelectInput value={filters.reconciled} onChange={e => setFilters({ ...filters, reconciled: e.target.value })}><option value="all">همه وضعیت‌ها</option><option value="false">تطبیق‌نشده</option><option value="true">تطبیق‌شده</option></SelectInput><SelectInput value={filters.counterparty} onChange={e => setFilters({ ...filters, counterparty: e.target.value })}><option value="all">همه طرف حساب‌ها</option>{bankCounterpartyOptions.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><SelectInput value={filters.nature} onChange={e => setFilters({ ...filters, nature: e.target.value })}><option value="all">همه ماهیت‌ها</option>{bankNatureOptions.map(k => <option key={k} value={k}>{typedTransactionLabels[k] || typeLabels[k] || k}</option>)}</SelectInput><TextInput placeholder="شناسه سند هزینه" value={filters.traceId} onChange={e => setFilters({ ...filters, traceId: e.target.value })} /><label className="text-xs text-slate-300"><span className="mb-1 block">از تاریخ</span><DateInput value={filters.fromDate} onChange={e => setFilters({ ...filters, fromDate: e.target.value })} /></label><label className="text-xs text-slate-300"><span className="mb-1 block">تا تاریخ</span><DateInput value={filters.toDate} onChange={e => setFilters({ ...filters, toDate: e.target.value })} /></label><PrimaryButton onClick={printMovements}>چاپ صورت حساب</PrimaryButton><PrimaryButton onClick={() => exportExcel('گردش بانک و صندوق', rows.map(row => ({ ...row, counterparty_text: counterpartyText(row), transaction_text: typedTransactionLabels[row.typedType] || typeLabels[row.transactionType] || row.direction, expense_trace: row.expenseTraceId || '', reconciled_text: row.reconciled ? 'تطبیق شد' : 'باز' })), [['date','تاریخ'],['accountName','حساب'],['transaction_text','ماهیت'],['counterparty_text','طرف حساب'],['amount','مبلغ'],['trackingNo','رهگیری'],['expense_trace','شناسه سند هزینه'],['reconciled_text','تطبیق']])}>خروجی اکسل</PrimaryButton></div></div>
       <div className="overflow-auto"><table className="w-full text-right text-sm"><thead><tr className="border-b border-slate-700 text-slate-300"><th className="p-3">تاریخ</th><th>حساب</th><th>ماهیت</th><th>طرف حساب</th><th>مبلغ</th><th>رهگیری</th><th>سند هزینه</th><th>وضعیت تطبیق</th></tr></thead><tbody>{rows.map(row => <tr key={row.id} className="border-b border-slate-800"><td className="p-3">{toJalali(row.date)}</td><td>{row.accountName}{row.transactionType === 'transfer' ? ` ← ${row.counterAccountName}` : ''}</td><td>{movementTypeLabel(row)}</td><td className="min-w-[280px]">{movementNeedsCounterparty(row) ? (row.confirmedCounterparty ? <div className="flex items-center gap-2"><span>{row.confirmedCounterparty}</span><GhostButton onClick={() => reopenCounterparty(row.id)}>اصلاح</GhostButton></div> : <div className="flex flex-wrap items-center gap-2"><span className="text-amber-300">{counterpartyText(row)}</span><SelectInput value={pendingCounterpartyValue(row)} onChange={e => setPendingCounterparties(prev => ({ ...prev, [row.id]: e.target.value }))}><option value="">انتخاب طرف حساب</option>{row.counterpartyCandidate && !customers.includes(row.counterpartyCandidate) && <option value={row.counterpartyCandidate}>{row.counterpartyCandidate}</option>}{customers.map(name => <option key={name} value={name}>{name}</option>)}</SelectInput><PrimaryButton disabled={!pendingCounterpartyValue(row)} onClick={() => confirmCounterparty(row.id)}>تأیید</PrimaryButton></div>) : <span className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-xs text-slate-300">{counterpartyText(row)}</span>}</td><td>{money(row.amount)}</td><td>{row.trackingNo || '-'}</td><td>{row.expenseTraceId ? <div className="flex flex-wrap items-center gap-2"><span className="rounded-full border border-blue-800 bg-blue-950 px-3 py-1 text-xs text-blue-100">{row.expenseTraceId}</span><GhostButton onClick={() => goToExpense(row)}>مشاهده هزینه</GhostButton></div> : '-'}</td><td><GhostButton onClick={() => setReconciled(row.id)} disabled={movementNeedsCounterparty(row) && !row.confirmedCounterparty}>{row.reconciled ? 'تطبیق شده' : 'علامت تطبیق'}</GhostButton></td></tr>)}</tbody></table></div>
     </Card>
-    <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">دفتر مرکزی تراکنش‌های بانکی (ماهیت‌محور)</h3><span className="text-xs text-slate-400">دریافت‌شده از حسابیار و ثبت‌های سیستمی، بر اساس ماهیت حسابداری</span></div>
-      {typedLedgerError ? <div className="rounded-md border border-amber-700 bg-amber-950 p-3 text-xs text-amber-100">دفتر مرکزی در دسترس نیست: {typedLedgerError}</div> : <div className="overflow-auto"><table className="w-full text-right text-sm"><thead><tr className="border-b border-slate-700 text-slate-300"><th className="p-3">تاریخ</th><th>حساب</th><th>ورودی/خروجی</th><th>ماهیت</th><th>مبلغ</th><th>طرف حساب</th><th>منبع</th><th>وضعیت</th></tr></thead><tbody>{typedLedger.map(row => <tr key={row.id} className="border-b border-slate-800"><td className="p-3">{toJalali(row.transaction_date)}</td><td>{row.bank_account_name || '-'}</td><td>{row.direction === 'IN' ? <span className="text-emerald-300">ورودی</span> : <span className="text-rose-300">خروجی</span>}</td><td>{typedTransactionLabels[row.transaction_type] || row.transaction_type}</td><td>{money(row.amount)}</td><td>{row.party_name ? row.party_name : typedLedgerPartyRequired.has(row.transaction_type) ? <span className="text-amber-300">{typedLedgerCounterpartyLabel(row)}</span> : typedLedgerCounterpartyLabel(row)}</td><td>{typedSourceLabels[row.source] || row.source}</td><td>{row.posting_status === 'NEEDS_REVIEW' ? <span className="text-amber-300">نیازمند بررسی</span> : <span className="text-slate-300">{row.status === 'VOIDED' ? 'ابطال‌شده' : 'ثبت‌شده'}</span>}</td></tr>)}</tbody></table></div>}
+    <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">دفتر مرکزی تراکنش‌های بانکی (ماهیت‌محور)</h3><span className="text-xs text-slate-400">دریافت‌شده از حسابیار و ثبت‌های سیستمی، بر اساس ماهیت حسابداری</span><div className="flex flex-wrap gap-2"><SelectInput value={typedLedgerFilters.party} onChange={e => setTypedLedgerFilters({ ...typedLedgerFilters, party: e.target.value })}><option value="all">همه طرف حساب‌ها</option>{typedLedgerParties.map(n => <option key={n} value={n}>{n}</option>)}</SelectInput><SelectInput value={typedLedgerFilters.nature} onChange={e => setTypedLedgerFilters({ ...typedLedgerFilters, nature: e.target.value })}><option value="all">همه ماهیت‌ها</option>{typedLedgerNatureKeys.map(k => <option key={k} value={k}>{typedTransactionLabels[k] || k}</option>)}</SelectInput></div></div>
+      {typedLedgerError ? <div className="rounded-md border border-amber-700 bg-amber-950 p-3 text-xs text-amber-100">دفتر مرکزی در دسترس نیست: {typedLedgerError}</div> : <div className="overflow-auto"><table className="w-full text-right text-sm"><thead><tr className="border-b border-slate-700 text-slate-300"><th className="p-3">تاریخ</th><th>حساب</th><th>ورودی/خروجی</th><th>ماهیت</th><th>مبلغ</th><th>طرف حساب</th><th>منبع</th><th>وضعیت</th></tr></thead><tbody>{typedLedgerRows.map(row => <tr key={row.id} className="border-b border-slate-800"><td className="p-3">{toJalali(row.transaction_date)}</td><td>{row.bank_account_name || '-'}</td><td>{row.direction === 'IN' ? <span className="text-emerald-300">ورودی</span> : <span className="text-rose-300">خروجی</span>}</td><td>{typedTransactionLabels[row.transaction_type] || row.transaction_type}</td><td>{money(row.amount)}</td><td>{row.party_name ? row.party_name : typedLedgerPartyRequired.has(row.transaction_type) ? <span className="text-amber-300">{typedLedgerCounterpartyLabel(row)}</span> : typedLedgerCounterpartyLabel(row)}</td><td>{typedSourceLabels[row.source] || row.source}</td><td>{row.posting_status === 'NEEDS_REVIEW' ? <span className="text-amber-300">نیازمند بررسی</span> : <span className="text-slate-300">{row.status === 'VOIDED' ? 'ابطال‌شده' : 'ثبت‌شده'}</span>}</td></tr>)}</tbody></table></div>}
     </Card>
   </div>;
 }
@@ -5477,7 +5982,7 @@ function ReportsPage({ finance, setFinance }) {
 
     ...finance.incomingInvoices.map(row => ({ type: row.nonFinancial ? 'فاکتور ورود اماني' : 'فاکتور ورود', invoice_no: row.id, date: row.date, customer: row.customer, item: row.itemName, pricing_basis: row.inventoryType === 'yarn' ? 'نخ' : row.inventoryType === 'fabric' ? 'پارچه' : 'ساير', quantity: row.quantity, unit_price: row.unitPrice, total: row.nonFinancial ? 0 : row.amount, paid: row.nonFinancial ? 0 : (row.payments || []).filter(p => p.type !== 'credit').reduce((s, p) => s + Number(p.amount || 0), 0), debt: row.nonFinancial ? 0 : -(row.payments || []).filter(p => p.type === 'credit').reduce((s, p) => s + Number(p.amount || 0), 0), inventory_value: row.nonFinancial ? row.amount : '' })),
 
-    ...finance.movements.map(row => ({ type: 'گردش بانک/صندوق', invoice_no: row.sourceIncomingInvoice || row.sourceInvoice || row.id, date: row.date, customer: confirmedMovementCounterparty(row) || (row.transactionType === 'transfer' ? '-' : 'تأیید نشده'), item: row.description || '-', pricing_basis: row.direction === 'in' ? 'واريز' : 'برداشت', quantity: '', unit_price: '', total: row.direction === 'in' ? Number(row.amount || 0) : -Number(row.amount || 0), paid: Number(row.amount || 0), debt: 0 })),
+    ...finance.movements.map(row => ({ type: 'گردش بانک/صندوق', invoice_no: row.sourceIncomingInvoice || row.sourceInvoice || row.id, date: row.date, customer: confirmedMovementCounterparty(row) || String(row.counterpartyCandidate || '').trim() || (row.transactionType === 'transfer' ? '-' : 'تأیید نشده'), item: row.description || '-', pricing_basis: row.direction === 'in' ? 'واريز' : 'برداشت', quantity: '', unit_price: '', total: row.direction === 'in' ? Number(row.amount || 0) : -Number(row.amount || 0), paid: Number(row.amount || 0), debt: 0 })),
 
     ...finance.receivableDocs.map(row => ({ type: row.assignedTo ? 'واگذاري چک دريافتي' : 'چک دريافتي', invoice_no: row.checkNo || row.id, date: row.assignedAt || row.dueDate || '', customer: row.assignedTo || row.customer || '-', item: row.customer ? 'از ' + row.customer : '-', pricing_basis: statusLabel(row.status), quantity: '', unit_price: '', total: Number(row.amount || 0), paid: row.status === 'cleared' ? Number(row.amount || 0) : 0, debt: row.assignedTo ? Number(row.amount || 0) : 0 })),
 
@@ -5563,7 +6068,7 @@ function TaxReportPage({ finance }) {
 
     ...purchases.map(x => ({ type: 'خريد/ورود', invoice_no: x.id, date: x.date, party: x.customer, description: x.itemName, taxable_amount: x.taxable ? Number(x.subtotal ?? x.amount ?? 0) : 0, vat: Number(x.taxAmount || 0), total: Number(x.amount || 0) })),
 
-    ...expenses.map(x => ({ type: 'هزينه', invoice_no: x.id, date: x.date, party: '-', description: `${expenseGroup(x)} / ${expenseSubgroup(x)}`, taxable_amount: x.taxable ? Number(x.subtotal ?? x.amount ?? 0) : 0, vat: Number(x.taxAmount || 0), total: Number(x.amount || 0) })),
+    ...expenses.map(x => ({ type: 'هزينه', invoice_no: x.id, date: x.date, party: String(x.payer || x.customer || x.counterpartyCandidate || '') || '-', description: `${expenseGroup(x)} / ${expenseSubgroup(x)}`, taxable_amount: x.taxable ? Number(x.subtotal ?? x.amount ?? 0) : 0, vat: Number(x.taxAmount || 0), total: Number(x.amount || 0) })),
 
   ].sort((a, b) => String(a.date).localeCompare(String(b.date)));
 
@@ -5585,7 +6090,7 @@ function TaxReportPage({ finance }) {
 
 function CreditPage({ finance }) {
 
-  const { data, loading, error } = useOperationalData();
+  const { data, loading, error, refresh: refreshOperational } = useOperationalData();
 
   const customers = [...new Set([...data.invoices.map(x => x.mosh_f_khor), ...finance.invoices.map(x => x.customer), ...finance.incomingInvoices.map(x => x.customer), ...(finance.yarnOutInvoices || []).map(x => x.customer), ...finance.receivableDocs.map(x => x.customer), ...finance.receivableDocs.map(x => x.assignedTo), ...finance.payableDocs.map(x => x.customer), ...finance.movements.map(confirmedMovementCounterparty), ...(finance.openingBalances || []).map(x => x.customer)].filter(Boolean))];
 
@@ -5963,7 +6468,7 @@ function ExpensesTable({ rows, onEdit, onDelete, onImport, highlightTrace = '' }
 
   return (
 
-    <div className="overflow-auto"><table className="w-full border-collapse text-sm"><thead><tr className="border-b border-slate-700 text-slate-400"><th className="p-3 text-right">منبع</th><th className="p-3 text-right">تاریخ</th><th className="p-3 text-right">شناسه سند</th><th className="p-3 text-right">گروه</th><th className="p-3 text-right">زیرگروه</th><th className="p-3 text-right">مبلغ</th><th className="p-3 text-right">توضیحات</th><th className="p-3 text-right">عملیات</th></tr></thead><tbody>{rows.map(row => { const traceId = expenseTraceId(row); const isHighlighted = highlightTrace && matchesExpenseTrace(row, highlightTrace); return <tr key={`${row.source}-${row.id}`} className={`border-b border-slate-800 ${isHighlighted ? 'bg-blue-950/50' : ''}`}><td className="p-3">{row.source}</td><td className="p-3 whitespace-nowrap">{expenseDisplayDate(row)}</td><td className="p-3"><span className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-xs text-blue-100">{traceId || '-'}</span></td><td className="p-3 font-bold text-blue-200">{expenseGroup(row)}</td><td className="p-3">{expenseSubgroup(row)}</td><td className="p-3 font-bold text-red-200">{money(row.amount)}</td><td className="p-3 text-slate-400">{row.description || '-'}</td><td className="p-3">{row.financialRecord ? <div className="flex gap-2"><GhostButton onClick={() => onEdit(row)}>ویرایش</GhostButton><DangerButton onClick={() => onDelete(row.id)}>حذف</DangerButton></div> : <PrimaryButton onClick={() => onImport(row)}>ثبت در مالی</PrimaryButton>}</td></tr>; })}</tbody></table></div>
+    <div className="overflow-auto"><table className="w-full border-collapse text-sm"><thead><tr className="border-b border-slate-700 text-slate-400"><th className="p-3 text-right">منبع</th><th className="p-3 text-right">تاریخ</th><th className="p-3 text-right">شناسه سند</th><th className="p-3 text-right">گروه</th><th className="p-3 text-right">زیرگروه</th><th className="p-3 text-right">طرف حساب</th><th className="p-3 text-right">مبلغ</th><th className="p-3 text-right">توضیحات</th><th className="p-3 text-right">عملیات</th></tr></thead><tbody>{rows.map(row => { const traceId = expenseTraceId(row); const isHighlighted = highlightTrace && matchesExpenseTrace(row, highlightTrace); return <tr key={`${row.source}-${row.id}`} className={`border-b border-slate-800 ${isHighlighted ? 'bg-blue-950/50' : ''}`}><td className="p-3">{row.source}</td><td className="p-3 whitespace-nowrap">{expenseDisplayDate(row)}</td><td className="p-3"><span className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-xs text-blue-100">{traceId || '-'}</span></td><td className="p-3 font-bold text-blue-200">{expenseGroup(row)}</td><td className="p-3">{expenseSubgroup(row)}</td><td className="p-3 text-slate-300">{String(row.payer || row.customer || row.counterpartyCandidate || '') || '-'}</td><td className="p-3 font-bold text-red-200">{money(row.amount)}</td><td className="p-3 text-slate-400">{row.description || '-'}</td><td className="p-3">{row.financialRecord ? <div className="flex gap-2"><GhostButton onClick={() => onEdit(row)}>ویرایش</GhostButton><DangerButton onClick={() => onDelete(row.id)}>حذف</DangerButton></div> : <PrimaryButton onClick={() => onImport(row)}>ثبت در مالی</PrimaryButton>}</td></tr>; })}</tbody></table></div>
 
   );
 

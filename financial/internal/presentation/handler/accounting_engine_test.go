@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/erpsystem/textile-erp/internal/application/financecore"
 	"github.com/erpsystem/textile-erp/internal/platform/requestctx"
 )
 
@@ -161,4 +162,68 @@ func mustLedgerEntry(t *testing.T, state map[string]any, key string) ledgerEntry
 		t.Fatalf("ledger entry %s was not derived", key)
 	}
 	return entry
+}
+
+func TestSyncLedgerSkipsUnconvertibleDates(t *testing.T) {
+	state := testWorkspace(t, `{
+		"accounts":[{"id":"bank-main","name":"بانک اصلی","type":"بانک","opening":0}],
+		"invoices":[
+			{"id":"sale-1","number":"1001","date":"2026-07-22","customer":"مشتری الف","item":"پارچه","total":100000,"payments":[{"id":"p1","type":"credit","amount":100000}]},
+			{"id":"sale-2","number":"1002","date":"1405/06/00","customer":"مشتری ب","item":"نخ","total":50000,"payments":[{"id":"p2","type":"credit","amount":50000}]}
+		]
+	}`)
+	newEntries, err := deriveWorkspaceLedger(state)
+	if err != nil {
+		t.Fatalf("derive failed: %v", err)
+	}
+	for key, entry := range newEntries {
+		parsed, dateErr := financecore.AccountingDate(entry.Date)
+		if dateErr != nil {
+			delete(newEntries, key)
+			continue
+		}
+		entry.Date = parsed.Format("2006-01-02")
+	}
+	if _, exists := newEntries["sale:sale-1"]; !exists {
+		t.Fatal("valid sale voucher missing")
+	}
+	for key := range newEntries {
+		if key == "sale:sale-2" {
+			t.Fatal("broken-date sale voucher should have been skipped")
+		}
+	}
+	findings := supervisorStateFindings(state)
+	found := false
+	for _, f := range findings {
+		if f.ID == "doc-date:invoices:invoices:sale-2" {
+			found = true
+			if f.Severity != "warning" {
+				t.Fatalf("doc-date finding should be warning, got %s", f.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("doc-date finding for broken-date sale missing")
+	}
+}
+
+func TestSyncLedgerConvertsJalaliDates(t *testing.T) {
+	state := testWorkspace(t, `{
+		"expenses":[{"id":"exp-1","date":"1405/06/12","amount":100000,"accountId":"bank-main","group":"عمومی","subgroup":"متفرقه"}]
+	}`)
+	entries, err := deriveWorkspaceLedger(state)
+	if err != nil {
+		t.Fatalf("derive failed: %v", err)
+	}
+	entry, ok := entries["expense:exp-1"]
+	if !ok {
+		t.Fatal("expense voucher missing")
+	}
+	parsed, err := financecore.AccountingDate(entry.Date)
+	if err != nil {
+		t.Fatalf("jalali expense date should convert: %v", err)
+	}
+	if got := parsed.Format("2006-01-02"); got != "2026-09-03" {
+		t.Fatalf("jalali 1405/06/12 = gregorian 2026-09-03, got %s", got)
+	}
 }
