@@ -3300,9 +3300,14 @@ func (a *app) expenses(w http.ResponseWriter, r *http.Request) {
 }
 
 // financialAccountsCache caches the financial workspace account list so the
-// expense form does not re-read the workspace JSON on every tab open.
-var financialAccountsCache struct {
-	mu       sync.Mutex
+// expense form does not re-read the workspace JSON on every tab open. It is
+// keyed by company because the tenant registry can hold several companies.
+var financialAccountsCache = struct {
+	mu      sync.Mutex
+	entries map[int64]cachedFinancialAccounts
+}{entries: map[int64]cachedFinancialAccounts{}}
+
+type cachedFinancialAccounts struct {
 	accounts []map[string]any
 	fetched  time.Time
 }
@@ -3316,23 +3321,36 @@ func (a *app) financialAccounts(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	sessionCompanyID, sessionSchema := int64(0), ""
+	if session, ok := a.currentSession(r); ok {
+		sessionCompanyID, sessionSchema = session.CompanyID, session.Schema
+	}
 	financialAccountsCache.mu.Lock()
 	defer financialAccountsCache.mu.Unlock()
 	if a.dialect != "postgres" {
 		writeJSON(w, map[string]any{"accounts": []any{}})
 		return
 	}
-	if time.Since(financialAccountsCache.fetched) > time.Minute || financialAccountsCache.accounts == nil {
-		financialAccountsCache.accounts = a.loadFinancialAccounts()
-		financialAccountsCache.fetched = time.Now()
+	cached, ok := financialAccountsCache.entries[sessionCompanyID]
+	if !ok || time.Since(cached.fetched) > time.Minute {
+		cached = cachedFinancialAccounts{accounts: a.loadFinancialAccounts(sessionCompanyID, sessionSchema), fetched: time.Now()}
+		financialAccountsCache.entries[sessionCompanyID] = cached
 	}
-	writeJSON(w, map[string]any{"accounts": financialAccountsCache.accounts})
+	writeJSON(w, map[string]any{"accounts": cached.accounts})
 }
 
-func (a *app) loadFinancialAccounts() []map[string]any {
-	companyID := int64(0)
-	if err := a.db.QueryRow(`SELECT external_company_id FROM public.operational_tenants WHERE schema_name=? AND active=1 ORDER BY id LIMIT 1`, a.defaultSchema).Scan(&companyID); err != nil || companyID <= 0 {
-		return []map[string]any{}
+func (a *app) loadFinancialAccounts(sessionCompanyID int64, sessionSchema string) []map[string]any {
+	schema := a.defaultSchema
+	if strings.TrimSpace(sessionSchema) != "" {
+		schema = sessionSchema
+	}
+	companyID := sessionCompanyID
+	if companyID <= 0 {
+		// Portal sessions carry the company id; a local login session does not,
+		// so resolve it from the tenant registry by the session's schema.
+		if err := a.db.QueryRow(`SELECT external_company_id FROM public.operational_tenants WHERE schema_name=? AND active=1 ORDER BY id LIMIT 1`, schema).Scan(&companyID); err != nil || companyID <= 0 {
+			return []map[string]any{}
+		}
 	}
 	var raw []byte
 	if err := a.db.QueryRow(`SELECT COALESCE(state->'accounts','[]'::jsonb) FROM public.financial_workspace_states WHERE company_id=?`, companyID).Scan(&raw); err != nil {
