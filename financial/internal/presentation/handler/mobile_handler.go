@@ -631,7 +631,7 @@ func (h *APIHandler) persistMobileTransactionState(r *http.Request, companyID in
 				applyConfirmedCounterparty(mobileRow, typed.PartyName)
 			}
 		}
-		state["mobileTransactions"] = append([]any{mobileRow}, anyRows(state, "mobileTransactions")...)
+		upsertHesabyarRow(state, "mobileTransactions", mobileRow)
 		trackingNo := strings.TrimSpace(req.TrackingNo)
 		if trackingNo == "" {
 			trackingNo = req.ExternalID
@@ -660,10 +660,10 @@ func (h *APIHandler) persistMobileTransactionState(r *http.Request, companyID in
 					expense["counterpartyConfirmed"] = false
 				}
 			}
-			state["expenses"] = append([]any{expense}, anyRows(state, "expenses")...)
+			upsertHesabyarRow(state, "expenses", expense)
 			movement["sourceExpense"] = expenseID
 		}
-		state["movements"] = append([]any{movement}, anyRows(state, "movements")...)
+		upsertHesabyarRow(state, "movements", movement)
 		if len(req.Groups) > 0 {
 			state["smsGroups"] = mapsToAny(req.Groups)
 		}

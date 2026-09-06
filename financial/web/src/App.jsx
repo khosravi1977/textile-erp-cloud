@@ -5231,7 +5231,7 @@ function CostsPage({ finance, setFinance }) {
 
       const movements = editingId
         ? (prev.movements.some(isExpenseMovement)
-          ? prev.movements.map(x => isExpenseMovement(x) ? { ...movement, id: x.id } : x)
+          ? prev.movements.map(x => isExpenseMovement(x) ? { ...x, ...movement, id: x.id } : x)
           : [movement, ...prev.movements])
         : [movement, ...prev.movements];
 

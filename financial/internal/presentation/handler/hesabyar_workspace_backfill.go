@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -143,18 +144,15 @@ func mergeHesabyarTransactionsIntoWorkspaceState(state map[string]any, transacti
 			if partyName != "" {
 				applyConfirmedCounterparty(expense, partyName)
 			}
-			if !workspaceHasHesabyarRow(state, "expenses", externalID) {
-				state["expenses"] = append([]any{expense}, anyRows(state, "expenses")...)
+			if upsertHesabyarRow(state, "expenses", expense) {
 				changed = true
 			}
 			movement["sourceExpense"] = expenseID
 		}
-		if !workspaceHasHesabyarRow(state, "mobileTransactions", externalID) {
-			state["mobileTransactions"] = append([]any{mobileRow}, anyRows(state, "mobileTransactions")...)
+		if upsertHesabyarRow(state, "mobileTransactions", mobileRow) {
 			changed = true
 		}
-		if !workspaceHasHesabyarRow(state, "movements", externalID) {
-			state["movements"] = append([]any{movement}, anyRows(state, "movements")...)
+		if upsertHesabyarRow(state, "movements", movement) {
 			changed = true
 		}
 	}
@@ -180,16 +178,57 @@ func workspaceHesabyarExternalID(value string) string {
 	return strings.TrimSpace(value)
 }
 
-func workspaceHasHesabyarRow(state map[string]any, key, externalID string) bool {
-	values := map[string]bool{externalID: true, "HY-" + externalID: true}
+// upsertHesabyarRow links a typed-core transaction into the workspace without
+// duplicating rows: rows created elsewhere (expense form, manual entry) can
+// already carry the same id without the linkage fields. An existing match is
+// enriched in place; only fields it leaves empty are filled, so user
+// classifications are never clobbered.
+func upsertHesabyarRow(state map[string]any, key string, row map[string]any) bool {
+	externalID := strings.TrimSpace(stringValue(row["sourceId"]))
+	if existing := hesabyarRowMatch(state, key, externalID, stringValue(row["id"])); existing != nil {
+		changed := false
+		for field, value := range row {
+			if field == "id" {
+				continue
+			}
+			if strings.TrimSpace(stringValue(existing[field])) != "" {
+				continue
+			}
+			if reflect.DeepEqual(existing[field], value) {
+				continue
+			}
+			existing[field] = value
+			changed = true
+		}
+		return changed
+	}
+	state[key] = append([]any{row}, anyRows(state, key)...)
+	return true
+}
+
+func hesabyarRowMatch(state map[string]any, key, externalID, rowID string) map[string]any {
+	values := map[string]bool{}
+	if externalID = strings.TrimSpace(externalID); externalID != "" {
+		values[externalID] = true
+		values["HY-"+externalID] = true
+		values["sms-"+externalID] = true
+		values["mov-sms-"+externalID] = true
+		values["exp-sms-"+externalID] = true
+	}
+	if rowID = strings.TrimSpace(rowID); rowID != "" {
+		values[rowID] = true
+	}
+	if len(values) == 0 {
+		return nil
+	}
 	for _, row := range rowsFrom(state, key) {
-		for _, field := range []string{"externalId", "sourceId", "sourceMobileTransaction"} {
+		for _, field := range []string{"id", "externalId", "sourceId", "sourceMobileTransaction"} {
 			if values[strings.TrimSpace(stringValue(row[field]))] {
-				return true
+				return row
 			}
 		}
 	}
-	return false
+	return nil
 }
 
 func ensureWorkspaceBankAccount(accounts *[]map[string]any, tx financecore.BankTransaction) string {
