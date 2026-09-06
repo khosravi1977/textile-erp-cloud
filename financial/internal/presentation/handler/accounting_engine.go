@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/erpsystem/textile-erp/internal/application/financecore"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -626,6 +628,21 @@ func syncWorkspaceLedger(ctx context.Context, tx *sql.Tx, companyID, userID, rev
 	newEntries, err := deriveWorkspaceLedger(newState)
 	if err != nil {
 		return fmt.Errorf("derive ledger: %w", err)
+	}
+	// One document with an unusable accounting date must not abort the whole
+	// workspace save: canonicalize jalali/ISO variants and drop only the broken
+	// documents (they stay visible as ناظر مالی findings until repaired).
+	for _, set := range []map[string]ledgerEntry{oldEntries, newEntries} {
+		for key, entry := range set {
+			parsed, dateErr := financecore.AccountingDate(entry.Date)
+			if dateErr != nil {
+				log.Printf("workspace ledger skipped entry company=%d key=%s: %v", companyID, key, dateErr)
+				delete(set, key)
+				continue
+			}
+			entry.Date = parsed.Format("2006-01-02")
+			set[key] = entry
+		}
 	}
 	// When no workspace vouchers exist, oldEntries intentionally stays empty;
 	// the first save performs an idempotent backfill of the current state.

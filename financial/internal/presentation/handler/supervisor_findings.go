@@ -67,6 +67,17 @@ func supervisorStateFindings(state map[string]any) []supervisorFinding {
 			}
 		}
 	}
+	for _, field := range []string{"invoices", "incomingInvoices", "yarnOutInvoices", "expenses"} {
+		for i, row := range rowsFrom(state, field) {
+			date := firstText(row, "date")
+			if date == "" {
+				continue
+			}
+			if _, err := financecore.AccountingDate(date); err != nil {
+				add("doc-date", "warning", supervisorPage(field), accountingRowIdentity(field, row, i), "تاریخ سند به تاریخ حسابداری تبدیل نمی‌شود؛ سند تا اصلاح تاریخ در دفاتر ثبت نمی‌شود", date)
+			}
+		}
+	}
 	for id, expense := range expenses {
 		if firstText(expense, "source_type") == "operational_expense" {
 			verified, _ := expense["verifiedPayment"].(map[string]any)

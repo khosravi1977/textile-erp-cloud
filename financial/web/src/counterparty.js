@@ -11,12 +11,13 @@ export function movementCounterpartyLabel(movement = {}) {
   if (String(movement.transactionType || '') === 'transfer') return '-';
   const confirmed = confirmedMovementCounterparty(movement);
   if (confirmed) return confirmed;
-  if (movementNeedsCounterparty(movement)) return 'در انتظار تأیید طرف حساب';
-  return 'بدون طرف حساب اجباری';
+  const candidate = String(movement.counterpartyCandidate || movement.payer || movement.customer || '').trim();
+  if (movementNeedsCounterparty(movement)) return candidate ? 'در انتظار تأیید: ' + candidate : 'در انتظار تأیید طرف حساب';
+  return candidate || 'بدون طرف حساب اجباری';
 }
 
 export function confirmedMovementCounterparty(movement = {}) {
-  if (!movementNeedsCounterparty(movement) || movement.counterpartyConfirmed !== true) return '';
+  if (movement.counterpartyConfirmed !== true) return '';
   return String(movement.payer || movement.customer || '').trim();
 }
 

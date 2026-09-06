@@ -39,8 +39,10 @@ test('only customer and supplier flows require a counterparty', () => {
   assert.equal(movementNeedsCounterparty({}), false);
 });
 
-test('display label does not mark direct expenses as unconfirmed party rows', () => {
-  assert.equal(movementCounterpartyLabel({ transactionType: 'expense', counterpartyCandidate: 'حقوق ماهانه' }), 'بدون طرف حساب اجباری');
+test('display label surfaces suggested party names for optional natures', () => {
+  assert.equal(confirmedMovementCounterparty({ transactionType: 'expense', payer: 'مهدی خسروی', counterpartyConfirmed: true }), 'مهدی خسروی');
+  assert.equal(movementCounterpartyLabel({ transactionType: 'expense', payer: 'مهدی خسروی', counterpartyConfirmed: true }), 'مهدی خسروی');
+  assert.equal(movementCounterpartyLabel({ transactionType: 'expense', counterpartyCandidate: 'حقوق ماهانه' }), 'حقوق ماهانه');
   assert.equal(movementCounterpartyLabel({ transactionType: 'transfer' }), '-');
   assert.equal(movementCounterpartyLabel({ transactionType: 'customer_receipt' }), 'در انتظار تأیید طرف حساب');
 });
