@@ -3348,12 +3348,14 @@ func (a *app) loadFinancialAccounts(sessionCompanyID int64, sessionSchema string
 	if companyID <= 0 {
 		// Portal sessions carry the company id; a local login session does not,
 		// so resolve it from the tenant registry by the session's schema.
-		if err := a.db.QueryRow(`SELECT external_company_id FROM public.operational_tenants WHERE schema_name=? AND active=1 ORDER BY id LIMIT 1`, schema).Scan(&companyID); err != nil || companyID <= 0 {
+		if err := a.queryRow(`SELECT external_company_id FROM public.operational_tenants WHERE schema_name=? AND active=1 ORDER BY id LIMIT 1`, schema).Scan(&companyID); err != nil || companyID <= 0 {
+			log.Printf("financial-accounts: no tenant company for schema %q", schema)
 			return []map[string]any{}
 		}
 	}
 	var raw []byte
-	if err := a.db.QueryRow(`SELECT COALESCE(state->'accounts','[]'::jsonb) FROM public.financial_workspace_states WHERE company_id=?`, companyID).Scan(&raw); err != nil {
+	if err := a.queryRow(`SELECT COALESCE(state->'accounts','[]'::jsonb) FROM public.financial_workspace_states WHERE company_id=?`, companyID).Scan(&raw); err != nil {
+		log.Printf("financial-accounts: no workspace state for company %d: %v", companyID, err)
 		return []map[string]any{}
 	}
 	var accounts []map[string]any
