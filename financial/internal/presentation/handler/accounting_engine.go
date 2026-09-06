@@ -629,23 +629,61 @@ func syncWorkspaceLedger(ctx context.Context, tx *sql.Tx, companyID, userID, rev
 	if err != nil {
 		return fmt.Errorf("derive ledger: %w", err)
 	}
-	// One document with an unusable accounting date must not abort the whole
-	// workspace save: canonicalize jalali/ISO variants and drop only the broken
-	// documents (they stay visible as ناظر مالی findings until repaired).
+	// Canonicalize jalali/ISO date variants so identical documents do not churn
+	// hashes. Entries whose date cannot be parsed stay in the maps: the diff
+	// below must still reverse a previously posted voucher when such an entry
+	// changes or disappears; only the fresh posting of a broken-date entry is
+	// suppressed (the document stays visible as a ناظر مالی finding).
 	for _, set := range []map[string]ledgerEntry{oldEntries, newEntries} {
 		for key, entry := range set {
-			parsed, dateErr := financecore.AccountingDate(entry.Date)
-			if dateErr != nil {
-				log.Printf("workspace ledger skipped entry company=%d key=%s: %v", companyID, key, dateErr)
-				delete(set, key)
-				continue
+			if parsed, dateErr := financecore.AccountingDate(entry.Date); dateErr == nil {
+				entry.Date = parsed.Format("2006-01-02")
+				set[key] = entry
+			} else {
+				log.Printf("workspace ledger unusable date company=%d key=%s: %v", companyID, key, dateErr)
 			}
-			entry.Date = parsed.Format("2006-01-02")
-			set[key] = entry
 		}
 	}
 	// When no workspace vouchers exist, oldEntries intentionally stays empty;
 	// the first save performs an idempotent backfill of the current state.
+	branchID, err := ensureLedgerBranch(ctx, tx, companyID)
+	if err != nil {
+		return err
+	}
+	for _, op := range planWorkspaceLedgerSync(oldEntries, newEntries) {
+		if op.reversal != nil {
+			if _, dateErr := financecore.AccountingDate(op.reversal.Date); dateErr != nil {
+				op.reversal.Date = "" // unplaceable old date: post the reversal today
+			}
+			if err := insertLedgerEntry(ctx, tx, companyID, userID, branchID, revision, *op.reversal, "R", op.reversalHash); err != nil {
+				return err
+			}
+		}
+		if op.posted != nil {
+			if _, dateErr := financecore.AccountingDate(op.posted.Date); dateErr != nil {
+				log.Printf("workspace ledger skipped entry company=%d key=%s: %v", companyID, op.key, dateErr)
+				continue
+			}
+			if err := insertLedgerEntry(ctx, tx, companyID, userID, branchID, revision, *op.posted, "N", op.postedHash); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ledgerSyncOp is one key's transition between the previous and new derived
+// entries. A changed or vanished entry must reverse the old voucher; a changed
+// or brand-new entry posts the new voucher.
+type ledgerSyncOp struct {
+	key          string
+	reversal     *ledgerEntry
+	reversalHash string
+	posted       *ledgerEntry
+	postedHash   string
+}
+
+func planWorkspaceLedgerSync(oldEntries, newEntries map[string]ledgerEntry) []ledgerSyncOp {
 	keys := make([]string, 0, len(oldEntries)+len(newEntries))
 	seen := map[string]bool{}
 	for key := range oldEntries {
@@ -658,27 +696,25 @@ func syncWorkspaceLedger(ctx context.Context, tx *sql.Tx, companyID, userID, rev
 		}
 	}
 	sort.Strings(keys)
-	branchID, err := ensureLedgerBranch(ctx, tx, companyID)
-	if err != nil {
-		return err
-	}
+	ops := make([]ledgerSyncOp, 0, len(keys))
 	for _, key := range keys {
 		oldEntry, oldOK := oldEntries[key]
 		newEntry, newOK := newEntries[key]
 		oldHash, newHash := ledgerHash(oldEntry), ledgerHash(newEntry)
+		op := ledgerSyncOp{key: key}
 		if oldOK && (!newOK || oldHash != newHash) {
 			reversal := reverseLedgerEntry(oldEntry)
-			if err := insertLedgerEntry(ctx, tx, companyID, userID, branchID, revision, reversal, "R", oldHash); err != nil {
-				return err
-			}
+			op.reversal, op.reversalHash = &reversal, oldHash
 		}
 		if newOK && (!oldOK || oldHash != newHash) {
-			if err := insertLedgerEntry(ctx, tx, companyID, userID, branchID, revision, newEntry, "N", newHash); err != nil {
-				return err
-			}
+			post := newEntry
+			op.posted, op.postedHash = &post, newHash
+		}
+		if op.reversal != nil || op.posted != nil {
+			ops = append(ops, op)
 		}
 	}
-	return nil
+	return ops
 }
 
 func ensureLedgerBranch(ctx context.Context, tx *sql.Tx, companyID int64) (int64, error) {
