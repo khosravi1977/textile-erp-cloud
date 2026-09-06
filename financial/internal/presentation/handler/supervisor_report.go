@@ -102,7 +102,7 @@ func (h *APIHandler) buildSupervisorReport(r *http.Request) (supervisorReport, e
 		bySource := map[string]map[string]any{}
 		for _, m := range rowsFrom(state, "movements") {
 			if id := firstText(m, "sourceMobileTransaction"); id != "" {
-				bySource[id] = m
+				bySource[supervisorExternalTransactionID(id)] = m
 			}
 		}
 		count := 0
@@ -115,7 +115,7 @@ func (h *APIHandler) buildSupervisorReport(r *http.Request) (supervisorReport, e
 			}
 			count++
 			report.Checked++
-			m := bySource[id]
+			m := bySource[supervisorExternalTransactionID(id)]
 			if status == "VOIDED" {
 				if m != nil {
 					add("mobile-voided", "critical", "bankCash", id, "تراکنش باطل‌شده حسابیار هنوز گردش فعال دارد")
@@ -163,6 +163,13 @@ func (h *APIHandler) buildSupervisorReport(r *http.Request) (supervisorReport, e
 		incomplete("تغییر هم‌زمان داده؛ بازبینی دوباره لازم است")
 	}
 	return report, nil
+}
+
+// supervisorExternalTransactionID strips the HesabYar "HY-" storage prefix so
+// typed-core external ids match workspace linkage fields, which carry the bare
+// id (the same value after normalize).
+func supervisorExternalTransactionID(id string) string {
+	return strings.TrimPrefix(strings.TrimSpace(id), "HY-")
 }
 
 func (h *APIHandler) SupervisorReport(w http.ResponseWriter, r *http.Request) {
