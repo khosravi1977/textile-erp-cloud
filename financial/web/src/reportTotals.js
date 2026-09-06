@@ -8,6 +8,8 @@ const digitMap = new Map([
 export function isMonetaryColumn(label) {
   const normalized = String(label || '').replace(/[\u200c\u200f\u202a-\u202e]/g, '').trim();
   if (!normalized || normalized.includes('نرخ')) return false;
+  // These are amounts, unlike the adjacent cheque date/number/percentage.
+  if (/^(نقد|چک) طبق قرار$/.test(normalized)) return true;
   return /(مبلغ|جمع|پرداخت|دریافت|بدهکار|بستانکار|بدهی|طلب|هزینه|درآمد|مالیات|ارزش ریالی|مانده ریالی)/.test(normalized);
 }
 

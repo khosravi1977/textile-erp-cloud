@@ -6024,7 +6024,7 @@ function ReportsPage({ finance, setFinance }) {
 
       {summary && <div className="grid grid-cols-6 gap-4"><Field label="مانده خالص شخص" value={money(summary.netBalance) + ' تومان'} tone={summary.netBalance >= 0 ? 'text-amber-300' : 'text-emerald-300'} /><Field label="بدهی فاکتور خروج" value={money(summary.debt) + ' تومان'} tone="text-amber-300" /><Field label="بستانکاری فاکتور ورود" value={money(summary.payableToCustomer) + ' تومان'} tone="text-emerald-300" /><Field label="پرداختي خروجي" value={money(summary.paidOut) + ' تومان'} tone="text-blue-300" /><Field label="چک واگذار شده" value={money(summary.assignedChecks) + ' تومان'} tone="text-violet-300" /><Field label="جمع فاکتور ورود" value={money(summary.incomingTotal) + ' تومان'} /></div>}
 
-      <Card><h3 className="mb-4 font-bold">جدول گزارش مالي</h3><GenericTable rows={reportRows} /></Card>
+      <Card><h3 className="mb-4 font-bold">جدول گزارش مالي</h3><GenericTable rows={reportRows} showTotals /></Card>
 
     </div>
 
@@ -6618,11 +6618,12 @@ function InvoiceTable({ rows }) {
 
 
 
-function GenericTable({ rows }) {
+function GenericTable({ rows, showTotals = false }) {
 
   if (!rows.length) return <EmptyState />;
 
-  const cols = Object.keys(rows[0]);
+  const cols = showTotals ? [...new Set(rows.flatMap(row => Object.keys(row)))] : Object.keys(rows[0]);
+  const totals = new Map(showTotals ? monetaryColumnTotals(rows, cols.map(col => [col, columnLabels[col] || col])).map(item => [item.key, item.total]) : []);
 
   return (
 
@@ -6631,6 +6632,7 @@ function GenericTable({ rows }) {
       <table className="w-full border-collapse text-sm">
 
         <thead><tr className="border-b border-slate-700 text-slate-400">{cols.map(col => <th key={col} className="p-3 text-right">{columnLabels[col] || col}</th>)}</tr></thead>
+        {totals.size > 0 && <tfoot><tr className="border-t-2 border-emerald-700 bg-emerald-950 font-bold">{cols.map((col, index) => <td key={col} className="p-3">{totals.has(col) ? money(totals.get(col)) : index === 0 ? 'جمع کل' : ''}</td>)}</tr></tfoot>}
 
         <tbody>
 

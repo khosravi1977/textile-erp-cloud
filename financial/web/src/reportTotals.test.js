@@ -27,3 +27,19 @@ test('places calculated totals at their original column indexes', () => {
     { index: 2, key: 'paid', total: 500 },
   ]);
 });
+
+test('payment-plan cash and cheque totals stay under their own columns, not cheque dates', () => {
+  const rows = [
+    { expected_cash: '۲۰۰', expected_check: 800, expected_check_date: '1405/09/24' },
+    { expected_cash: 400, expected_check: '١٬٦٠٠', expected_check_date: '1405/10/24' },
+    { expected_cash: 0, expected_check: 0, expected_check_date: '-' },
+  ];
+  const columns = [['expected_cash', 'نقد طبق قرار'], ['expected_check', 'چک طبق قرار'], ['expected_check_date', 'تاریخ چک طبق قرار']];
+  assert.deepEqual(monetaryColumnTotals(rows, columns), [
+    { index: 0, key: 'expected_cash', total: 600 },
+    { index: 1, key: 'expected_check', total: 2400 },
+  ]);
+  assert.equal(monetaryColumnTotals(rows.slice(0, 1), columns)[0].total, 200);
+  for (const label of ['تاریخ چک', 'تاريخ چک', 'شماره چک', 'درصد نقد', 'درصد چک', 'نرخ واحد']) assert.equal(isMonetaryColumn(label), false);
+  assert.deepEqual(monetaryColumnTotals([], columns), []);
+});
