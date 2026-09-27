@@ -15,3 +15,13 @@ This repository follows the Viora cloud delivery path: Codex Cloud prepares and 
 - Prefer small, reviewable changes. Preserve Persian/English behavior and existing public URLs unless the task explicitly changes them.
 - A task is done only when tests pass, the diff is explained in plain language, and deployment/rollback implications are stated.
 
+## Code firewall (FW-01) — binding
+
+- Run `bash fw.sh verify` before finishing any change. Red = stop; never weaken a guard to go green.
+- Touch ONLY the files your task lists. "Improving" adjacent code is forbidden — file it as an issue.
+- New dependency = STOP: spec it in the task first.
+- `contracts/golden/*` and `quality-baseline.d/*` are append-only/frozen: a conscious change
+  regenerates goldens via `bash fw.sh golden-update` and adds a NEW ledger entry with a cited note.
+- No `continue-on-error`, `|| true`, `SKIP_*`/`BYPASS_*` env, or unpinned actions in any workflow —
+  `scripts/fw/check-ci-contract.sh` enforces this and runs in CI. See `docs/FIREWALL.md`.
+

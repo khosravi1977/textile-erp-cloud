@@ -1,0 +1,61 @@
+# FW-01 code firewall - the meta-guard verifies this file invokes every guard with --self-test; see docs/FIREWALL.md
+name: firewall
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: fw-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.21"
+      - name: guard self-tests (falsification proof)
+        run: |
+          bash scripts/fw/check-golden-contracts.sh --self-test
+          bash scripts/fw/check-migration-safety.sh --self-test
+          bash scripts/fw/check-secret-defaults.sh --self-test
+          bash scripts/fw/check-compose-no-latest.sh --self-test
+          bash scripts/fw/check-gofmt.sh --self-test
+          bash scripts/fw/check-test-floor.sh --self-test
+          bash scripts/fw/check-commit-subject.sh --self-test
+          bash scripts/fw/check-ci-contract.sh --self-test
+      - name: guards (exactly as CI enforces them)
+        run: |
+          bash scripts/fw/check-golden-contracts.sh
+          bash scripts/fw/check-migration-safety.sh
+          bash scripts/fw/check-secret-defaults.sh
+          bash scripts/fw/check-compose-no-latest.sh
+          bash scripts/fw/check-gofmt.sh
+          bash scripts/fw/check-test-floor.sh
+          bash scripts/fw/check-ci-contract.sh
+      - name: portal firewall contract smoke (login + auth gate)
+        working-directory: portal_server
+        run: go test -run 'TestFirewall' -count=1 ./...
+
+  commit-lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: subjects of new commits
+        shell: bash
+        run: |
+          git fetch origin "${{ github.base_ref }}" --quiet
+          rc=0
+          while IFS= read -r s; do
+            bash scripts/fw/check-commit-subject.sh "$s" || rc=1
+          done < <(git log --format=%s "origin/${{ github.base_ref }}..HEAD")
+          exit $rc

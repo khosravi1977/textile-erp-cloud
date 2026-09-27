@@ -31,7 +31,7 @@ jobs:
     steps:
       - name: Download release identity
         if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: production-release
           path: ${{ runner.temp }}/published-release
@@ -52,7 +52,7 @@ jobs:
           [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]]
           echo "RELEASE_SHA=$release_sha" >> "$GITHUB_ENV"
           echo "REMOTE_ARCHIVE=/tmp/viora-deploy-textile-erp-$release_sha.tar.gz" >> "$GITHUB_ENV"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - name: Package reviewed source and manifests
