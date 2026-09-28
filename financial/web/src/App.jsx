@@ -6212,7 +6212,7 @@ function FinancialSupervisorPage({ revision, allowedPageIds, onGo }) {
   };
   return <div className="space-y-5">
     <Card>
-      <div className="flex flex-wrap justify-between gap-3"><h2 className="text-xl font-bold">ناظر مالی و صف رسیدگی</h2><PrimaryButton disabled={busy} onClick={() => setRefresh(x => x + 1)}>بررسی دوباره</PrimaryButton></div>
+      <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex flex-wrap items-center gap-3"><h2 className="text-xl font-bold">ناظر مالی و صف رسیدگی</h2>{!busy && !error && <span className={'rounded-full border px-3 py-1 text-sm ' + (critical ? 'border-red-700 bg-red-950 text-red-200' : 'border-emerald-700 bg-emerald-950 text-emerald-200')}>{num(critical)} مغایرت | {num(warnings)} هشدار</span>}</div><PrimaryButton disabled={busy} onClick={() => setRefresh(x => x + 1)}>بررسی دوباره</PrimaryButton></div>
       <p className="mt-3 text-sm leading-7 text-slate-300">کنترل قاعده‌محور ارتباط اسناد و اثر ثبت؛ جایگزین مسئولیت حسابدار یا حسابرس مستقل نیست. نرخ پیشنهادی از سابقه فاکتور است، نه قیمت قطعی بازار. تشخیص مالکیت کالا، ماهیت نامشخص و تصمیم نهایی با شماست.</p>
       <div role="status" className={'mt-4 rounded-lg border p-4 ' + (fresh && !critical ? 'border-emerald-700 text-emerald-200' : 'border-amber-700 text-amber-200')}>
         {busy ? 'در حال بررسی سرور؛ هنوز نتیجه قطعی نیست…' : error || (!fresh ? 'پوشش بررسی ناقص یا نسخه داده تغییر کرده است؛ سلامت قابل تأیید نیست.' : critical ? num(critical) + ' مغایرت برای رسیدگی شناسایی شد.' : 'در کنترل‌های اجراشده مغایرت قطعی پیدا نشد.')}

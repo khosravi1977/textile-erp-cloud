@@ -3,3 +3,4 @@
 contracts/golden/*.txt -text
 # Shell scripts must stay LF (bash on any platform).
 *.sh text eol=lf
+*.go text eol=lf
