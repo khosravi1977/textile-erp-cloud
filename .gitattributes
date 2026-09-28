@@ -1,0 +1,5 @@
+# FW-01: keep the golden contracts byte-exact across platforms — never let
+# git's autocrlf rewrite them (a CRLF checkout would fake a full drift).
+contracts/golden/*.txt -text
+# Shell scripts must stay LF (bash on any platform).
+*.sh text eol=lf
