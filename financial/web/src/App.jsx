@@ -674,6 +674,7 @@ async function apiJSON(path, options = {}) {
     method: options.method || 'GET',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders(), ...(options.headers || {}) },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    keepalive: options.keepalive === true,
   });
   let response = await request();
   if (response.status === 401 && PORTAL_FINANCIAL_SESSION) {
@@ -914,6 +915,79 @@ function useServerWorkspace(initialValue, enabled, writable = true) {
 
   }, [enabled]);
 
+  const debounceTimerRef = useRef(null);
+  const retryTimerRef = useRef(null);
+  const performSaveRef = useRef(() => {});
+  const flushPendingSaveRef = useRef(() => {});
+
+  const scheduleRetry = () => {
+    if (retryTimerRef.current) return;
+    retryTimerRef.current = setTimeout(() => {
+      retryTimerRef.current = null;
+      performSaveRef.current();
+    }, 3000);
+  };
+
+  const performSave = async ({ keepalive = false } = {}) => {
+    if (!loadedRef.current || committingRef.current || conflictRef.current) return;
+    while (savingRef.current) await new Promise(resolve => setTimeout(resolve, 100));
+    if (!hasUnsavedChanges()) { dirtyRef.current = false; return; }
+    savingRef.current = true;
+    setStatus(current => ({ ...current, saving: true, error: '' }));
+    try {
+      do {
+        const sentValue = valueRef.current;
+        const document = await apiJSON('/workspace', {
+          method: 'PUT',
+          keepalive,
+          body: { state: sentValue, revision: revisionRef.current },
+        });
+        revisionRef.current = Number(document.revision || revisionRef.current);
+        if (valueRef.current === sentValue) dirtyRef.current = false;
+      } while (dirtyRef.current);
+      localStorage.removeItem('textile-finance-v3');
+      conflictAttemptsRef.current = 0;
+      baseDocRef.current = valueRef.current;
+      setStatus({ ready: true, saving: false, error: '', revision: revisionRef.current });
+    } catch (error) {
+      if (error.status === 409 && error.data?.current) {
+        const current = error.data.current;
+        const serverState = current.state && typeof current.state === 'object' ? { ...initialValue, ...current.state } : { ...initialValue };
+        const merged = mergeWorkspace3Way(baseDocRef.current, serverState, valueRef.current);
+        revisionRef.current = Number(current.revision || 0);
+        baseDocRef.current = serverState;
+        conflictAttemptsRef.current += 1;
+        if (conflictAttemptsRef.current <= 5) {
+          skipSaveRef.current = false;
+          setValue(merged);
+          setStatus({ ready: true, saving: false, error: '', revision: revisionRef.current });
+        } else {
+          skipSaveRef.current = true;
+          setValue(valueRef.current);
+          setStatus(current => ({ ...current, saving: false, error: 'ذخیره چند بار با تضاد نسخه مواجه شد؛ اطلاعات شما حفظ شده و چند لحظه بعد دوباره ذخیره می‌شود.', revision: revisionRef.current }));
+          setTimeout(() => {
+            conflictAttemptsRef.current = 0;
+            skipSaveRef.current = false;
+            setValue({ ...valueRef.current });
+          }, 5000);
+        }
+        return;
+      }
+      setStatus(current => ({ ...current, saving: false, error: error.message || 'ذخیره اطلاعات مالی ناموفق بود؛ به‌صورت خودکار دوباره تلاش می‌شود.' }));
+      scheduleRetry();
+    } finally {
+      savingRef.current = false;
+    }
+  };
+
+  const flushPendingSave = ({ keepalive = false } = {}) => {
+    if (debounceTimerRef.current) { clearTimeout(debounceTimerRef.current); debounceTimerRef.current = null; }
+    performSaveRef.current({ keepalive });
+  };
+
+  performSaveRef.current = performSave;
+  flushPendingSaveRef.current = flushPendingSave;
+
   useEffect(() => {
 
     if (!enabled || !writable || !loadedRef.current) return;
@@ -926,92 +1000,19 @@ function useServerWorkspace(initialValue, enabled, writable = true) {
 
     }
 
-    const timer = setTimeout(async () => {
-      if (committingRef.current || conflictRef.current) return;
+    debounceTimerRef.current = setTimeout(() => {
 
-      while (savingRef.current) await new Promise(resolve => setTimeout(resolve, 250));
+      debounceTimerRef.current = null;
 
-      savingRef.current = true;      setStatus(current => ({ ...current, saving: true, error: '' }));
+      performSaveRef.current();
 
-      try {
-        do {
-        const sentValue = valueRef.current;
-        const document = await apiJSON('/workspace', {
+    }, 120);
 
-          method: 'PUT',
-          body: { state: sentValue, revision: revisionRef.current },
-        });
+    return () => {
 
-        revisionRef.current = Number(document.revision || revisionRef.current);
-        if (valueRef.current === sentValue) dirtyRef.current = false;
-        } while (dirtyRef.current);
-        localStorage.removeItem('textile-finance-v3');
+      if (debounceTimerRef.current) { clearTimeout(debounceTimerRef.current); debounceTimerRef.current = null; }
 
-        conflictAttemptsRef.current = 0;
-
-        baseDocRef.current = valueRef.current;
-
-        setStatus({ ready: true, saving: false, error: '', revision: revisionRef.current });
-
-      } catch (error) {
-
-        if (error.status === 409 && error.data?.current) {
-
-          const current = error.data.current;
-
-          const serverState = current.state && typeof current.state === 'object' ? { ...initialValue, ...current.state } : { ...initialValue };
-
-          const merged = mergeWorkspace3Way(baseDocRef.current, serverState, valueRef.current);
-
-          revisionRef.current = Number(current.revision || 0);
-
-          baseDocRef.current = serverState;
-
-          conflictAttemptsRef.current += 1;
-
-          if (conflictAttemptsRef.current <= 5) {
-
-            skipSaveRef.current = false;
-
-            setValue(merged);
-
-            setStatus({ ready: true, saving: false, error: '', revision: revisionRef.current });
-
-          } else {
-
-            skipSaveRef.current = true;
-
-            setValue(valueRef.current);
-
-            setStatus(current => ({ ...current, saving: false, error: 'ذخیره چند بار با تضاد نسخه مواجه شد؛ اطلاعات شما حفظ شده و چند لحظه بعد دوباره ذخیره می‌شود.', revision: revisionRef.current }));
-
-            setTimeout(() => {
-
-              conflictAttemptsRef.current = 0;
-
-              skipSaveRef.current = false;
-
-              setValue({ ...valueRef.current });
-
-            }, 5000);
-
-          }
-
-          return;
-
-        }
-
-        setStatus(current => ({ ...current, saving: false, error: error.message || 'ذخیره اطلاعات مالی ناموفق بود؛ اطلاعات شما حفظ شده و با ذخیره بعدی دوباره تلاش می‌شود.' }));
-
-      } finally {
-
-        savingRef.current = false;
-
-      }
-
-    }, 650);
-
-    return () => clearTimeout(timer);
+    };
 
   }, [enabled, writable, value]);
 
@@ -1019,9 +1020,17 @@ function useServerWorkspace(initialValue, enabled, writable = true) {
 
     if (!enabled) return;
 
-    const handler = event => {
+    const onVisibility = () => {
+
+      if (document.visibilityState === 'hidden') flushPendingSaveRef.current();
+
+    };
+
+    const onUnload = event => {
 
       if (hasUnsavedChanges()) {
+
+        flushPendingSaveRef.current({ keepalive: true });
 
         event.preventDefault();
 
@@ -1031,12 +1040,19 @@ function useServerWorkspace(initialValue, enabled, writable = true) {
 
     };
 
-    window.addEventListener('beforeunload', handler);
+    document.addEventListener('visibilitychange', onVisibility);
 
-    return () => window.removeEventListener('beforeunload', handler);
+    window.addEventListener('beforeunload', onUnload);
+
+    return () => {
+
+      document.removeEventListener('visibilitychange', onVisibility);
+
+      window.removeEventListener('beforeunload', onUnload);
+
+    };
 
   }, [enabled]);
-
 
   const updateValue = useCallback(next => {
     if (committingRef.current) return;
@@ -1064,7 +1080,7 @@ function useServerWorkspace(initialValue, enabled, writable = true) {
       throw error;
     } finally { committingRef.current = false; }
   };
-  return [value, updateValue, status, reviewedSave];
+  return [value, updateValue, status, reviewedSave, flushPendingSave];
 }
 
 
@@ -1504,7 +1520,7 @@ export default function App() {
   const workspaceWritable = !sessionProfile?.portalLinked || (
     sessionProfile?.portalRole !== 'viewer' && (sessionProfile?.permissions || []).some(permission => writablePermissions.has(permission))
   );
-  const [finance, setFinance, workspaceStatus, reviewedSave] = useServerWorkspace(emptyFinance(), isLoggedIn && !authBooting, workspaceWritable);
+  const [finance, setFinance, workspaceStatus, reviewedSave, flushSave] = useServerWorkspace(emptyFinance(), isLoggedIn && !authBooting, workspaceWritable);
 
   const safeFinance = { ...emptyFinance(), ...finance };
   const updateFinance = updater => setFinance(prev => updater({ ...emptyFinance(), ...prev }));
@@ -1760,6 +1776,7 @@ export default function App() {
             <span className={`rounded-full border px-4 py-2 text-sm ${workspaceStatus.error ? 'border-red-700 bg-red-950 text-red-200' : workspaceStatus.saving ? 'border-amber-700 bg-amber-950 text-amber-200' : 'border-emerald-700 bg-emerald-950 text-emerald-200'}`}>
               {workspaceStatus.error ? 'خطا در همگام‌سازی' : workspaceStatus.saving ? 'در حال ذخیره...' : `ذخیره شد | نسخه ${workspaceStatus.revision}`}
             </span>
+            {workspaceStatus.error && <button type="button" title="ذخیره فوری تغییرات بدون رفرش صفحه" className="rounded-full border border-amber-600 bg-amber-950 px-4 py-2 text-sm font-bold text-amber-200 hover:border-amber-400" onClick={() => flushSave()}>ذخیره دوباره</button>}
           </div>
         </div>
 
