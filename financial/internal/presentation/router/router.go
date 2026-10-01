@@ -18,6 +18,7 @@ func SetupRouter(services ...*telegramreport.Service) http.Handler {
 	mux.HandleFunc("/health", h.HealthCheck)
 	mux.HandleFunc("/metrics", middleware.MetricsHandler)
 	mux.HandleFunc("/api/auth/login", h.Login)
+	mux.HandleFunc("/api/management-report", h.ManagementReport)
 	mux.HandleFunc("/api/mobile/pairing", h.CreateMobilePairing)
 	mux.HandleFunc("/api/mobile/pair", h.PairMobileDevice)
 	mux.HandleFunc("/api/mobile/bootstrap", h.MobileBootstrap)
