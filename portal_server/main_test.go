@@ -1419,3 +1419,93 @@ func verifyCoolerPortalTokenForTest(token, secret string) (map[string]any, error
 	}
 	return claims, nil
 }
+
+func TestExternalOrgRefIsolatesSameNameOrganizations(t *testing.T) {
+	app := newPurchaseOrderTestApp(t)
+	var companySeq int64 = 300
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/portal/provision":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, "bad payload", http.StatusBadRequest)
+				return
+			}
+			if id, ok := payload["company_id"].(float64); ok && id > 0 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "company_id": int64(id)})
+				return
+			}
+			companySeq++
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "company_id": companySeq})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app.operationalAPI = server.URL
+	app.operationalSessionSecret = "operational-tenant-isolation-secret"
+
+	expiresAt := time.Now().Add(24 * time.Hour)
+	first, _, err := app.createManagedAccess(
+		"textile-erp", "کارگاه نمونه", "مدیر الف", "orgA_owner", "Secure123!", 0,
+		expiresAt, time.Time{}, "", "owner", financialPermissionCatalog,
+		true, false, true, true, false, "viora-org-A",
+	)
+	if err != nil {
+		t.Fatalf("create first organization access: %v", err)
+	}
+	second, _, err := app.createManagedAccess(
+		"textile-erp", "کارگاه نمونه", "مدیر ب", "orgB_owner", "Secure123!", 0,
+		expiresAt, time.Time{}, "", "owner", financialPermissionCatalog,
+		true, false, true, true, false, "viora-org-B",
+	)
+	if err != nil {
+		t.Fatalf("create second organization access: %v", err)
+	}
+	if first.FinancialCompanyID <= 0 || second.FinancialCompanyID <= 0 {
+		t.Fatalf("companies must be provisioned: first=%d second=%d", first.FinancialCompanyID, second.FinancialCompanyID)
+	}
+	if first.FinancialCompanyID == second.FinancialCompanyID {
+		t.Fatalf("two distinct organizations sharing a display name must not share a financial company: %d", first.FinancialCompanyID)
+	}
+	if first.ExternalOrgRef != "viora-org-A" || second.ExternalOrgRef != "viora-org-B" {
+		t.Fatalf("external org refs must be persisted: first=%q second=%q", first.ExternalOrgRef, second.ExternalOrgRef)
+	}
+
+	again, _, err := app.createManagedAccess(
+		"textile-erp", "کارگاه نمونه", "مدیر الف ۲", "orgA_member", "Secure123!", 0,
+		expiresAt, time.Time{}, "", "owner", financialPermissionCatalog,
+		true, false, true, true, false, "viora-org-A",
+	)
+	if err != nil {
+		t.Fatalf("re-provision first organization: %v", err)
+	}
+	if again.FinancialCompanyID != first.FinancialCompanyID {
+		t.Fatalf("the same organization ref must reuse its financial company: got %d want %d", again.FinancialCompanyID, first.FinancialCompanyID)
+	}
+
+	// A ref-scoped organization must not adopt a legacy no-ref company that
+	// happens to share its display name (pre-existing accesses predate refs).
+	legacy, _, err := app.createManagedAccess(
+		"textile-erp", "کارگاه نمونه", "مدیر قدیم", "legacy_owner", "Secure123!", 0,
+		expiresAt, time.Time{}, "", "owner", financialPermissionCatalog,
+		true, false, true, true, false, "",
+	)
+	if err != nil {
+		t.Fatalf("create legacy access: %v", err)
+	}
+	refDoesNotAdoptLegacy, _, err := app.createManagedAccess(
+		"textile-erp", "کارگاه نمونه", "مدیر ج", "orgC_owner", "Secure123!", 0,
+		expiresAt, time.Time{}, "", "owner", financialPermissionCatalog,
+		true, false, true, true, false, "viora-org-C",
+	)
+	if err != nil {
+		t.Fatalf("create third organization access: %v", err)
+	}
+	if refDoesNotAdoptLegacy.FinancialCompanyID == legacy.FinancialCompanyID {
+		t.Fatalf("a ref-scoped organization must not adopt a legacy no-ref company: %d", refDoesNotAdoptLegacy.FinancialCompanyID)
+	}
+	if refDoesNotAdoptLegacy.FinancialCompanyID == first.FinancialCompanyID || refDoesNotAdoptLegacy.FinancialCompanyID == second.FinancialCompanyID {
+		t.Fatalf("a new organization ref must allocate a fresh company: %d", refDoesNotAdoptLegacy.FinancialCompanyID)
+	}
+}

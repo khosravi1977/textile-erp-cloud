@@ -449,6 +449,7 @@ func (a *portalApp) approvePurchaseOrder(id, adminNote string) (purchaseOrder, p
 		allowFinancial,
 		allowOperational,
 		allowWeaving,
+		"",
 	)
 	if err != nil {
 		return purchaseOrder{}, projectAccess{}, "", err
