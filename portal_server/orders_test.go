@@ -190,7 +190,7 @@ func TestApproveAddOnOrderUpgradesExistingCustomerWithoutDuplicate(t *testing.T)
 	existing, _, err := app.createManagedAccess(
 		"textile-erp", "پرگل", "مدیر پرگل", "paregol-manager", "Secure123!", 0,
 		time.Now().Add(60*24*time.Hour), time.Time{}, "مشتری موجود", "owner", financialPermissionCatalog,
-		true, false, true, true, false,
+		true, false, true, true, false, "",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -423,7 +423,7 @@ func TestFirstOwnerLandingAutomaticallyStartsFullTrial(t *testing.T) {
 	owner, _, err := app.createManagedAccess(
 		"textile-erp", "بافت ورود اول", "مدیر", "first-login-owner", "Secure123!", 0,
 		time.Now().Add(24*time.Hour), time.Time{}, "", "owner", financialPermissionCatalog,
-		true, false, true, false, false,
+		true, false, true, false, false, "",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -487,7 +487,7 @@ func TestStartupActivatesExistingOwnerWithoutAVisit(t *testing.T) {
 	owner, _, err := app.createManagedAccess(
 		"textile-erp", "بافت موجود", "مدیر", "existing-owner", "Secure123!", 0,
 		time.Now().Add(24*time.Hour), time.Time{}, "", "owner", financialPermissionCatalog,
-		true, false, true, false, false,
+		true, false, true, false, false, "",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -580,7 +580,7 @@ func TestGrantFullTrialPreservesPurchasedModules(t *testing.T) {
 	owner, _, err := app.createManagedAccess(
 		"textile-erp", "بافت مدیر", "مدیر", "owner-trial", "Secure123!", 0,
 		time.Now().Add(365*24*time.Hour), time.Time{}, "خرید مالی", "owner", financialPermissionCatalog,
-		true, false, true, false, false,
+		true, false, true, false, false, "",
 	)
 	if err != nil {
 		t.Fatal(err)

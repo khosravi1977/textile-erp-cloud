@@ -95,6 +95,7 @@ type projectAccess struct {
 	ContactName        string    `json:"contact_name"`
 	Username           string    `json:"username"`
 	FinancialCompanyID int64     `json:"financial_company_id,omitempty"`
+	ExternalOrgRef     string    `json:"external_org_ref,omitempty"`
 	AccessRole         string    `json:"access_role,omitempty"`
 	Permissions        []string  `json:"permissions,omitempty"`
 	CanManageTeam      bool      `json:"can_manage_team,omitempty"`
@@ -1937,6 +1938,8 @@ type accessRequest struct {
 	Password            string   `json:"password"`
 	FinancialCompanyID  int64    `json:"financialCompanyId"`
 	FinancialCompanyID2 int64    `json:"financial_company_id"`
+	ExternalOrgRef      string   `json:"externalOrgRef"`
+	ExternalOrgRef2     string   `json:"external_org_ref"`
 	TrialDays           int      `json:"trialDays"`
 	TrialDays2          int      `json:"trial_days"`
 	ExpiresAt           string   `json:"expiresAt"`
@@ -1977,6 +1980,9 @@ func decodeAccessRequest(r *http.Request) (accessRequest, error) {
 	if req.FinancialCompanyID == 0 {
 		req.FinancialCompanyID = req.FinancialCompanyID2
 	}
+	if req.ExternalOrgRef == "" {
+		req.ExternalOrgRef = req.ExternalOrgRef2
+	}
 	if req.TrialDays == 0 {
 		req.TrialDays = req.TrialDays2
 	}
@@ -2014,6 +2020,7 @@ func decodeAccessRequest(r *http.Request) (accessRequest, error) {
 	req.Password = strings.TrimSpace(req.Password)
 	req.Notes = strings.TrimSpace(req.Notes)
 	req.AccessRole = strings.TrimSpace(req.AccessRole)
+	req.ExternalOrgRef = strings.TrimSpace(req.ExternalOrgRef)
 	return req, nil
 }
 
@@ -2266,7 +2273,7 @@ func (a *portalApp) adminAccesses(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		access, rawPassword, err := a.createManagedAccess(req.ProjectKey, req.CompanyName, req.ContactName, req.Username, req.Password, req.FinancialCompanyID, expiresAt, time.Time{}, req.Notes, accessRole, req.Permissions, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving)
+		access, rawPassword, err := a.createManagedAccess(req.ProjectKey, req.CompanyName, req.ContactName, req.Username, req.Password, req.FinancialCompanyID, expiresAt, time.Time{}, req.Notes, accessRole, req.Permissions, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving, req.ExternalOrgRef)
 		if err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -2768,7 +2775,7 @@ func (a *portalApp) portalTeam(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		access, rawPassword, err := a.createManagedAccess(record.ProjectKey, record.CompanyName, req.ContactName, req.Username, req.Password, record.FinancialCompanyID, expiresAt, record.TrialEndsAt, req.Notes, role, req.Permissions, canManage, false, allowFinancial, allowOperational, allowWeaving)
+		access, rawPassword, err := a.createManagedAccess(record.ProjectKey, record.CompanyName, req.ContactName, req.Username, req.Password, record.FinancialCompanyID, expiresAt, record.TrialEndsAt, req.Notes, role, req.Permissions, canManage, false, allowFinancial, allowOperational, allowWeaving, record.ExternalOrgRef)
 		if err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -3244,18 +3251,29 @@ func (a *portalApp) ensureLocalOwnerAccess() (projectAccess, error) {
 		}
 		return a.setAccessMustChangePassword(updated.ID, false)
 	}
-	created, _, err := a.createManagedAccess("textile-erp", a.localCompanyName, "مدیر محلی", a.adminUsername, a.adminPassword, a.localCompanyID, expiresAt, time.Time{}, "حساب مدیر نسخه آفلاین", "owner", financialPermissionCatalog, true, false, true, true, false)
+	created, _, err := a.createManagedAccess("textile-erp", a.localCompanyName, "مدیر محلی", a.adminUsername, a.adminPassword, a.localCompanyID, expiresAt, time.Time{}, "حساب مدیر نسخه آفلاین", "owner", financialPermissionCatalog, true, false, true, true, false, "")
 	if err != nil {
 		return projectAccess{}, err
 	}
 	return a.setAccessMustChangePassword(created.ID, false)
 }
 
-func existingFinancialCompanyID(items []projectAccess, companyName string) int64 {
+func existingFinancialCompanyID(items []projectAccess, companyName, externalOrgRef string) int64 {
 	companyName = strings.TrimSpace(companyName)
+	externalOrgRef = strings.TrimSpace(externalOrgRef)
 	var companyID int64
 	for _, item := range items {
 		if item.ProjectKey != "textile-erp" || item.FinancialCompanyID <= 0 {
+			continue
+		}
+		// A self-service organization is identified by its external ref: two
+		// distinct organizations must never merge onto one financial company,
+		// even when their display names collide. Name matching stays as the
+		// legacy path for manually administered accesses without a ref.
+		if externalOrgRef != "" {
+			if strings.TrimSpace(item.ExternalOrgRef) == externalOrgRef && item.FinancialCompanyID > companyID {
+				companyID = item.FinancialCompanyID
+			}
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(item.CompanyName), companyName) && item.FinancialCompanyID > companyID {
@@ -3511,7 +3529,7 @@ func (a *portalApp) redirectToWeavingSSO(w http.ResponseWriter, r *http.Request,
 	http.Redirect(w, r, strings.TrimRight(a.weavingAppURL, "/")+"/api/auth/portal-sso?ticket="+url.QueryEscape(ticket), http.StatusSeeOther)
 }
 
-func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, username, password string, financialCompanyID int64, expiresAt, trialEndsAt time.Time, notes, accessRole string, permissions []string, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving bool) (projectAccess, string, error) {
+func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, username, password string, financialCompanyID int64, expiresAt, trialEndsAt time.Time, notes, accessRole string, permissions []string, canManageTeam, requiresSetup, allowFinancial, allowOperational, allowWeaving bool, externalOrgRef string) (projectAccess, string, error) {
 	if !validProject(projectKey) {
 		return projectAccess{}, "", fmt.Errorf("invalid project key")
 	}
@@ -3521,6 +3539,7 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 	username = strings.TrimSpace(username)
 	password = strings.TrimSpace(password)
 	notes = strings.TrimSpace(notes)
+	externalOrgRef = strings.TrimSpace(externalOrgRef)
 	if projectKey == "textile-erp" && financialCompanyID <= 0 && requiresSetup {
 		return projectAccess{}, "", fmt.Errorf("financial company id is required for textile customer access")
 	}
@@ -3559,7 +3578,7 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 		return projectAccess{}, "", err
 	}
 	if projectKey == "textile-erp" && financialCompanyID <= 0 {
-		financialCompanyID = existingFinancialCompanyID(items, companyName)
+		financialCompanyID = existingFinancialCompanyID(items, companyName, externalOrgRef)
 	}
 
 	if requiresSetup {
@@ -3630,6 +3649,7 @@ func (a *portalApp) createManagedAccess(projectKey, companyName, contactName, us
 		ContactName:        contactName,
 		Username:           username,
 		FinancialCompanyID: financialCompanyID,
+		ExternalOrgRef:     externalOrgRef,
 		AccessRole:         role,
 		Permissions:        normalizedPermissions,
 		CanManageTeam:      canManageTeam,
@@ -4286,6 +4306,8 @@ func (a *portalApp) accessResponse(record projectAccess, rawPassword string) map
 		"password":             rawPassword,
 		"financial_company_id": record.FinancialCompanyID,
 		"financialCompanyId":   record.FinancialCompanyID,
+		"external_org_ref":     record.ExternalOrgRef,
+		"externalOrgRef":       record.ExternalOrgRef,
 		"access_role":          role,
 		"accessRole":           role,
 		"permissions":          permissions,
