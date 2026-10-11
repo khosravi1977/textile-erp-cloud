@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"embed"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
 	"net/http"
+	"path"
 	"net/mail"
 	"os"
 	"path/filepath"
@@ -18,6 +20,9 @@ import (
 
 //go:embed assets/plans-og.png
 var plansOGImage []byte
+
+//go:embed assets/fonts
+var fontFiles embed.FS
 
 const (
 	purchaseOrderPending  = "pending"
@@ -597,6 +602,39 @@ func (a *portalApp) purchasePlans(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	page := strings.ReplaceAll(purchasePlansHTML, "__OG_IMAGE__", html.EscapeString(strings.TrimRight(a.publicBase, "/")+"/assets/plans-og.png"))
 	_, _ = io.WriteString(w, page)
+}
+
+func (a *portalApp) portalFont(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := strings.TrimPrefix(path.Clean(r.URL.Path), "/assets/fonts/")
+	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "..") {
+		http.NotFound(w, r)
+		return
+	}
+	allowed := map[string]string{
+		"Vazirmatn-Regular.woff2": "font/woff2",
+		"Vazirmatn-Medium.woff2":  "font/woff2",
+		"Vazirmatn-Bold.woff2":    "font/woff2",
+	}
+	contentType, ok := allowed[name]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := fontFiles.ReadFile("assets/fonts/" + name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Method == http.MethodGet {
+		_, _ = w.Write(data)
+	}
 }
 
 func (a *portalApp) plansSocialImage(w http.ResponseWriter, r *http.Request) {
