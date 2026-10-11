@@ -23,6 +23,7 @@
 /api/public/purchase-orders
 /api/weaving/sso-ticket/
 /assets/
+/assets/fonts/
 /assets/plans-og.png
 /downloads/HesabYar.apk
 /executive
