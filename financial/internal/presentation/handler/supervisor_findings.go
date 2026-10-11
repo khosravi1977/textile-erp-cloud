@@ -8,6 +8,7 @@ import (
 	"github.com/erpsystem/textile-erp/internal/application/financecore"
 	"math"
 	"sort"
+	"strings"
 )
 
 type supervisorFinding struct {
@@ -81,8 +82,15 @@ func supervisorStateFindings(state map[string]any) []supervisorFinding {
 	for id, expense := range expenses {
 		if firstText(expense, "source_type") == "operational_expense" {
 			verified, _ := expense["verifiedPayment"].(map[string]any)
-			if firstText(verified, "accountId") != firstText(expense, "accountId") || !supervisorSameDate(firstText(verified, "date"), firstText(expense, "date")) || !amountsEqual(number(verified["amount"]), number(expense["amount"])) {
-				add("payment-verification", "warning", "costs", id, "مبدأ عملیاتی بانک پرداخت‌کننده را مشخص نمی‌کند؛ حساب و مبلغ هزینه را در فرم مالی بررسی و ذخیره کنید", firstText(expense, "accountId"))
+			// A synced operational expense that already carries its paying
+			// account, date and amount is complete evidence on its own; the
+			// finance form's verifiedPayment stamp must not re-queue it.
+			complete := firstText(expense, "accountId") != "" && firstText(expense, "date") != "" && expense["amount"] != nil
+			stamped := firstText(verified, "accountId") != "" || firstText(verified, "date") != "" || verified["amount"] != nil
+			if !complete {
+				add("payment-verification", "warning", "costs", id, "هزینه عملیاتی حساب، تاریخ یا مبلغ ندارد؛ در فرم مالی تکمیل و ذخیره کنید", firstText(expense, "accountId"))
+			} else if stamped && (firstText(verified, "accountId") != firstText(expense, "accountId") || !supervisorSameDate(firstText(verified, "date"), firstText(expense, "date")) || !amountsEqual(number(verified["amount"]), number(expense["amount"]))) {
+				add("payment-verification", "warning", "costs", id, "تأیید مالی ثبت‌شده با حساب، تاریخ یا مبلغ هزینه یکسان نیست؛ تناقض را بررسی کنید", firstText(expense, "accountId"))
 			}
 		}
 		linked := filterSupervisorMovements(movements, "sourceExpense", id)
@@ -125,7 +133,7 @@ func supervisorStateFindings(state map[string]any) []supervisorFinding {
 			}
 			for _, m := range linked {
 				party := firstText(m, "payer", "customer")
-				if firstText(m, "direction") != config.direction || party != firstText(invoice, "customer") || !boolValue(m["counterpartyConfirmed"]) {
+				if firstText(m, "direction") != config.direction || !supervisorPartyMatches(party, firstText(invoice, "customer")) || !boolValue(m["counterpartyConfirmed"]) {
 					add("cash-party", "critical", config.page, id, "جهت پرداخت یا طرف حساب گردش با فاکتور یکسان نیست", evidence)
 					break
 				}
@@ -140,8 +148,8 @@ func supervisorStateFindings(state map[string]any) []supervisorFinding {
 					// Count and quantities detect duplicate valuation, even if amounts match.
 					if len(stocks) != 1 {
 						add("stock-link", "critical", config.page, id, "فاکتور ورود باید دقیقاً یک ردیف موجودی مرتبط داشته باشد", len(stocks))
-					} else if math.Abs(number(stocks[0]["quantity"])-number(invoice["quantity"])) > 0.000001 || firstText(stocks[0], "itemName") != firstText(invoice, "itemName") || firstText(stocks[0], "customer") != firstText(invoice, "customer") {
-						add("stock-effect", "critical", config.page, id, "مقدار، کالا یا مالک موجودی با فاکتور ورود متفاوت است", []any{normalized(invoice), normalized(stocks[0])})
+					} else if diff := stockEffectDetail(invoice, stocks[0]); diff != "" {
+						add("stock-effect", "critical", config.page, id, diff, []any{normalized(invoice), normalized(stocks[0])})
 					}
 				}
 			}
@@ -159,7 +167,7 @@ func supervisorStateFindings(state map[string]any) []supervisorFinding {
 			}
 			for _, d := range docs {
 				actual[firstText(d, "checkNo")+"|"+firstText(d, "dueDate")] += number(d["amount"])
-				if firstText(d, "customer") != firstText(invoice, "customer") {
+				if !supervisorPartyMatches(firstText(d, "customer"), firstText(invoice, "customer")) {
 					add("check-party", "critical", docField, firstText(d, "id"), "طرف حساب چک با فاکتور مرتبط یکسان نیست", normalized(d))
 				}
 			}
@@ -249,6 +257,50 @@ func supervisorSameDate(left, right string) bool {
 	a, errA := financecore.AccountingDate(left)
 	b, errB := financecore.AccountingDate(right)
 	return errA == nil && errB == nil && a.Equal(b)
+}
+
+// supervisorPartyMatches compares party display names across ledgers that
+// store the same counterparty under a short label or a fuller operational
+// title («کسا» vs «چله پیچی کسا»). Exact equality always matches; otherwise
+// the shorter name must appear as a whole trailing segment of the longer one.
+// Anything else (for example «کسا» vs «کسایانی») stays a mismatch.
+func supervisorPartyMatches(left, right string) bool {
+	a := normalizePartyLabel(left)
+	b := normalizePartyLabel(right)
+	if a == "" || b == "" {
+		return a == b
+	}
+	if a == b {
+		return true
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	return strings.HasSuffix(b, a) && (len(b) == len(a) || b[len(b)-len(a)-1] == ' ')
+}
+
+func normalizePartyLabel(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+}
+
+// stockEffectDetail names exactly which field diverges between an incoming
+// invoice and its inventory effect, so the supervisor queue never claims a
+// quantity mismatch when only the label differs. Empty string means aligned.
+func stockEffectDetail(invoice, stock map[string]any) string {
+	parts := []string{}
+	if math.Abs(number(stock["quantity"])-number(invoice["quantity"])) > 0.000001 {
+		parts = append(parts, "مقدار")
+	}
+	if firstText(stock, "itemName") != firstText(invoice, "itemName") {
+		parts = append(parts, "نام کالا")
+	}
+	if !supervisorPartyMatches(firstText(stock, "customer"), firstText(invoice, "customer")) {
+		parts = append(parts, "مالک موجودی")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "، ") + " ردیف موجودی با فاکتور ورود متفاوت است"
 }
 
 // Both the preview and the committed journal use deriveWorkspaceLedger. There

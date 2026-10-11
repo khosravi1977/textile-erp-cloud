@@ -45,6 +45,8 @@ func SetupRouter(services ...*telegramreport.Service) http.Handler {
 	mux.HandleFunc("/api/supervisor/report", h.SupervisorReport)
 	mux.HandleFunc("/api/supervisor/preview", h.SupervisorReview)
 	mux.HandleFunc("/api/supervisor/commit", h.SupervisorReview)
+	mux.HandleFunc("/api/supervisor/agent", h.SupervisorAgentRun)
+	mux.HandleFunc("/api/supervisor/agent/report", h.SupervisorAgentReport)
 	mux.HandleFunc("/api/workspace/history", h.GetWorkspaceHistory)
 	mux.HandleFunc("/api/workspace/summary", h.GetWorkspaceSummaryAccurate)
 	mux.HandleFunc("/api/workspace/alerts", h.GetWorkspaceAlertsAccurate)
