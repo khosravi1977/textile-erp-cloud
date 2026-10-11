@@ -181,6 +181,8 @@ func requiredPermissions(path string) []string {
 		return []string{"financialSupervisor", "financialHealth", "advisor"}
 	case path == "/api/supervisor/preview" || path == "/api/supervisor/commit":
 		return []string{"incomingInvoices"}
+	case path == "/api/supervisor/agent" || path == "/api/supervisor/agent/report":
+		return []string{"financialSupervisor", "financialHealth", "advisor"}
 	case path == "/api/workspace":
 		return []string{"dashboard", "financialHealth", "financialSupervisor", "initialData", "incomingInvoices", "yarnOutInvoices", "invoices", "inventory", "costs", "receivableDocs", "payableDocs", "bankCash", "accounting", "reports", "taxReports", "credit", "advisor", "mobileApp"}
 	case strings.HasPrefix(path, "/api/workspace/"):

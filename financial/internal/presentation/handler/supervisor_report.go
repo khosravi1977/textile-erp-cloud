@@ -136,7 +136,7 @@ func (h *APIHandler) buildSupervisorReport(r *http.Request) (supervisorReport, e
 			if mobileCanonicalBankName(firstText(account, "name")) != mobileCanonicalBankName(bankName) {
 				add("mobile-bank", "warning", "bankCash", id, "نام بانک مالی با بانک مبدأ حسابیار یکسان نیست؛ نگاشت حساب را بررسی کنید")
 			}
-			if boolValue(m["counterpartyConfirmed"]) && partyName != "" && firstText(m, "payer", "customer") != partyName {
+			if boolValue(m["counterpartyConfirmed"]) && partyName != "" && !supervisorPartyMatches(firstText(m, "payer", "customer"), partyName) {
 				add("mobile-party", "critical", "bankCash", id, "طرف حساب تأییدشده با طرف حساب ثبت‌شده در هسته حسابیار متفاوت است")
 			}
 		}
@@ -231,6 +231,8 @@ func StartSupervisorWorker(ctx context.Context) {
 				}
 				if err != nil {
 					log.Printf("financial supervisor snapshot unavailable company=%d", id)
+				} else {
+					SweepSupervisorAgentForCompany(ctx, id)
 				}
 				cancel()
 			}
