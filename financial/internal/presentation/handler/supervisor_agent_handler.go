@@ -113,11 +113,11 @@ func runSupervisorAgent(ctx context.Context, companyID int64, report supervisorR
 	}
 	if classifier != nil {
 		result.Model = classifier.Name()
-		result.LLMUsed = true
-		for _, it := range items {
-			if it.By == "llm" {
-				break
-			}
+	}
+	for _, it := range items {
+		if it.By == "llm" {
+			result.LLMUsed = true
+			break
 		}
 	}
 	return result
