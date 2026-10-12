@@ -77,7 +77,7 @@ func (c *LLMClassifier) Classify(ctx context.Context, f Finding) (Action, string
 			{Role: "user", Content: fmt.Sprintf("یافته: %s\nکد: %s\nشدت: %s\nصفحه: %s\nشرح: %s", f.ID, f.Code(), f.Severity, f.Page, f.Title)},
 		},
 		Temperature: 0,
-		MaxTokens:   220,
+		MaxTokens:   1500, // thinking models need headroom before the final JSON
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
