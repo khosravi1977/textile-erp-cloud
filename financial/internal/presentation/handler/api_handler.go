@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -54,6 +55,13 @@ func NewAPIHandler(telegram *telegramreport.Service) *APIHandler {
 	}
 }
 
+func (h *APIHandler) Close() error {
+	if h == nil || h.operational == nil {
+		return nil
+	}
+	return h.operational.Close()
+}
+
 func RespondJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
@@ -104,11 +112,20 @@ func (h *APIHandler) requireOperational(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *APIHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if postgres.DB == nil || postgres.DB.PingContext(ctx) != nil {
+		RespondJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "unavailable", "service": "textile-erp", "database": "unavailable",
+		})
+		return
+	}
 	telegramAvailable := h.telegram != nil && h.telegram.Available()
 	RespondJSON(w, http.StatusOK, map[string]interface{}{
 		"status":          "ok",
 		"service":         "textile-erp",
 		"version":         "2.1.0",
+		"database":        "ok",
 		"telegramReports": map[string]bool{"available": telegramAvailable},
 		"features": []string{
 			"financial-advisor", "waste-calculator", "commission-calculator",
