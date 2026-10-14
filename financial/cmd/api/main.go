@@ -23,7 +23,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Database did not become ready: %v", err)
 	}
-	defer db.Close()
+	defer postgres.Close()
 
 	// Run migrations
 	migrationsPath := "internal/infrastructure/persistence/postgres/migrations"
