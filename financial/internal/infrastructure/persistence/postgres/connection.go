@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,9 +63,9 @@ func Connect(cfg Config) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetMaxOpenConns(getIntEnv("DB_MAX_OPEN_CONNS", 10))
+	db.SetMaxIdleConns(getIntEnv("DB_MAX_IDLE_CONNS", 2))
+	db.SetConnMaxLifetime(getDurationEnv("DB_CONN_MAX_LIFETIME", 5*time.Minute))
 
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
@@ -94,9 +95,9 @@ func connectReadReplica(cfg Config) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open read replica: %w", err)
 	}
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetMaxOpenConns(getIntEnv("DB_READ_MAX_OPEN_CONNS", 5))
+	db.SetMaxIdleConns(getIntEnv("DB_READ_MAX_IDLE_CONNS", 1))
+	db.SetConnMaxLifetime(getDurationEnv("DB_READ_CONN_MAX_LIFETIME", 5*time.Minute))
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to ping read replica: %w", err)
@@ -113,6 +114,34 @@ func Close() {
 		ReadDB.Close()
 		log.Println("Read replica connection closed")
 	}
+}
+
+func getIntEnv(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		log.Printf("Invalid %s=%q; using %d", key, value, fallback)
+		return fallback
+	}
+	return parsed
+}
+
+func getDurationEnv(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		log.Printf("Invalid %s=%q; using %s", key, value, fallback)
+		return fallback
+	}
+	return parsed
 }
 
 func Reader() *sql.DB {

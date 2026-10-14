@@ -118,6 +118,8 @@ func NewFromEnv() (*Bridge, error) {
 		if err != nil {
 			return nil, err
 		}
+		configurePostgresPool(db)
+		configurePostgresPool(db)
 		if err = db.Ping(); err != nil {
 			_ = db.Close()
 			return nil, err
@@ -161,6 +163,20 @@ func NewFromEnv() (*Bridge, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	return &Bridge{db: db, dialect: "sqlite"}, nil
+}
+
+func configurePostgresPool(db *sql.DB) {
+	maxOpen := 5
+	maxIdle := 1
+	if value, err := strconv.Atoi(getEnv("OPERATIONAL_DB_MAX_OPEN_CONNS", "5")); err == nil && value > 0 {
+		maxOpen = value
+	}
+	if value, err := strconv.Atoi(getEnv("OPERATIONAL_DB_MAX_IDLE_CONNS", "1")); err == nil && value >= 0 {
+		maxIdle = value
+	}
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxIdle)
+	db.SetConnMaxLifetime(5 * time.Minute)
 }
 
 func getEnv(key, fallback string) string {
