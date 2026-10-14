@@ -128,10 +128,15 @@ func SweepSupervisorAgentForCompany(ctx context.Context, companyID int64) {
 	if postgres.DB == nil {
 		return
 	}
+	h := NewAPIHandler(nil)
+	defer h.Close()
+	h.sweepSupervisorAgentForCompany(ctx, companyID)
+}
+
+func (h *APIHandler) sweepSupervisorAgentForCompany(ctx context.Context, companyID int64) {
 	scanCtx, cancel := context.WithTimeout(requestctx.WithIdentity(ctx, companyID, 0, "system", "supervisor-agent"), 60*time.Second)
 	defer cancel()
 	r, _ := http.NewRequestWithContext(scanCtx, http.MethodPost, "http://internal/api/supervisor/agent", nil)
-	h := NewAPIHandler(nil)
 	report, err := h.buildSupervisorReport(r)
 	if err != nil {
 		return

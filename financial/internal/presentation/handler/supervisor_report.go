@@ -202,6 +202,7 @@ func StartSupervisorWorker(ctx context.Context) {
 	}
 	h := NewAPIHandler(nil)
 	go func() {
+		defer h.Close()
 		run := func() {
 			rows, err := postgres.DB.QueryContext(ctx, `SELECT id FROM companies ORDER BY id`)
 			if err != nil {
@@ -232,7 +233,7 @@ func StartSupervisorWorker(ctx context.Context) {
 				if err != nil {
 					log.Printf("financial supervisor snapshot unavailable company=%d", id)
 				} else {
-					SweepSupervisorAgentForCompany(ctx, id)
+					h.sweepSupervisorAgentForCompany(ctx, id)
 				}
 				cancel()
 			}

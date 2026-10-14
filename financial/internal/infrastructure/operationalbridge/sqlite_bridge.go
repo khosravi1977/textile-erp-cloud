@@ -114,17 +114,7 @@ type FinancialMismatchReport struct {
 
 func NewFromEnv() (*Bridge, error) {
 	if dsn := strings.TrimSpace(os.Getenv("OPERATIONAL_DATABASE_URL")); dsn != "" {
-		db, err := sql.Open("postgres", dsn)
-		if err != nil {
-			return nil, err
-		}
-		configurePostgresPool(db)
-		configurePostgresPool(db)
-		if err = db.Ping(); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
-		return &Bridge{db: db, dialect: "postgres"}, nil
+		return openPostgresBridge(dsn)
 	}
 	driver := strings.ToLower(strings.TrimSpace(getEnv("OPERATIONAL_DB_DRIVER", "postgres")))
 	if driver == "postgres" || driver == "pg" || driver == "postgresql" {
@@ -135,15 +125,7 @@ func NewFromEnv() (*Bridge, error) {
 		dbName := getEnv("DB_NAME", "textile_erp")
 		sslMode := getEnv("DB_SSLMODE", "disable")
 		dsn := "host=" + host + " port=" + port + " user=" + user + " password=" + password + " dbname=" + dbName + " sslmode=" + sslMode
-		db, err := sql.Open("postgres", dsn)
-		if err != nil {
-			return nil, err
-		}
-		if err = db.Ping(); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
-		return &Bridge{db: db, dialect: "postgres"}, nil
+		return openPostgresBridge(dsn)
 	}
 	path := strings.TrimSpace(os.Getenv("OPERATIONAL_SQLITE_PATH"))
 	if path == "" {
@@ -165,7 +147,11 @@ func NewFromEnv() (*Bridge, error) {
 	return &Bridge{db: db, dialect: "sqlite"}, nil
 }
 
-func configurePostgresPool(db *sql.DB) {
+func openPostgresBridge(dsn string) (*Bridge, error) {
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, err
+	}
 	maxOpen := 5
 	maxIdle := 1
 	if value, err := strconv.Atoi(getEnv("OPERATIONAL_DB_MAX_OPEN_CONNS", "5")); err == nil && value > 0 {
@@ -177,6 +163,14 @@ func configurePostgresPool(db *sql.DB) {
 	db.SetMaxOpenConns(maxOpen)
 	db.SetMaxIdleConns(maxIdle)
 	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return &Bridge{db: db, dialect: "postgres"}, nil
 }
 
 func getEnv(key, fallback string) string {
