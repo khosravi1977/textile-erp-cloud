@@ -63,6 +63,29 @@ func mobileJalaliOrder(value string) string {
 	return digits.String()
 }
 
+// mobileDateOrderKey canonicalizes jalali ("1405/08/01 11:21") and ISO
+// ("2026-10-23") values to comparable Gregorian YYYYMMDD digits. The raw digit
+// order cannot be mixed: every ISO year starts with "20" and sorts above any
+// jalali year, so a jalali report after an ISO-dated one would always look
+// older and get skipped.
+func mobileDateOrderKey(value string) string {
+	digits := mobileJalaliOrder(value)
+	if len(digits) < 8 {
+		return digits
+	}
+	year, errY := strconv.Atoi(digits[:4])
+	month, errM := strconv.Atoi(digits[4:6])
+	day, errD := strconv.Atoi(digits[6:8])
+	if errY != nil || errM != nil || errD != nil || month < 1 || month > 12 || day < 1 || day > 31 {
+		return digits
+	}
+	if year >= 1700 {
+		return digits[:8]
+	}
+	gy, gm, gd := jalaliToGregorian(year, month, day)
+	return fmt.Sprintf("%04d%02d%02d", gy, gm, gd)
+}
+
 func classifyMobileTransaction(explicit, direction, group, customer, counterAccount string) (string, error) {
 	explicit = strings.TrimSpace(explicit)
 	direction = strings.TrimSpace(direction)
@@ -573,8 +596,9 @@ func (h *APIHandler) persistMobileTransactionState(r *http.Request, companyID in
 			accountIndex = len(accounts) - 1
 		}
 		resolvedAccountID := stringValue(accounts[accountIndex]["id"])
-		if req.ReportedBalance != nil && (mobileJalaliOrder(stringValue(accounts[accountIndex]["lastReportedJalali"])) == "" || mobileJalaliOrder(req.OccurredJalali) >= mobileJalaliOrder(stringValue(accounts[accountIndex]["lastReportedJalali"]))) {
+		if req.ReportedBalance != nil && (mobileDateOrderKey(stringValue(accounts[accountIndex]["lastReportedJalali"])) == "" || mobileDateOrderKey(req.OccurredJalali) >= mobileDateOrderKey(stringValue(accounts[accountIndex]["lastReportedJalali"]))) {
 			movementNet := int64(0)
+			alreadyPosted := false
 			for _, movement := range rowsFrom(state, "movements") {
 				if stringValue(movement["accountId"]) == resolvedAccountID {
 					if stringValue(movement["direction"]) == "in" {
@@ -583,10 +607,19 @@ func (h *APIHandler) persistMobileTransactionState(r *http.Request, companyID in
 						movementNet -= mobileInt64(movement["amount"])
 					}
 				}
+				if strings.TrimSpace(stringValue(movement["sourceMobileTransaction"])) == strings.TrimSpace(req.ExternalID) {
+					alreadyPosted = true
+				}
 			}
-			currentEffect := req.Amount
-			if req.Direction == "out" {
-				currentEffect = -currentEffect
+			// movementNet is computed before this transaction's own movement is
+			// appended, so a first post must subtract the transaction's effect;
+			// a re-delivered (duplicate) transaction is already inside the net.
+			currentEffect := int64(0)
+			if !alreadyPosted {
+				currentEffect = req.Amount
+				if req.Direction == "out" {
+					currentEffect = -currentEffect
+				}
 			}
 			accounts[accountIndex]["opening"] = *req.ReportedBalance - movementNet - currentEffect
 			accounts[accountIndex]["lastReportedBalance"] = *req.ReportedBalance
@@ -1072,12 +1105,12 @@ func (h *APIHandler) MobileSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			resolvedID := stringValue(accounts[accountIndex]["id"])
 			accounts[accountIndex]["name"] = accountName
-			latestExistingOrder := mobileJalaliOrder(stringValue(accounts[accountIndex]["lastReportedJalali"]))
+			latestExistingOrder := mobileDateOrderKey(stringValue(accounts[accountIndex]["lastReportedJalali"]))
 			duplicateIDs := map[string]bool{}
 			filteredAccounts := make([]map[string]any, 0, len(accounts))
 			for index, account := range accounts {
 				if index != accountIndex && mobileCanonicalBankName(stringValue(account["name"])) == accountName {
-					if candidate := mobileJalaliOrder(stringValue(account["lastReportedJalali"])); candidate > latestExistingOrder {
+					if candidate := mobileDateOrderKey(stringValue(account["lastReportedJalali"])); candidate > latestExistingOrder {
 						latestExistingOrder = candidate
 					}
 					duplicateIDs[stringValue(account["id"])] = true
@@ -1099,7 +1132,7 @@ func (h *APIHandler) MobileSettings(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			incomingOrder := mobileJalaliOrder(reported.ReportedAt)
+			incomingOrder := mobileDateOrderKey(reported.ReportedAt)
 			if latestExistingOrder != "" && incomingOrder != "" && incomingOrder < latestExistingOrder {
 				continue
 			}
