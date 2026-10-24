@@ -597,18 +597,17 @@ func (h *APIHandler) persistMobileTransactionState(r *http.Request, companyID in
 		}
 		resolvedAccountID := stringValue(accounts[accountIndex]["id"])
 		if req.ReportedBalance != nil && (mobileDateOrderKey(stringValue(accounts[accountIndex]["lastReportedJalali"])) == "" || mobileDateOrderKey(req.OccurredJalali) >= mobileDateOrderKey(stringValue(accounts[accountIndex]["lastReportedJalali"]))) {
-			movementNet := int64(0)
+			// movementNet must match the UI's accountBalance exactly: direct
+			// movements PLUS the opposite leg of inter-account transfers that
+			// land on this account via counterAccountId. Anchoring on the
+			// direct leg alone made every transfer-destination bank drift
+			// (and display negative) as soon as the UI added the counter leg.
+			movementNet := mobileAccountNet(rowsFrom(state, "movements"), resolvedAccountID)
 			alreadyPosted := false
 			for _, movement := range rowsFrom(state, "movements") {
-				if stringValue(movement["accountId"]) == resolvedAccountID {
-					if stringValue(movement["direction"]) == "in" {
-						movementNet += mobileInt64(movement["amount"])
-					} else {
-						movementNet -= mobileInt64(movement["amount"])
-					}
-				}
 				if strings.TrimSpace(stringValue(movement["sourceMobileTransaction"])) == strings.TrimSpace(req.ExternalID) {
 					alreadyPosted = true
+					break
 				}
 			}
 			// movementNet is computed before this transaction's own movement is
@@ -910,13 +909,38 @@ func mobilePayableDocumentRow(req mobilePayableDocumentRequest, now time.Time) (
 }
 
 func hasMobilePayableDocument(rows []map[string]any, externalID string) bool {
-	for _, row := range rows {
+	_, found := indexMobilePayableDocument(rows, externalID)
+	return found
+}
+
+func indexMobilePayableDocument(rows []map[string]any, externalID string) (int, bool) {
+	for index, row := range rows {
 		if stringValue(row["externalId"]) == externalID ||
 			(stringValue(row["source_type"]) == "hesabyar_mobile" && stringValue(row["sourceId"]) == externalID) {
-			return true
+			return index, true
 		}
 	}
-	return false
+	return -1, false
+}
+
+// mergePayableDocument keeps every stored field the phone no longer knows
+// (blank in the incoming row) and applies the rest of the phone's update.
+func mergePayableDocument(existing, incoming map[string]any) map[string]any {
+	merged := map[string]any{}
+	for key, value := range existing {
+		merged[key] = value
+	}
+	for key, value := range incoming {
+		text := strings.TrimSpace(stringValue(value))
+		if text == "" && key != "status" && key != "customer" && key != "amount" && key != "dueJalali" && key != "due" {
+			continue
+		}
+		if text == "" && stringValue(merged[key]) != "" {
+			continue
+		}
+		merged[key] = value
+	}
+	return merged
 }
 
 func (h *APIHandler) MobilePayableDocument(w http.ResponseWriter, r *http.Request) {
@@ -947,9 +971,32 @@ func (h *APIHandler) MobilePayableDocument(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		state := decodeWorkspaceMap(doc.State)
-		if hasMobilePayableDocument(rowsFrom(state, "payableDocs"), externalID) {
-			RespondJSON(w, http.StatusOK, map[string]any{"status": "duplicate", "revision": doc.Revision})
-			return
+		if index, found := indexMobilePayableDocument(rowsFrom(state, "payableDocs"), externalID); found {
+			// The app may re-send a cheque whose cheque number / sayad id / bank
+			// were wiped on the phone. Blank fields must never overwrite the
+			// server's stored values; non-blank ones update them (disposition
+			// changes flow through here instead of being dead-ended as duplicate).
+			payableDocs := rowsFrom(state, "payableDocs")
+			payableDocs[index] = mergePayableDocument(payableDocs[index], row)
+			state["payableDocs"] = mapsToAny(payableDocs)
+			raw, _ := json.Marshal(state)
+			canonical, checksum, validationErr := validateWorkspaceState(raw)
+			if validationErr != nil {
+				RespondError(w, http.StatusBadRequest, validationErr.Error())
+				return
+			}
+			expected := doc.Revision
+			if saved, saveErr := saveWorkspace(r, companyID, requestctx.UserID(r.Context()), &expected, canonical, checksum, nil); saveErr == nil {
+				RespondJSON(w, http.StatusOK, map[string]any{"status": "synced", "revision": saved.Revision})
+				return
+			} else {
+				var conflict workspaceConflict
+				if !errors.As(saveErr, &conflict) {
+					RespondError(w, http.StatusInternalServerError, saveErr.Error())
+					return
+				}
+				continue
+			}
 		}
 		state["payableDocs"] = append([]any{row}, anyRows(state, "payableDocs")...)
 		raw, _ := json.Marshal(state)
@@ -1001,17 +1048,7 @@ func (h *APIHandler) deleteMobileTransaction(w http.ResponseWriter, r *http.Requ
 			if _, managed := account["lastReportedBalance"]; !managed {
 				continue
 			}
-			net := int64(0)
-			for _, movement := range rowsFrom(state, "movements") {
-				if stringValue(movement["accountId"]) == stringValue(account["id"]) {
-					if stringValue(movement["direction"]) == "in" {
-						net += mobileInt64(movement["amount"])
-					} else {
-						net -= mobileInt64(movement["amount"])
-					}
-				}
-			}
-			account["opening"] = mobileInt64(account["lastReportedBalance"]) - net
+			account["opening"] = mobileInt64(account["lastReportedBalance"]) - mobileAccountNet(rowsFrom(state, "movements"), stringValue(account["id"]))
 		}
 		raw, _ := json.Marshal(state)
 		canonical, checksum, validationErr := validateWorkspaceState(raw)
@@ -1136,16 +1173,10 @@ func (h *APIHandler) MobileSettings(w http.ResponseWriter, r *http.Request) {
 			if latestExistingOrder != "" && incomingOrder != "" && incomingOrder < latestExistingOrder {
 				continue
 			}
-			movementNet := int64(0)
-			for _, movement := range movements {
-				if stringValue(movement["accountId"]) == resolvedID {
-					if stringValue(movement["direction"]) == "in" {
-						movementNet += mobileInt64(movement["amount"])
-					} else {
-						movementNet -= mobileInt64(movement["amount"])
-					}
-				}
-			}
+			// Same formula as the UI's accountBalance (direct legs + transfer
+			// counter-legs) so the displayed balance lands exactly on the
+			// reported value; see mobileAccountNet.
+			movementNet := mobileAccountNet(movements, resolvedID)
 			accounts[accountIndex]["opening"] = reported.Balance - movementNet
 			accounts[accountIndex]["lastReportedBalance"] = reported.Balance
 			accounts[accountIndex]["lastReportedJalali"] = strings.TrimSpace(reported.ReportedAt)
@@ -1197,6 +1228,32 @@ func mapsToAny(values []map[string]any) []any {
 		out[i] = values[i]
 	}
 	return out
+}
+
+// mobileAccountNet mirrors the financial UI's accountBalance: direct
+// movements on the account plus the mirrored leg of transfers whose
+// counterAccountId is this account. Every recalibration site must use it,
+// otherwise anchored openings drift from what the dashboard renders.
+func mobileAccountNet(movements []map[string]any, accountID string) int64 {
+	net := int64(0)
+	for _, movement := range movements {
+		amount := mobileInt64(movement["amount"])
+		if stringValue(movement["accountId"]) == accountID {
+			if stringValue(movement["direction"]) == "in" {
+				net += amount
+			} else {
+				net -= amount
+			}
+		}
+		if stringValue(movement["transactionType"]) == "transfer" && stringValue(movement["counterAccountId"]) == accountID {
+			if stringValue(movement["direction"]) == "in" {
+				net -= amount
+			} else {
+				net += amount
+			}
+		}
+	}
+	return net
 }
 
 func mobileInt64(value any) int64 {

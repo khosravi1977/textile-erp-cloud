@@ -47,3 +47,29 @@ func TestTypedTransactionRequestDecodesReportedBalance(t *testing.T) {
 		t.Fatalf("reported_balance must stay nil when absent: %#v", absent.ReportedBalance)
 	}
 }
+
+func TestMobileAccountNetIncludesTransferCounterLeg(t *testing.T) {
+	movements := []map[string]any{
+		{"accountId": "a", "direction": "out", "amount": 500.0, "transactionType": "expense"},
+		{"accountId": "a", "direction": "out", "amount": 200.0, "transactionType": "transfer", "counterAccountId": "b"},
+		{"accountId": "b", "direction": "in", "amount": 100.0, "transactionType": "other"},
+	}
+	if got := mobileAccountNet(movements, "a"); got != -700 {
+		t.Fatalf("source account net = %d, want -700", got)
+	}
+	if got := mobileAccountNet(movements, "b"); got != 300 {
+		t.Fatalf("counter account net = %d, want 300 (100 direct in + 200 mirrored transfer leg)", got)
+	}
+}
+
+func TestMergePayableDocumentKeepsStoredFieldsWhenPhoneBlank(t *testing.T) {
+	existing := map[string]any{"checkNo": "9019/653313", "sayadId": "6880040144294387", "bank": "بانک ملت", "status": "open", "amount": 137000000.0}
+	incoming := map[string]any{"checkNo": "", "sayadId": "", "bank": "", "status": "paid", "amount": 137000000.0}
+	merged := mergePayableDocument(existing, incoming)
+	if merged["checkNo"] != "9019/653313" || merged["sayadId"] != "6880040144294387" || merged["bank"] != "بانک ملت" {
+		t.Fatalf("blank phone fields wiped stored cheque data: %#v", merged)
+	}
+	if merged["status"] != "paid" {
+		t.Fatalf("disposition update lost: %#v", merged["status"])
+	}
+}
