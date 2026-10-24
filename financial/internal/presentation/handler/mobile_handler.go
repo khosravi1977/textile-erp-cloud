@@ -880,18 +880,25 @@ func mobilePayableDocumentRow(req mobilePayableDocumentRequest, now time.Time) (
 		dueJalali = strings.TrimSpace(req.DueAlt)
 	}
 	bank := strings.TrimSpace(req.Bank)
-	if externalID == "" || customer == "" || req.Amount <= 0 || checkNo == "" || dueJalali == "" || bank == "" {
-		return nil, errors.New("external_id, customer, amount, check_no, due_jalali and bank are required")
+	// A payable cheque starts its life as the incomplete "منتظر تعیین تکلیف"
+	// stub the app creates from an SMS (owner/amount/due only). The cheque
+	// number, sayad id and bank arrive later via re-sends, which merge into
+	// the stored row; see mergePayableDocument. Only sayad is format-checked
+	// when present.
+	if externalID == "" || customer == "" || req.Amount <= 0 || dueJalali == "" {
+		return nil, errors.New("external_id, customer, amount and due_jalali are required")
 	}
-	if len(sayadID) != 16 {
+	if sayadID != "" && len(sayadID) != 16 {
 		return nil, errors.New("Sayad identifier must contain exactly 16 digits")
 	}
 	status := strings.TrimSpace(req.Status)
 	if status == "" {
 		status = "open"
 	}
-	if status != "open" {
-		return nil, errors.New("new mobile payable document must have open status")
+	switch status {
+	case "open", "paid", "cleared", "returned", "bounced", "assigned":
+	default:
+		return nil, errors.New("unknown payable document status")
 	}
 	source := strings.TrimSpace(req.Source)
 	if source == "" {
@@ -934,6 +941,9 @@ func mergePayableDocument(existing, incoming map[string]any) map[string]any {
 		merged[key] = value
 	}
 	for key, value := range incoming {
+		if key == "createdAt" || key == "id" {
+			continue
+		}
 		text := strings.TrimSpace(stringValue(value))
 		if text == "" && key != "status" && key != "customer" && key != "amount" && key != "dueJalali" && key != "due" {
 			continue
