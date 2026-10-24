@@ -73,3 +73,16 @@ func TestMergePayableDocumentKeepsStoredFieldsWhenPhoneBlank(t *testing.T) {
 		t.Fatalf("disposition update lost: %#v", merged["status"])
 	}
 }
+
+func TestMergePayableDocumentNeverRegressesTerminalStatus(t *testing.T) {
+	existing := map[string]any{"status": "paid", "checkNo": "9019/653313", "amount": 137000000.0}
+	incoming := map[string]any{"status": "open", "checkNo": "", "amount": 137000000.0}
+	merged := mergePayableDocument(existing, incoming)
+	if merged["status"] != "paid" {
+		t.Fatalf("stale phone status regressed the accountant disposition: %#v", merged["status"])
+	}
+	forward := mergePayableDocument(map[string]any{"status": "open", "checkNo": "1"}, map[string]any{"status": "returned", "checkNo": ""})
+	if forward["status"] != "returned" {
+		t.Fatalf("legit disposition update blocked: %#v", forward["status"])
+	}
+}

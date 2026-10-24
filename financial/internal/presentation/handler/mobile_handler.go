@@ -925,6 +925,9 @@ func indexMobilePayableDocument(rows []map[string]any, externalID string) (int, 
 
 // mergePayableDocument keeps every stored field the phone no longer knows
 // (blank in the incoming row) and applies the rest of the phone's update.
+// A terminal disposition on the server (paid/cleared/returned — usually set
+// by the accountant in the financial UI) is never regressed back to "open"
+// by a stale phone status riding along a bulk re-sync.
 func mergePayableDocument(existing, incoming map[string]any) map[string]any {
 	merged := map[string]any{}
 	for key, value := range existing {
@@ -940,7 +943,18 @@ func mergePayableDocument(existing, incoming map[string]any) map[string]any {
 		}
 		merged[key] = value
 	}
+	if terminalPayableStatus(stringValue(existing["status"])) && stringValue(incoming["status"]) == "open" {
+		merged["status"] = existing["status"]
+	}
 	return merged
+}
+
+func terminalPayableStatus(status string) bool {
+	switch status {
+	case "paid", "cleared", "returned", "bounced":
+		return true
+	}
+	return false
 }
 
 func (h *APIHandler) MobilePayableDocument(w http.ResponseWriter, r *http.Request) {
