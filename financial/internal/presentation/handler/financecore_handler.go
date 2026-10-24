@@ -26,6 +26,10 @@ type typedTransactionRequest struct {
 	PartyName string `json:"party_name"`
 	Group     string `json:"group"`
 	Subgroup  string `json:"subgroup"`
+	// SMS transactions carry the post-transaction bank balance; persisting it
+	// with the transaction keeps the financial bank balance fresh on every
+	// HesabYar send instead of waiting for the periodic settings sync.
+	ReportedBalance *int64 `json:"reported_balance"`
 }
 
 // decodeTypedTransaction parses the posting payload and resolves the party:
@@ -174,6 +178,7 @@ func (h *APIHandler) MobileTypedTransaction(w http.ResponseWriter, r *http.Reque
 		OccurredJalali:  strings.TrimSpace(req.TransactionDate),
 		Amount:          req.Amount,
 		TrackingNo:      strings.TrimSpace(req.BankReference),
+		ReportedBalance: payload.ReportedBalance,
 	}
 	confirmedPartyName := ""
 	if partyID > 0 {
