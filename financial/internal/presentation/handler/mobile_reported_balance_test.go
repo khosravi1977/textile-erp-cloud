@@ -116,3 +116,13 @@ func TestValidateWorkspaceAcceptsOpenStubWithoutCheckNo(t *testing.T) {
 		t.Fatalf("disposition flow broken for stubs: %#v", merged)
 	}
 }
+
+func TestPayableBusinessKeyMatchesInt64RequestRows(t *testing.T) {
+	// mobilePayableDocumentRow stores req.Amount as int64; the matcher must
+	// not treat it as zero (the shared number() helper ignores int64).
+	incoming := map[string]any{"amount": int64(11059200000), "dueJalali": "1405/06/18"}
+	stored := []map[string]any{{"amount": float64(11059200000), "dueJalali": "1405/06/18"}}
+	if index, found := indexPayableDocumentByBusinessKey(stored, incoming); !found || index != 0 {
+		t.Fatalf("int64 incoming row did not match: index=%d found=%v", index, found)
+	}
+}
