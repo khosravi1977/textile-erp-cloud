@@ -46,6 +46,21 @@ func TestGenerateRequiresServerConfiguration(t *testing.T) {
 	}
 }
 
+func TestGenerateParsesDeepSeekWithoutExposingKey(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != "https://api.example.test/chat/completions" { t.Fatalf("unexpected URL: %s", request.URL) }
+		if request.Header.Get("Authorization") != "Bearer server-secret" { t.Fatal("missing server-side authorization") }
+		body, _ := io.ReadAll(request.Body)
+		if strings.Contains(string(body), "server-secret") { t.Fatal("API key leaked into request body") }
+		payload := `{"choices":[{"message":{"content":"{\"executive_summary\":\"summary\",\"highlights\":[\"income\"],\"risks\":[\"cash\"],\"recommended_focus\":\"review\"}"}}],"usage":{"prompt_tokens":10,"completion_tokens":9,"total_tokens":19}}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}, nil
+	})}
+	service := New(nil, Config{Enabled: true, Provider: "deepseek", APIKey: "server-secret", BaseURL: "https://api.example.test", Model: "deepseek-v4-flash"}, client)
+	result, err := service.Generate(context.Background(), 10, 20, Summary{Question: "question", PeriodMonths: 1})
+	if err != nil { t.Fatalf("generate: %v", err) }
+	if result.Narrative.ExecutiveSummary != "summary" || result.TotalTokens != 19 { t.Fatalf("unexpected result: %#v", result) }
+}
+
 func errorsIs(err, target error) bool {
 	return err != nil && strings.Contains(err.Error(), target.Error())
 }

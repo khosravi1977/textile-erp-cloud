@@ -440,6 +440,8 @@ func (a *app) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/nakh-khor", a.requireMenu("yarn-out", a.nakhKhor))
 	mux.HandleFunc("/api/nakh-khor/", a.requireMenu("yarn-out", a.nakhKhorByID))
 	mux.HandleFunc("/api/warper-yarn-balance", a.requireMenu("yarn-out", a.warperYarnBalance))
+	mux.HandleFunc("/api/v-kh-moto", a.requireMenu("v-kh-moto", a.vKhMoto))
+	mux.HandleFunc("/api/v-kh-moto/", a.requireMenu("v-kh-moto", a.vKhMotoByID))
 	mux.HandleFunc("/api/empty-beam-out", a.requireMenu("empty-beam-out", a.emptyBeamOut))
 	mux.HandleFunc("/api/empty-beam-out/", a.requireMenu("empty-beam-out", a.emptyBeamOutByID))
 	mux.HandleFunc("/api/salon", a.requireMenu("salon", a.salon))
@@ -965,10 +967,11 @@ func (a *app) seedMenus() error {
 		{"out-invoice", "فاکتور خروج", "/out-invoice", "🧾", 0, 11},
 		{"expenses", "هزینه‌ها", "/expenses", "💰", 1, 12},
 		{"reports", "گزارشات", "/reports", "📊", 0, 13},
-		{"database", "مدیریت دیتابیس", "/database", "🗄️", 1, 14},
-		{"machinery-services", "خدمات ماشین‌آلات", "/machinery-services", "🔧", 1, 15},
-		{"spare-parts", "موجودی انبار قطعات", "/spare-parts", "⚙️", 1, 16},
-		{"users", "مدیریت کاربران", "/users", "👥", 1, 17},
+		{"v-kh-moto", "ورودی/خروجی متفرقه", "/v-kh-moto", "📋", 0, 14},
+		{"database", "مدیریت دیتابیس", "/database", "🗄️", 1, 15},
+		{"machinery-services", "خدمات ماشین‌آلات", "/machinery-services", "🔧", 1, 16},
+		{"spare-parts", "موجودی انبار قطعات", "/spare-parts", "⚙️", 1, 17},
+		{"users", "مدیریت کاربران", "/users", "👥", 1, 18},
 	}
 	for _, m := range menus {
 		if _, err := a.exec(`INSERT INTO menu_items (menu_key, menu_name, path, icon, is_restricted, sort_order) VALUES (?,?,?,?,?,?)
@@ -2044,6 +2047,74 @@ func (a *app) emptyBeamOutByID(w http.ResponseWriter, r *http.Request) {
 	}
 	id, _ := strconv.Atoi(pathLast(r.URL.Path))
 	writeSave(w, execErr(a.exec(`DELETE FROM empty_beam_out WHERE id_empty_beam_out=?`, id)))
+}
+
+func (a *app) vKhMoto(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := a.query(`SELECT id, COALESCE(tarikh_v_kh_moto,'') AS tarikh, COALESCE(operation_type,''), COALESCE(name_kala,''), COALESCE(shomare_kala,''), COALESCE(from_location,''), COALESCE(to_location,''), COALESCE(person,''), COALESCE(status,''), COALESCE(tozih_v_kh_moto,'') AS tozih, COALESCE(tarikh_bazgasht,'') FROM v_kh_moto ORDER BY id DESC LIMIT 300`)
+		writeRows(w, rows, err, []string{"id", "tarikh", "operation_type", "name_kala", "shomare_kala", "from_location", "to_location", "person", "status", "tozih", "tarikh_bazgasht"})
+	case http.MethodPost:
+		var p struct {
+			ID             int64  `json:"id"`
+			Tarikh         string `json:"tarikh"`
+			OperationType  string `json:"operation_type"`
+			NameKala       string `json:"name_kala"`
+			ShomKala       string `json:"shomare_kala"`
+			FromLocation   string `json:"from_location"`
+			ToLocation     string `json:"to_location"`
+			Person         string `json:"person"`
+			Status         string `json:"status"`
+			Tozih          string `json:"tozih"`
+			TarikhBazgasht string `json:"tarikh_bazgasht"`
+		}
+		if !decode(w, r, &p) {
+			return
+		}
+		p.Tarikh = strings.TrimSpace(p.Tarikh)
+		p.OperationType = strings.TrimSpace(p.OperationType)
+		p.NameKala = strings.TrimSpace(p.NameKala)
+		p.ShomKala = strings.TrimSpace(p.ShomKala)
+		p.FromLocation = strings.TrimSpace(p.FromLocation)
+		p.ToLocation = strings.TrimSpace(p.ToLocation)
+		p.Person = strings.TrimSpace(p.Person)
+		p.Status = strings.TrimSpace(p.Status)
+		p.Tozih = strings.TrimSpace(p.Tozih)
+		p.TarikhBazgasht = strings.TrimSpace(p.TarikhBazgasht)
+		if p.Tarikh == "" {
+			p.Tarikh = jalaliToday()
+		}
+		if p.OperationType == "" {
+			fail(w, 400, "نوع عملیات را انتخاب کنید")
+			return
+		}
+		if p.NameKala == "" {
+			fail(w, 400, "نام کالا را وارد کنید")
+			return
+		}
+		if p.ShomKala == "" {
+			fail(w, 400, "شماره/کد کالا را وارد کنید")
+			return
+		}
+		var err error
+		if p.ID > 0 {
+			_, err = a.exec(`UPDATE v_kh_moto SET tarikh_v_kh_moto=?, operation_type=?, name_kala=?, shomare_kala=?, from_location=?, to_location=?, person=?, status=?, tozih_v_kh_moto=?, tarikh_bazgasht=? WHERE id=?`, p.Tarikh, p.OperationType, p.NameKala, p.ShomKala, p.FromLocation, p.ToLocation, p.Person, p.Status, p.Tozih, p.TarikhBazgasht, p.ID)
+		} else {
+			_, err = a.exec(`INSERT INTO v_kh_moto (tarikh_v_kh_moto, operation_type, name_kala, shomare_kala, from_location, to_location, person, status, tozih_v_kh_moto, tarikh_bazgasht) VALUES (?,?,?,?,?,?,?,?,?,?)`, p.Tarikh, p.OperationType, p.NameKala, p.ShomKala, p.FromLocation, p.ToLocation, p.Person, p.Status, p.Tozih, p.TarikhBazgasht)
+		}
+		writeSave(w, err)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *app) vKhMotoByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	id, _ := strconv.Atoi(pathLast(r.URL.Path))
+	writeSave(w, execErr(a.exec(`DELETE FROM v_kh_moto WHERE id=?`, id)))
 }
 
 func (a *app) activeChelleInfo(machine, shom string) (int64, string, error) {

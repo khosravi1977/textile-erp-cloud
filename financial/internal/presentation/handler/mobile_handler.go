@@ -337,6 +337,47 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		state := decodeWorkspaceMap(doc.State)
+		legacyMobileMovements := rowsFrom(state, "movements")
+		for _, legacyMovement := range legacyMobileMovements {
+			movementID := strings.TrimSpace(stringValue(legacyMovement["id"]))
+			sourceMobileID := strings.TrimSpace(firstText(legacyMovement, "sourceMobileTransaction", "sourceId"))
+			isMobileMovement := strings.HasPrefix(movementID, "mov-sms-") ||
+				strings.EqualFold(strings.TrimSpace(stringValue(legacyMovement["source_type"])), "mobile_sms") ||
+				sourceMobileID != ""
+			if !isMobileMovement {
+				continue
+			}
+
+			if sourceMobileID == "" && strings.HasPrefix(movementID, "mov-sms-") {
+				sourceMobileID = strings.TrimPrefix(movementID, "mov-sms-")
+			}
+			if sourceMobileID != "" {
+				legacyMovement["sourceMobileTransaction"] = sourceMobileID
+				legacyMovement["sourceId"] = sourceMobileID
+			}
+			legacyMovement["source_type"] = "mobile_sms"
+
+			if strings.TrimSpace(stringValue(legacyMovement["transactionType"])) != "" {
+				continue
+			}
+			direction := strings.TrimSpace(stringValue(legacyMovement["direction"]))
+			accountID := strings.TrimSpace(stringValue(legacyMovement["accountId"]))
+			counterAccountID := strings.TrimSpace(stringValue(legacyMovement["counterAccountId"]))
+			hasExplicitParty := strings.TrimSpace(firstText(legacyMovement, "payer", "customer")) != ""
+			switch {
+			case counterAccountID != "" && counterAccountID != accountID:
+				legacyMovement["transactionType"] = "transfer"
+			case direction == "in" && hasExplicitParty:
+				legacyMovement["transactionType"] = "customer_receipt"
+			case direction == "out" && hasExplicitParty:
+				legacyMovement["transactionType"] = "supplier_payment"
+			case direction == "out":
+				legacyMovement["transactionType"] = "expense"
+			case direction == "in":
+				legacyMovement["transactionType"] = "other_income"
+			}
+		}
+		state["movements"] = mapsToAny(legacyMobileMovements)
 		for _, row := range rowsFrom(state, "mobileTransactions") {
 			if stringValue(row["externalId"]) == req.ExternalID {
 				RespondJSON(w, http.StatusOK, map[string]any{"status": "duplicate", "revision": doc.Revision})

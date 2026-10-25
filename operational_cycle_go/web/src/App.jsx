@@ -47,6 +47,8 @@ const tabs = [
 
   ['reports', 'گزارشات'],
 
+  ['v-kh-moto', 'ورودی/خروجی متفرقه'],
+
   ['yarn-out', 'خروج نخ'],
 
   ['empty-beam-out', 'خروج نورد خالی'],
@@ -118,6 +120,8 @@ const sidebarTabs = [
   ['expenses', 'هزینه‌ها'],
 
   ['reports', 'گزارشات'],
+
+  ['v-kh-moto', 'ورودی/خروجی متفرقه'],
 
   ['database', 'مدیریت دیتابیس'],
 
@@ -500,6 +504,8 @@ function ActiveTab({ tab, lookups, notify, refreshLookups }) {
     case 'consumption': return <ConsumptionPro />;
 
     case 'reports': return <ReportsPro2 lookups={lookups} />;
+
+    case 'v-kh-moto': return <MiscMovement lookups={lookups} notify={notify} />;
 
     case 'yarn-out': return <YarnOut lookups={lookups} notify={notify} />;
 
@@ -1427,6 +1433,121 @@ function Reports() {
 }
 
 
+
+function MiscMovement({ lookups, notify }) {
+
+  const locationOptions = [
+    'انبار اصلی',
+    'انبار قطعات',
+    'سالن تولید',
+    'تعمیرگاه',
+    'اداری',
+    'نزد اپراتور',
+    'خارج از کارخانه',
+  ];
+
+  const operationTypes = [
+    { id: 'vorud', name: 'ورود به کارخانه' },
+    { id: 'khoroj', name: 'خروج از کارخانه' },
+    { id: 'transfer', name: 'انتقال داخلی' },
+    { id: 'repair', name: 'ارسال به تعمیرگاه' },
+    { id: 'return', name: 'بازگشت از تعمیرگاه' },
+  ];
+
+  const statusOptions = [
+    'در حال تعمیر',
+    'در حال استفاده',
+    'موجود در انبار',
+    'خارج از کارخانه',
+    'در حال انتقال',
+  ];
+
+  const operatorNames = uniqueText((lookups.operators || []).map(x => x.name));
+
+  return <CrudPage
+    title="ورودی/خروجی متفرقه"
+    endpoint="/v-kh-moto"
+    empty={{
+      tarikh: '',
+      operation_type: 'vorud',
+      name_kala: '',
+      shomare_kala: '',
+      from_location: '',
+      to_location: '',
+      person: '',
+      status: '',
+      tozih: '',
+      tarikh_bazgasht: '',
+    }}
+    notify={notify}
+    filters={[
+      ['operation_type', 'نوع عملیات'],
+      ['name_kala', 'نام کالا'],
+      ['shomare_kala', 'شماره کالا'],
+      ['from_location', 'از محل'],
+      ['to_location', 'به محل'],
+      ['person', 'شخص'],
+      ['status', 'وضعیت'],
+    ]}
+    mapEdit={row => ({
+      id: row.id,
+      tarikh: row.tarikh || '',
+      operation_type: row.operation_type || 'vorud',
+      name_kala: row.name_kala || '',
+      shomare_kala: row.shomare_kala || '',
+      from_location: row.from_location || '',
+      to_location: row.to_location || '',
+      person: row.person || '',
+      status: row.status || '',
+      tozih: row.tozih || '',
+      tarikh_bazgasht: row.tarikh_bazgasht || '',
+    })}
+    renderForm={(form, set) => <>
+      <Input label="تاریخ" value={form.tarikh} onChange={v => set('tarikh', v)} hint="اگر خالی بماند، تاریخ امروز ثبت می‌شود." />
+      <Select label="نوع عملیات" value={form.operation_type} onChange={v => set('operation_type', v)} items={operationTypes} />
+      <Input label="نام کالا" value={form.name_kala} onChange={v => set('name_kala', v)} />
+      <Input label="شماره کالا" value={form.shomare_kala} onChange={v => set('shomare_kala', v)} />
+      <Select label="از محل" value={form.from_location} onChange={v => set('from_location', v)} items={locationOptions.map(x => ({ id: x, name: x }))} />
+      <Select label="به محل" value={form.to_location} onChange={v => set('to_location', v)} items={locationOptions.map(x => ({ id: x, name: x }))} />
+      <Input label="شخص" value={form.person} onChange={v => set('person', v)} list={operatorNames} />
+      <Select label="وضعیت" value={form.status} onChange={v => set('status', v)} items={statusOptions.map(x => ({ id: x, name: x }))} />
+      <Input label="تاریخ بازگشت" value={form.tarikh_bazgasht} onChange={v => set('tarikh_bazgasht', v)} hint="برای موارد خروج موقت یا تعمیرگاه." />
+      <Input label="توضیحات" value={form.tozih} onChange={v => set('tozih', v)} />
+    </>}
+    columns={[
+      ['tarikh', 'تاریخ'],
+      ['operation_type', 'نوع عملیات'],
+      ['name_kala', 'نام کالا'],
+      ['shomare_kala', 'شماره کالا'],
+      ['from_location', 'از محل'],
+      ['to_location', 'به محل'],
+      ['person', 'شخص'],
+      ['status', 'وضعیت'],
+      ['tarikh_bazgasht', 'تاریخ بازگشت'],
+      ['tozih', 'توضیحات'],
+    ]}
+    extraSections={({ items, load }) => {
+      const outside = (items || []).filter(x => ['khoroj', 'repair'].includes(x.operation_type) && !String(x.tarikh_bazgasht || '').trim());
+      return <section className="panel">
+        <div className="panel-title-row"><h2>کالاهای خارج از کارخانه</h2><button onClick={load}>بروزرسانی</button></div>
+        <Table
+          rows={outside}
+          columns={[
+            ['tarikh', 'تاریخ'],
+            ['name_kala', 'نام کالا'],
+            ['shomare_kala', 'شماره کالا'],
+            ['from_location', 'از محل'],
+            ['to_location', 'به محل'],
+            ['person', 'شخص'],
+            ['status', 'وضعیت'],
+            ['operation_type', 'نوع عملیات'],
+          ]}
+          hideActions
+        />
+      </section>;
+    }}
+  />;
+}
 
 function YarnOut({ lookups, notify }) {
 
@@ -3278,7 +3399,7 @@ function Filters({ filters, values, setValues, onPrint, rows = [] }) {
 
       <option value="">همه</option>
 
-      {filterOptions(rows, key).map(x => <option key={x} value={x}>{x}</option>)}
+      {filterOptions(rows, key).map(x => <option key={x} value={x}>{display(x)}</option>)}
 
     </select></label>)}
 
@@ -3531,6 +3652,12 @@ function display(v) {
   if (v === 'vorud' || v === 'ورودي') return 'ورود';
 
   if (v === 'khoroj' || v === 'خروجي') return 'خروج';
+
+  if (v === 'transfer') return 'انتقال داخلی';
+
+  if (v === 'repair') return 'ارسال به تعمیرگاه';
+
+  if (v === 'return') return 'بازگشت از تعمیرگاه';
 
   if (typeof v === 'number') return v.toLocaleString('fa-IR');
 

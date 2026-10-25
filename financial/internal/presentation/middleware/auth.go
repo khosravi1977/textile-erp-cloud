@@ -151,7 +151,7 @@ func resolveIdentity(r *http.Request) (resolvedIdentity, bool) {
 
 func authorizeRequest(r *http.Request, identity resolvedIdentity) bool {
 	if strings.EqualFold(identity.role, "mobile") {
-		return strings.HasPrefix(r.URL.Path, "/api/mobile/") && r.URL.Path != "/api/mobile/pairing"
+		return (strings.HasPrefix(r.URL.Path, "/api/mobile/") || strings.HasPrefix(r.URL.Path, "/api/v1/hesabyar/")) && r.URL.Path != "/api/mobile/pairing"
 	}
 	if !identity.portal {
 		return true
@@ -184,6 +184,8 @@ func requiredPermissions(path string) []string {
 	case strings.HasPrefix(path, "/api/accounting/"):
 		return []string{"accounting", "reports"}
 	case path == "/api/mobile/pairing":
+		return []string{"mobileApp"}
+	case strings.HasPrefix(path, "/api/v1/hesabyar/"):
 		return []string{"mobileApp"}
 	case strings.Contains(path, "/operational/out-invoices") || strings.HasSuffix(path, "/operational/f_khor"):
 		return []string{"operational", "invoices"}
