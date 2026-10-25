@@ -936,13 +936,13 @@ func indexMobilePayableDocument(rows []map[string]any, externalID string) (int, 
 // amount+due pair stays stable for the life of the cheque. Only docs that
 // carry no stronger mobile identity conflict are matched this way.
 func indexPayableDocumentByBusinessKey(rows []map[string]any, incoming map[string]any) (int, bool) {
-	amount := number(incoming["amount"])
+	amount := payableAmount(incoming["amount"])
 	due := strings.TrimSpace(stringValue(incoming["dueJalali"]))
 	if amount <= 0 || due == "" {
 		return -1, false
 	}
 	for index, row := range rows {
-		if amount != number(row["amount"]) {
+		if amount != payableAmount(row["amount"]) {
 			continue
 		}
 		rowDue := strings.TrimSpace(stringValue(row["dueJalali"]))
@@ -954,6 +954,20 @@ func indexPayableDocumentByBusinessKey(rows []map[string]any, incoming map[strin
 		}
 	}
 	return -1, false
+}
+
+// payableAmount tolerates the freshly-built row (int64 from the request
+// struct) as well as JSONB-decoded float64 values; the shared number() helper
+// only understands float64/json.Number/string and returns 0 for int64.
+func payableAmount(value any) float64 {
+	switch typed := value.(type) {
+	case int64:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	default:
+		return number(value)
+	}
 }
 
 // mergePayableDocument keeps every stored field the phone no longer knows
