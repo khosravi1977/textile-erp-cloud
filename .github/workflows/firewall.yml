@@ -28,6 +28,10 @@ jobs:
           bash scripts/fw/check-gofmt.sh --self-test
           bash scripts/fw/check-test-floor.sh --self-test
           bash scripts/fw/check-commit-subject.sh --self-test
+          bash scripts/fw/check-mojibake.sh --self-test
+          bash scripts/fw/check-file-size.sh --self-test
+          bash scripts/fw/check-anchor-consistency.sh --self-test
+          bash scripts/fw/check-no-direct-financial-put.sh --self-test
           bash scripts/fw/check-ci-contract.sh --self-test
       - name: guards (exactly as CI enforces them)
         run: |
@@ -37,6 +41,10 @@ jobs:
           bash scripts/fw/check-compose-no-latest.sh
           bash scripts/fw/check-gofmt.sh
           bash scripts/fw/check-test-floor.sh
+          bash scripts/fw/check-mojibake.sh
+          bash scripts/fw/check-file-size.sh
+          bash scripts/fw/check-anchor-consistency.sh
+          bash scripts/fw/check-no-direct-financial-put.sh
           bash scripts/fw/check-ci-contract.sh
       - name: portal firewall contract smoke (login + auth gate)
         working-directory: portal_server
