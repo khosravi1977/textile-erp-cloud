@@ -141,23 +141,34 @@ func validateWorkspaceAccounting(state map[string]any) error {
 			return fmt.Errorf("برای هزینه %s حساب پرداخت انتخاب نشده است", id)
 		}
 	}
-	for _, key := range []string{"receivableDocs", "payableDocs"} {
-		checkNumbers := map[string]bool{}
-		for _, row := range rowsFrom(state, key) {
-			id := firstText(row, "id", "checkNo")
-			if number(row["amount"]) <= 0 {
-				return fmt.Errorf("مبلغ سند %s باید بزرگ‌تر از صفر باشد", id)
+		for _, key := range []string{"receivableDocs", "payableDocs"} {
+			checkNumbers := map[string]bool{}
+			for _, row := range rowsFrom(state, key) {
+				id := firstText(row, "id", "checkNo")
+				if number(row["amount"]) <= 0 {
+					return fmt.Errorf("مبلغ سند %s باید بزرگ‌تر از صفر باشد", id)
+				}
+				checkNo := strings.TrimSpace(stringValue(row["checkNo"]))
+				// An awaiting-disposition stub created from a mobile SMS may
+				// lack the cheque number until the user completes it; it has
+				// no ledger effect until its status leaves "open" (derive
+				// only posts paid/returned/bounced cheques), so only the due
+				// date is mandatory here.
+				if strings.TrimSpace(stringValue(row["dueDate"])) == "" {
+					return fmt.Errorf("تاریخ سررسید سند %s الزامی است", id)
+				}
+				if checkNo == "" {
+					if firstText(row, "status") != "open" {
+						return fmt.Errorf("شماره چک سند %s برای ثبت نهایی الزامی است", id)
+					}
+					continue
+				}
+				if checkNumbers[checkNo] {
+					return fmt.Errorf("شماره چک %s در یک دفتر تکراری است", checkNo)
+				}
+				checkNumbers[checkNo] = true
 			}
-			checkNo := strings.TrimSpace(stringValue(row["checkNo"]))
-			if checkNo == "" || strings.TrimSpace(stringValue(row["dueDate"])) == "" {
-				return fmt.Errorf("شماره و تاریخ سررسید سند %s الزامی است", id)
-			}
-			if checkNumbers[checkNo] {
-				return fmt.Errorf("شماره چک %s در یک دفتر تکراری است", checkNo)
-			}
-			checkNumbers[checkNo] = true
 		}
-	}
 	for _, row := range rowsFrom(state, "movements") {
 		if hasAny(row, "sourceInvoice", "sourceIncomingInvoice", "sourceExpense", "sourceMobileTransaction") {
 			continue

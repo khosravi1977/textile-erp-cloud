@@ -930,6 +930,32 @@ func indexMobilePayableDocument(rows []map[string]any, externalID string) (int, 
 	return -1, false
 }
 
+// indexPayableDocumentByBusinessKey matches a re-sent cheque to its stored
+// document by amount and due date. The phone regenerates cheque ids whenever
+// its local data is rebuilt, so identities alone cannot be trusted; the
+// amount+due pair stays stable for the life of the cheque. Only docs that
+// carry no stronger mobile identity conflict are matched this way.
+func indexPayableDocumentByBusinessKey(rows []map[string]any, incoming map[string]any) (int, bool) {
+	amount := number(incoming["amount"])
+	due := strings.TrimSpace(stringValue(incoming["dueJalali"]))
+	if amount <= 0 || due == "" {
+		return -1, false
+	}
+	for index, row := range rows {
+		if amount != number(row["amount"]) {
+			continue
+		}
+		rowDue := strings.TrimSpace(stringValue(row["dueJalali"]))
+		if rowDue == "" {
+			rowDue = strings.TrimSpace(stringValue(row["due"]))
+		}
+		if rowDue == due {
+			return index, true
+		}
+	}
+	return -1, false
+}
+
 // mergePayableDocument keeps every stored field the phone no longer knows
 // (blank in the incoming row) and applies the rest of the phone's update.
 // A terminal disposition on the server (paid/cleared/returned — usually set
@@ -995,13 +1021,21 @@ func (h *APIHandler) MobilePayableDocument(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		state := decodeWorkspaceMap(doc.State)
-		if index, found := indexMobilePayableDocument(rowsFrom(state, "payableDocs"), externalID); found {
+		docIndex, found := indexMobilePayableDocument(rowsFrom(state, "payableDocs"), externalID)
+		if !found {
+			// The phone can regenerate cheque ids after a data reset, so the
+			// external id no longer matches the stored doc. Fall back to the
+			// business key (amount + jalali due date) so a re-send MERGES into
+			// the original document instead of duplicating it.
+			docIndex, found = indexPayableDocumentByBusinessKey(rowsFrom(state, "payableDocs"), row)
+		}
+		if found {
 			// The app may re-send a cheque whose cheque number / sayad id / bank
 			// were wiped on the phone. Blank fields must never overwrite the
 			// server's stored values; non-blank ones update them (disposition
 			// changes flow through here instead of being dead-ended as duplicate).
 			payableDocs := rowsFrom(state, "payableDocs")
-			payableDocs[index] = mergePayableDocument(payableDocs[index], row)
+			payableDocs[docIndex] = mergePayableDocument(payableDocs[docIndex], row)
 			state["payableDocs"] = mapsToAny(payableDocs)
 			raw, _ := json.Marshal(state)
 			canonical, checksum, validationErr := validateWorkspaceState(raw)

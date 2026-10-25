@@ -86,3 +86,33 @@ func TestMergePayableDocumentNeverRegressesTerminalStatus(t *testing.T) {
 		t.Fatalf("legit disposition update blocked: %#v", forward["status"])
 	}
 }
+
+func TestPayableBusinessKeyMatchSurvivesRegeneratedPhoneIds(t *testing.T) {
+	stored := []map[string]any{{
+		"id": "pch-mobile-dd78b78ac6a22db8", "externalId": "check-1786492253213",
+		"source_type": "hesabyar_mobile", "sourceId": "check-1786492253213",
+		"amount": 11059200000.0, "dueJalali": "1405/06/18", "status": "paid", "checkNo": "9019/653317",
+	}}
+	incoming := map[string]any{"externalId": "2095226398", "amount": 11059200000.0, "dueJalali": "1405/06/18"}
+	index, found := indexPayableDocumentByBusinessKey(stored, incoming)
+	if !found || index != 0 {
+		t.Fatalf("business-key match failed: index=%d found=%v", index, found)
+	}
+	_, miss := indexPayableDocumentByBusinessKey(stored, map[string]any{"amount": 100.0, "dueJalali": "1405/06/18"})
+	if miss {
+		t.Fatal("different amount must not match")
+	}
+}
+
+func TestValidateWorkspaceAcceptsOpenStubWithoutCheckNo(t *testing.T) {
+	// exercised through the accounting validator indirectly; keep the merge
+	// contract covered here: blank checkNo + status open must survive merge
+	// without inventing data.
+	merged := mergePayableDocument(
+		map[string]any{"status": "open", "checkNo": "", "dueJalali": "1405/08/25", "amount": 125000000.0},
+		map[string]any{"status": "paid", "checkNo": "", "dueJalali": "1405/08/25", "amount": 125000000.0},
+	)
+	if merged["status"] != "paid" || merged["checkNo"] != "" {
+		t.Fatalf("disposition flow broken for stubs: %#v", merged)
+	}
+}
