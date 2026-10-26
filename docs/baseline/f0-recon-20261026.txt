@@ -1,0 +1,60 @@
+account                             displayed         reported            typed  flags
+B.Pasargad                            5000000          5000000          5000000  I2-implied-opening=0
+SEPAH BANK                           37312352         37312352       -100600000  
+SEPAH BANK • 472800171311           137932352        137932352                0  
+TTBANK                                      0                0                0  
+TTBANK • 1419                               0                0                0  
+V.Refah                                     0                0                0  
+بانک تجارت                            1724119          1724119       -468387079  I2-implied-opening=470111198
+بانک صادرات                         885051216        885051216      -5059351498  I2-implied-opening=5944402714
+بانک ملت                             58687199         58687199      -1343181603  I2-implied-opening=1401868802
+بانک ملل                             40529542         40529542        -14385000  I2-implied-opening=54914542
+بانک ملی                              5494471          5494471        104542491  I2-implied-opening=-99048020
+مهر ایران                           169677706        169677706       -600000000  I2-implied-opening=769677706
+
+accounts=12 typed_accounts=8 drift_rows=7
+[
+ {
+  "account": "B.Pasargad",
+  "flags": [
+   "I2-implied-opening=0"
+  ]
+ },
+ {
+  "account": "بانک تجارت",
+  "flags": [
+   "I2-implied-opening=470111198"
+  ]
+ },
+ {
+  "account": "بانک صادرات",
+  "flags": [
+   "I2-implied-opening=5944402714"
+  ]
+ },
+ {
+  "account": "بانک ملت",
+  "flags": [
+   "I2-implied-opening=1401868802"
+  ]
+ },
+ {
+  "account": "بانک ملل",
+  "flags": [
+   "I2-implied-opening=54914542"
+  ]
+ },
+ {
+  "account": "بانک ملی",
+  "flags": [
+   "I2-implied-opening=-99048020"
+  ]
+ },
+ {
+  "account": "مهر ایران",
+  "flags": [
+   "I2-implied-opening=769677706"
+  ]
+ }
+]
+exit=1
