@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/erpsystem/textile-erp/internal/application/financecore"
 	"github.com/erpsystem/textile-erp/internal/infrastructure/operationalbridge"
 	"github.com/erpsystem/textile-erp/internal/platform/requestctx"
 )
@@ -64,7 +65,31 @@ func (h *APIHandler) syncOperationalExpenses(r *http.Request) error {
 		if accountID == "" {
 			return errors.New("no financial cash/bank account is available for automatic operational expense posting")
 		}
-		if !mergeOperationalExpensesIntoState(state, sourceRows, accountID, time.Now().UTC()) {
+		// F1: the typed core is the canonical store. Newly created operational
+		// expenses post there too (source OPERATIONAL, voucherless — the GL
+		// stays with the workspace ledger engine, mirroring the HesabYar
+		// path). Failures are logged, never blocking the workspace sync.
+		mergeArgs := []func(row operationalbridge.ExpenseRow, accountID string){nil}
+		if service := h.financeCore(); service != nil {
+			mergeArgs[0] = func(row operationalbridge.ExpenseRow, postAccountID string) {
+				_, err := service.PostTransaction(r.Context(), companyID, requestctx.UserID(r.Context()), financecore.TransactionRequest{
+					ExternalTransactionID: "OP-" + strconv.FormatInt(row.ID, 10),
+					IdempotencyKey:        "operational-exp-" + strconv.FormatInt(row.ID, 10),
+					BankAccountName:       workspaceAccountName(state, postAccountID),
+					Direction:             "OUT",
+					Amount:                int64(row.Amount),
+					TransactionDate:       mobileAccountingDate(row.Date),
+					TransactionType:       financecore.TypeOtherPayment,
+					Description:           strings.TrimSpace(row.Title + " " + row.Description),
+					Source:                financecore.SourceOperational,
+					RawSourceReference:    row.Operator,
+				}, false)
+				if err != nil {
+					log.Printf("operational expense %d typed-core post skipped: %v", row.ID, err)
+				}
+			}
+		}
+		if !mergeOperationalExpensesIntoState(state, sourceRows, accountID, time.Now().UTC(), mergeArgs...) {
 			return nil
 		}
 		raw, err := json.Marshal(state)
@@ -135,7 +160,10 @@ func resolveOperationalExpenseAccountID(state map[string]any) string {
 // mergeOperationalExpensesIntoState performs an idempotent upsert. If an
 // employee edits the source expense, financial amount/date/category/description
 // are updated automatically. A finance-side account override is preserved.
-func mergeOperationalExpensesIntoState(state map[string]any, source []operationalbridge.ExpenseRow, defaultAccountID string, syncedAt time.Time) bool {
+// onCreate, when provided, fires ONCE per newly created expense with the
+// account the workspace row landed on — the F1 seam where the typed core
+// posting happens (the canonical store), before the workspace projection.
+func mergeOperationalExpensesIntoState(state map[string]any, source []operationalbridge.ExpenseRow, defaultAccountID string, syncedAt time.Time, onCreate ...func(row operationalbridge.ExpenseRow, accountID string)) bool {
 	if state == nil || strings.TrimSpace(defaultAccountID) == "" {
 		return false
 	}
@@ -238,6 +266,9 @@ func mergeOperationalExpensesIntoState(state map[string]any, source []operationa
 			expenseIndex[sourceID] = len(expenses)
 			expenses = append(expenses, desiredExpense)
 			changed = true
+			if len(onCreate) > 0 && onCreate[0] != nil {
+				onCreate[0](row, accountID)
+			}
 		}
 
 		movementPos := -1
@@ -320,4 +351,15 @@ func operationalSyncRowsToAny(rows []map[string]any) []any {
 		out = append(out, row)
 	}
 	return out
+}
+
+// workspaceAccountName resolves an account id to its display name for the
+// typed-core posting (ensureBankAccount matches by canonical name).
+func workspaceAccountName(state map[string]any, accountID string) string {
+	for _, account := range rowsFrom(state, "accounts") {
+		if strings.TrimSpace(stringValue(account["id"])) == accountID {
+			return strings.TrimSpace(stringValue(account["name"]))
+		}
+	}
+	return ""
 }

@@ -44,6 +44,7 @@ const (
 // Sources allowed on bank transactions.
 const (
 	SourceHesabyar = "HESABYAR"
+	SourceOperational = "OPERATIONAL"
 	SourceERP      = "ERP_MANUAL"
 	SourceImport   = "IMPORT"
 	SourceSystem   = "SYSTEM"

@@ -46,6 +46,9 @@ if [ "${1:-}" = "--self-test" ]; then
 fi
 
 subject="${1:-}"
+# Not a tree-scan guard: one subject per invocation. Bare runs in the
+# make-verify batch are a no-op pass; CI passes subjects explicitly.
+[ -n "${1:-}" ] || { echo "commit-subject: no subject supplied — nothing to check"; exit 0; }
 [ -n "$subject" ] || { echo "usage: check-commit-subject.sh \"<subject>\" | --self-test"; exit 2; }
 if accept "$subject"; then
 	exit 0
