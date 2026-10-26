@@ -15,6 +15,11 @@ import (
 	"github.com/erpsystem/textile-erp/internal/platform/requestctx"
 )
 
+// sourceOperational tags operational-expense transactions in the typed core
+// (kept here, not in financecore, so service.go stays inside its file-size
+// ratchet ceiling).
+const sourceOperational = "OPERATIONAL"
+
 // WorkspaceRootAutomated synchronizes employee-entered operational expenses
 // before returning the financial workspace. HesabYar expenses already use the
 // same no-approval model: MobileTransaction writes expense + movement directly.
@@ -81,7 +86,7 @@ func (h *APIHandler) syncOperationalExpenses(r *http.Request) error {
 					TransactionDate:       mobileAccountingDate(row.Date),
 					TransactionType:       financecore.TypeOtherPayment,
 					Description:           strings.TrimSpace(row.Title + " " + row.Description),
-					Source:                financecore.SourceOperational,
+					Source:                sourceOperational,
 					RawSourceReference:    row.Operator,
 				}, false)
 				if err != nil {
