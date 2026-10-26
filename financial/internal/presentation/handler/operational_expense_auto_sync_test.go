@@ -214,3 +214,29 @@ func TestOperationalExpenseInvalidPayAccountFallsBackToDefault(t *testing.T) {
 		t.Fatalf("verifiedPayment stamped for an unvalidated account: %#v", expense["verifiedPayment"])
 	}
 }
+
+func TestOperationalExpenseCreationFiresTypedCoreHook(t *testing.T) {
+	state := map[string]any{
+		"accounts":  []any{map[string]any{"id": "cash-main", "name": "صندوق", "type": "صندوق"}},
+		"expenses":  []any{},
+		"movements": []any{},
+	}
+	source := []operationalbridge.ExpenseRow{{ID: 91, Date: "1405/08/01", Title: "تعویض روغن", Amount: 450}}
+	var hooked []operationalbridge.ExpenseRow
+	var hookedAccounts []string
+	if !mergeOperationalExpensesIntoState(state, source, "cash-main", time.Now(), func(row operationalbridge.ExpenseRow, accountID string) {
+		hooked = append(hooked, row)
+		hookedAccounts = append(hookedAccounts, accountID)
+	}) {
+		t.Fatal("creation did not sync")
+	}
+	if len(hooked) != 1 || hooked[0].ID != 91 || hookedAccounts[0] != "cash-main" {
+		t.Fatalf("typed-core hook not fired on creation: %v %v", hooked, hookedAccounts)
+	}
+	// Idempotent re-run: hook must NOT fire again (no duplicate typed posts).
+	if mergeOperationalExpensesIntoState(state, source, "cash-main", time.Now().Add(time.Minute), func(row operationalbridge.ExpenseRow, accountID string) {
+		t.Fatal("hook fired on idempotent re-run — would duplicate typed-core rows")
+	}) {
+		t.Fatal("second sync reported changes")
+	}
+}
