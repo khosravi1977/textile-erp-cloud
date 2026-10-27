@@ -1,5 +1,5 @@
 -- Standard HesabYar integration entities. Historical workspace and mobile rows
--- remain untouched; new API transactions are stored durably and posted once.
+-- remain untouched while new API transactions are stored durably and posted once.
 
 ALTER TABLE parties
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS bank_transactions (
     CONSTRAINT ck_bank_transactions_status CHECK (status IN (
         'NEW', 'CLASSIFIED', 'SYNC_PENDING', 'SYNCED', 'SYNC_FAILED', 'NEEDS_REVIEW', 'REVERSED'
     )),
+    UNIQUE (company_id, id),
     UNIQUE (company_id, external_transaction_id)
 );
 
