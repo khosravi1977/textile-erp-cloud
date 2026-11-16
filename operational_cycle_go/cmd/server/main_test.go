@@ -58,6 +58,9 @@ func TestBasicLookupCanRenameAndSafelyDelete(t *testing.T) {
 		t.Fatalf("create customer failed: %d %s", created.Code, created.Body.String())
 	}
 	customerID := findID(lookup(created), "روسری+250_راه راه")
+	if _, err := application.exec(`INSERT INTO nakh_vor (moshname_nakh_vor,nakh_name_nakh_vor,hambaft_nakh_vor,w_vor_nakh_vor) VALUES ('روسری+250_راه راه','نخ تست','HB-1',10)`); err != nil {
+		t.Fatal(err)
+	}
 
 	renamed := call(http.MethodPut, "{\"id\":"+strconv.FormatInt(customerID, 10)+",\"name\":\"روسری راه‌راه ۲۵۰\"}")
 	if renamed.Code != http.StatusOK {
@@ -65,6 +68,10 @@ func TestBasicLookupCanRenameAndSafelyDelete(t *testing.T) {
 	}
 	if got := findID(lookup(renamed), "روسری راه‌راه ۲۵۰"); got != customerID {
 		t.Fatalf("rename changed customer id: got %d, want %d", got, customerID)
+	}
+	var historicalCustomer string
+	if err := application.queryRow(`SELECT moshname_nakh_vor FROM nakh_vor WHERE hambaft_nakh_vor='HB-1'`).Scan(&historicalCustomer); err != nil || historicalCustomer != "روسری راه‌راه ۲۵۰" {
+		t.Fatalf("rename did not preserve historical customer resolution: got %q err=%v", historicalCustomer, err)
 	}
 
 	second := call(http.MethodPost, "{\"name\":\"مشتری دوم\"}")
@@ -84,12 +91,21 @@ func TestBasicLookupCanRenameAndSafelyDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	blockedDelete := call(http.MethodDelete, "{\"id\":"+strconv.FormatInt(secondID, 10)+"}")
-	if blockedDelete.Code != http.StatusConflict {
-		t.Fatalf("referenced customer deletion should be rejected, got %d %s", blockedDelete.Code, blockedDelete.Body.String())
+	if blockedDelete.Code != http.StatusOK {
+		t.Fatalf("referenced customer should be safely archived, got %d %s", blockedDelete.Code, blockedDelete.Body.String())
 	}
 	var preserved int
 	if err := application.queryRow("SELECT COUNT(*) FROM mosh_name WHERE id_mosh_name=?", secondID).Scan(&preserved); err != nil || preserved != 1 {
-		t.Fatalf("referenced customer was not preserved: count=%d err=%v", preserved, err)
+		t.Fatalf("archived referenced customer was not preserved: count=%d err=%v", preserved, err)
+	}
+	var references int
+	if err := application.queryRow("SELECT COUNT(*) FROM basic_customer_reference WHERE customer_id=?", secondID).Scan(&references); err != nil || references != 1 {
+		t.Fatalf("reference to archived customer was lost: count=%d err=%v", references, err)
+	}
+	for _, item := range lookup(blockedDelete) {
+		if item.ID == secondID {
+			t.Fatalf("archived customer remains selectable: %#v", item)
+		}
 	}
 
 	deleted := call(http.MethodDelete, "{\"id\":"+strconv.FormatInt(customerID, 10)+"}")
@@ -98,8 +114,11 @@ func TestBasicLookupCanRenameAndSafelyDelete(t *testing.T) {
 	}
 	for _, item := range lookup(deleted) {
 		if item.ID == customerID {
-			t.Fatalf("deleted customer remains in lookup: %#v", item)
+			t.Fatalf("archived customer remains in lookup: %#v", item)
 		}
+	}
+	if err := application.queryRow("SELECT COUNT(*) FROM mosh_name WHERE id_mosh_name=? AND is_active=0", customerID).Scan(&preserved); err != nil || preserved != 1 {
+		t.Fatalf("archived customer data was not retained: count=%d err=%v", preserved, err)
 	}
 }
 

@@ -703,6 +703,11 @@ func (a *app) migrate() error {
 			return err
 		}
 	}
+	for _, table := range []string{"mosh_name", "nakh_name", "kala_name", "chellepich", "kod_navard", "gerezan", "hazine", "operator_name", "driver_name", "weaver_name", "service_type", "spare_part"} {
+		if err := a.ensureColumn(table, "is_active", "INTEGER DEFAULT 1"); err != nil {
+			return err
+		}
+	}
 	var userCount int64
 	_ = a.queryRow(`SELECT COUNT(*) FROM users`).Scan(&userCount)
 	if userCount == 0 {
@@ -1602,101 +1607,6 @@ func (a *app) lookups(w http.ResponseWriter, r *http.Request) {
 		"hambaftYarn":  distinct(a.db, "SELECT DISTINCT hambaft_nakh_vor FROM nakh_vor WHERE COALESCE(hambaft_nakh_vor,'')<>'' ORDER BY hambaft_nakh_vor"),
 		"hamPod":       distinct(a.db, "SELECT DISTINCT ham_nakh_salon FROM nakh_salon WHERE COALESCE(ham_nakh_salon,'')<>'' ORDER BY ham_nakh_salon"),
 	})
-}
-
-func (a *app) basic(w http.ResponseWriter, r *http.Request) {
-	kind := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/basic/"), "/")
-	table, idCol, nameCol, ok := basicMap(kind)
-	if !ok {
-		fail(w, http.StatusNotFound, "نوع اطلاعات اولیه معتبر نیست")
-		return
-	}
-	quotedTable := quoteIdent(table)
-	quotedIDCol := quoteIdent(idCol)
-	quotedNameCol := quoteIdent(nameCol)
-	switch r.Method {
-	case http.MethodGet:
-	case http.MethodPost:
-		var p struct {
-			Name string `json:"name"`
-		}
-		if !decode(w, r, &p) {
-			return
-		}
-		p.Name = strings.TrimSpace(p.Name)
-		if p.Name == "" {
-			fail(w, http.StatusBadRequest, "نام را وارد کنید")
-			return
-		}
-		var exists int
-		checkStmt := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s=?", quotedTable, quotedNameCol)
-		_ = a.queryRow(checkStmt, p.Name).Scan(&exists)
-		if exists == 0 {
-			stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (?)", quotedTable, quotedNameCol)
-			_, err := a.exec(stmt, p.Name)
-			if err != nil {
-				fail(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-		}
-	case http.MethodPut:
-		var p struct {
-			ID   int64  `json:"id"`
-			Name string `json:"name"`
-		}
-		if !decode(w, r, &p) {
-			return
-		}
-		p.Name = strings.TrimSpace(p.Name)
-		if p.ID <= 0 || p.Name == "" {
-			fail(w, http.StatusBadRequest, "مورد معتبر و نام جدید را وارد کنید")
-			return
-		}
-		var exists int
-		checkStmt := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s=? AND %s<>?", quotedTable, quotedNameCol, quotedIDCol)
-		if err := a.queryRow(checkStmt, p.Name, p.ID).Scan(&exists); err != nil {
-			fail(w, http.StatusInternalServerError, "بررسی نام اطلاعات اولیه انجام نشد")
-			return
-		}
-		if exists > 0 {
-			fail(w, http.StatusConflict, "این نام از قبل ثبت شده است")
-			return
-		}
-		result, err := a.exec(fmt.Sprintf("UPDATE %s SET %s=? WHERE %s=?", quotedTable, quotedNameCol, quotedIDCol), p.Name, p.ID)
-		if err != nil {
-			fail(w, http.StatusConflict, "ویرایش انجام نشد؛ نام تکراری است یا پایگاه داده آن را نپذیرفت")
-			return
-		}
-		if affected, err := result.RowsAffected(); err == nil && affected == 0 {
-			fail(w, http.StatusNotFound, "گزینهٔ موردنظر پیدا نشد")
-			return
-		}
-	case http.MethodDelete:
-		var p struct {
-			ID int64 `json:"id"`
-		}
-		if !decode(w, r, &p) {
-			return
-		}
-		if p.ID <= 0 {
-			fail(w, http.StatusBadRequest, "گزینهٔ موردنظر معتبر نیست")
-			return
-		}
-		result, err := a.exec(fmt.Sprintf("DELETE FROM %s WHERE %s=?", quotedTable, quotedIDCol), p.ID)
-		if err != nil {
-			fail(w, http.StatusConflict, "این گزینه به اطلاعات دیگری وابسته است و حذف نشد؛ سوابق قبلی حفظ شده‌اند")
-			return
-		}
-		if affected, err := result.RowsAffected(); err == nil && affected == 0 {
-			fail(w, http.StatusNotFound, "گزینهٔ موردنظر پیدا نشد")
-			return
-		}
-	default:
-		w.Header().Set("Allow", "GET, POST, PUT, DELETE")
-		fail(w, http.StatusMethodNotAllowed, "این روش درخواست پشتیبانی نمی‌شود")
-		return
-	}
-	writeJSON(w, a.lookup(table, idCol, nameCol))
 }
 
 func (a *app) nakhVor(w http.ResponseWriter, r *http.Request) {
@@ -4930,7 +4840,7 @@ func (a *app) rebuildMachineConsumption(machine string) error {
 }
 
 func (a *app) lookup(table, idCol, nameCol string) []lookupItem {
-	rows, err := a.query(fmt.Sprintf("SELECT %s, %s FROM %s WHERE COALESCE(%s,'')<>'' ORDER BY %s", idCol, nameCol, table, nameCol, nameCol))
+	rows, err := a.query(fmt.Sprintf("SELECT %s, %s FROM %s WHERE COALESCE(%s,'')<>'' AND COALESCE(is_active,1)=1 ORDER BY %s", idCol, nameCol, table, nameCol, nameCol))
 	if err != nil {
 		return []lookupItem{}
 	}
