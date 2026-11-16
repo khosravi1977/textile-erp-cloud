@@ -120,6 +120,27 @@ func TestBasicLookupCanRenameAndSafelyDelete(t *testing.T) {
 	if err := application.queryRow("SELECT COUNT(*) FROM mosh_name WHERE id_mosh_name=? AND is_active=0", customerID).Scan(&preserved); err != nil || preserved != 1 {
 		t.Fatalf("archived customer data was not retained: count=%d err=%v", preserved, err)
 	}
+
+	if _, err := application.exec("INSERT INTO service_type (name_service_type) VALUES (?)", "سرویس تست"); err != nil {
+		t.Fatal(err)
+	}
+	var serviceTypeID int64
+	if err := application.queryRow("SELECT id_service_type FROM service_type WHERE name_service_type=?", "سرویس تست").Scan(&serviceTypeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec("INSERT INTO machinery_service (service_type_id) VALUES (?)", serviceTypeID); err != nil {
+		t.Fatal(err)
+	}
+	serviceRequest := httptest.NewRequest(http.MethodDelete, "/api/basic/serviceTypes", bytes.NewBufferString("{\"id\":"+strconv.FormatInt(serviceTypeID, 10)+"}"))
+	serviceResponse := httptest.NewRecorder()
+	application.basic(serviceResponse, serviceRequest)
+	if serviceResponse.Code != http.StatusOK {
+		t.Fatalf("referenced service type should be archived without losing history, got %d %s", serviceResponse.Code, serviceResponse.Body.String())
+	}
+	var preservedServiceType string
+	if err := application.queryRow("SELECT st.name_service_type FROM machinery_service ms LEFT JOIN service_type st ON st.id_service_type=ms.service_type_id WHERE ms.service_type_id=?", serviceTypeID).Scan(&preservedServiceType); err != nil || preservedServiceType != "سرویس تست" {
+		t.Fatalf("service history lost its type after archive: got %q err=%v", preservedServiceType, err)
+	}
 }
 
 func TestMobileLoadingSessionTransfersValidatedTaghe(t *testing.T) {
