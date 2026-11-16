@@ -480,13 +480,15 @@ th { color: #b7c7df; font-weight: 700; }
 .empty { background: #101b30; border-radius: 8px; padding: 22px; color: #9fb4d4; text-align: center; }
 .toast {
   position: fixed;
-  left: 28px;
-  bottom: 28px;
+  top: max(24px, env(safe-area-inset-top));
+  left: 50%;
+  max-width: min(560px, calc(100vw - 32px));
+  transform: translateX(-50%);
   background: #064e3b;
   border: 1px solid #10b981;
   border-radius: 8px;
   padding: 14px 18px;
-  z-index: 20;
+  z-index: 1200;
 }
 .hint { grid-column: 1 / -1; color: #93c5fd; background: #0b1527; border-radius: 8px; padding: 10px; }
 
