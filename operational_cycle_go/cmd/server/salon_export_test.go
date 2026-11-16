@@ -18,9 +18,11 @@ func TestSalonExportIncludesRecordsBeyondListLimit(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		path string
-		want int
-	}{{"/api/salon", 200}, {"/api/salon?all=1", 205}} {
+		path  string
+		want  int
+		first float64
+		last  float64
+	}{{"/api/salon", 200, 205, 6}, {"/api/salon?all=1", 205, 1, 205}} {
 		w := httptest.NewRecorder()
 		a.salon(w, httptest.NewRequest("GET", tc.path, nil))
 		if w.Code != 200 {
@@ -32,6 +34,9 @@ func TestSalonExportIncludesRecordsBeyondListLimit(t *testing.T) {
 		}
 		if len(rows) != tc.want {
 			t.Fatalf("%s: got %d rows, want %d", tc.path, len(rows), tc.want)
+		}
+		if rows[0]["id"] != tc.first || rows[len(rows)-1]["id"] != tc.last {
+			t.Fatalf("%s: unexpected first and last IDs: %v, %v", tc.path, rows[0]["id"], rows[len(rows)-1]["id"])
 		}
 	}
 }
