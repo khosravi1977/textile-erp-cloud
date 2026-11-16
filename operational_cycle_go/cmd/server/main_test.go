@@ -6,9 +6,102 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 )
+
+func TestBasicLookupCanRenameAndSafelyDelete(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:basic-lookup-crud-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	application := &app{db: db, dialect: "sqlite", dbLabel: "test"}
+	if err := application.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec("PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatal(err)
+	}
+
+	call := func(method, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, "/api/basic/customers", bytes.NewBufferString(body))
+		response := httptest.NewRecorder()
+		application.basic(response, request)
+		return response
+	}
+	lookup := func(response *httptest.ResponseRecorder) []lookupItem {
+		t.Helper()
+		var items []lookupItem
+		if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+			t.Fatalf("decode customer lookup: %v; body=%s", err, response.Body.String())
+		}
+		return items
+	}
+	findID := func(items []lookupItem, name string) int64 {
+		t.Helper()
+		for _, item := range items {
+			if item.Name == name {
+				return item.ID
+			}
+		}
+		t.Fatalf("customer %q was not found in %#v", name, items)
+		return 0
+	}
+
+	created := call(http.MethodPost, "{\"name\":\"روسری+250_راه راه\"}")
+	if created.Code != http.StatusOK {
+		t.Fatalf("create customer failed: %d %s", created.Code, created.Body.String())
+	}
+	customerID := findID(lookup(created), "روسری+250_راه راه")
+
+	renamed := call(http.MethodPut, "{\"id\":"+strconv.FormatInt(customerID, 10)+",\"name\":\"روسری راه‌راه ۲۵۰\"}")
+	if renamed.Code != http.StatusOK {
+		t.Fatalf("rename customer failed: %d %s", renamed.Code, renamed.Body.String())
+	}
+	if got := findID(lookup(renamed), "روسری راه‌راه ۲۵۰"); got != customerID {
+		t.Fatalf("rename changed customer id: got %d, want %d", got, customerID)
+	}
+
+	second := call(http.MethodPost, "{\"name\":\"مشتری دوم\"}")
+	if second.Code != http.StatusOK {
+		t.Fatalf("create second customer failed: %d %s", second.Code, second.Body.String())
+	}
+	secondID := findID(lookup(second), "مشتری دوم")
+	duplicate := call(http.MethodPut, "{\"id\":"+strconv.FormatInt(customerID, 10)+",\"name\":\"مشتری دوم\"}")
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("duplicate rename should be rejected, got %d %s", duplicate.Code, duplicate.Body.String())
+	}
+
+	if _, err := application.exec("CREATE TABLE basic_customer_reference (customer_id INTEGER NOT NULL REFERENCES mosh_name(id_mosh_name))"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec("INSERT INTO basic_customer_reference (customer_id) VALUES (?)", secondID); err != nil {
+		t.Fatal(err)
+	}
+	blockedDelete := call(http.MethodDelete, "{\"id\":"+strconv.FormatInt(secondID, 10)+"}")
+	if blockedDelete.Code != http.StatusConflict {
+		t.Fatalf("referenced customer deletion should be rejected, got %d %s", blockedDelete.Code, blockedDelete.Body.String())
+	}
+	var preserved int
+	if err := application.queryRow("SELECT COUNT(*) FROM mosh_name WHERE id_mosh_name=?", secondID).Scan(&preserved); err != nil || preserved != 1 {
+		t.Fatalf("referenced customer was not preserved: count=%d err=%v", preserved, err)
+	}
+
+	deleted := call(http.MethodDelete, "{\"id\":"+strconv.FormatInt(customerID, 10)+"}")
+	if deleted.Code != http.StatusOK {
+		t.Fatalf("delete unused customer failed: %d %s", deleted.Code, deleted.Body.String())
+	}
+	for _, item := range lookup(deleted) {
+		if item.ID == customerID {
+			t.Fatalf("deleted customer remains in lookup: %#v", item)
+		}
+	}
+}
 
 func TestMobileLoadingSessionTransfersValidatedTaghe(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:mobile-loading-test?mode=memory&cache=shared")
@@ -648,7 +741,7 @@ func TestFinancialAccountsHandlerReturnsEmptyOnSQLite(t *testing.T) {
 func TestNormalizeExpenseTarikhAcceptsJalaliGregorianAndPersianDigits(t *testing.T) {
 	cases := map[string]string{
 		"1405/06/10": "1405/06/10",
-		"۱۴۰۵/۶/۱۰": "1405/06/10",
+		"۱۴۰۵/۶/۱۰":  "1405/06/10",
 		"1405-6-10":  "1405/06/10",
 		"":           "",
 	}

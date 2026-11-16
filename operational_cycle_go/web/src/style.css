@@ -419,6 +419,13 @@ input, select {
 .row { display: grid; grid-template-columns: 1fr 120px; gap: 10px; }
 .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
 .chips span { background: #0b1527; border: 1px solid #314861; border-radius: 999px; padding: 6px 10px; }
+.basic-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 6px; background: #0b1527; border: 1px solid #314861; border-radius: 999px; }
+.basic-chip > span { min-width: 0; overflow-wrap: anywhere; }
+.basic-chip input { min-width: 0; width: min(240px, 42vw); padding: 6px 8px; }
+.basic-chip-actions { display: inline-flex; flex: 0 0 auto; gap: 4px; }
+.basic-chip-actions button { padding: 5px 8px; font-size: 12px; }
+.basic-chip-actions button.danger { color: #fecdd3; background: #43151d; border-color: #9f3548; }
+.basic-info-help { margin: 0 0 14px; color: #a9bad5; font-size: 13px; }
 
 .table-wrap { overflow: auto; }
 table { width: 100%; border-collapse: collapse; min-width: 800px; }

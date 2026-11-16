@@ -946,6 +946,8 @@ function InitialData({ lookups, refresh, notify }) {
 
   const [values, setValues] = useState({});
 
+  const [editValues, setEditValues] = useState({});
+
   const [confirm, setConfirm] = useState('');
 
   const add = async (kind) => {
@@ -960,6 +962,48 @@ function InitialData({ lookups, refresh, notify }) {
 
   };
 
+  const saveEdit = async (kind, item) => {
+
+    const key = `${kind}:${item.id}`;
+
+    const name = String(editValues[key] ?? item.name).trim();
+
+    if (!name) {
+      notify('نام را وارد کنید');
+      return;
+    }
+
+    try {
+      await api(`/basic/${kind}`, { method: 'PUT', body: { id: Number(item.id), name } });
+
+      setEditValues(current => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+
+      await refresh();
+      notify('نام اطلاعات اولیه ویرایش شد');
+    } catch (err) {
+      notify(err.message || 'ویرایش اطلاعات اولیه انجام نشد');
+    }
+
+  };
+
+  const remove = async (kind, item) => {
+
+    if (!window.confirm(`«${item.name}» از فهرست حذف شود؟ سوابق قبلی تغییر نمی‌کنند و اگر رکوردی به این گزینه وابسته باشد، حذف انجام نمی‌شود.`)) return;
+
+    try {
+      await api(`/basic/${kind}`, { method: 'DELETE', body: { id: Number(item.id) } });
+      await refresh();
+      notify('گزینه از فهرست حذف شد');
+    } catch (err) {
+      notify(err.message || 'حذف اطلاعات اولیه انجام نشد');
+    }
+
+  };
+
   const reset = async () => {
 
     await api('/reset-cycle', { method: 'POST', body: { confirm } });
@@ -970,13 +1014,32 @@ function InitialData({ lookups, refresh, notify }) {
 
   return <Page title="اطلاعات اولیه">
 
+    <p className="basic-info-help">ویرایش نام، سوابق قبلی را تغییر نمی‌دهد. اگر گزینه‌ای به رکورد دیگری وابسته باشد، حذف آن انجام نمی‌شود.</p>
+
     <div className="grid two">{basicDefs.map(([kind, title]) => <section className="panel" key={kind}>
 
       <h2>{title}</h2>
 
       <div className="row"><input value={values[kind] || ''} onChange={e => setValues({ ...values, [kind]: e.target.value })} placeholder={`ثبت ${title}`} /><button onClick={() => add(kind)}>ثبت</button></div>
 
-      <div className="chips">{(lookups[kind] || []).map(x => <span key={x.id}>{x.name}</span>)}</div>
+      <div className="chips">{(lookups[kind] || []).map(x => {
+        const key = `${kind}:${x.id}`;
+        const isEditing = Object.prototype.hasOwnProperty.call(editValues, key);
+        return <div className="basic-chip" key={x.id}>
+          {isEditing
+            ? <input aria-label={`نام جدید برای ${x.name}`} value={editValues[key]} onChange={e => setEditValues(current => ({ ...current, [key]: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter') saveEdit(kind, x); if (e.key === 'Escape') setEditValues(current => { const next = { ...current }; delete next[key]; return next; }); }} />
+            : <span>{x.name}</span>}
+          <div className="basic-chip-actions">
+            {isEditing
+              ? <>
+                <button type="button" onClick={() => saveEdit(kind, x)}>ذخیره</button>
+                <button type="button" onClick={() => setEditValues(current => { const next = { ...current }; delete next[key]; return next; })}>لغو</button>
+              </>
+              : <button type="button" aria-label={`ویرایش ${x.name}`} title="ویرایش" onClick={() => setEditValues(current => ({ ...current, [key]: x.name }))}>ویرایش</button>}
+            <button type="button" className="danger" aria-label={`حذف ${x.name}`} title="حذف" onClick={() => remove(kind, x)}>حذف</button>
+          </div>
+        </div>;
+      })}</div>
 
     </section>)}</div>
 

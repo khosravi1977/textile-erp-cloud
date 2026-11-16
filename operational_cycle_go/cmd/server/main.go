@@ -1611,7 +1611,12 @@ func (a *app) basic(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "نوع اطلاعات اولیه معتبر نیست")
 		return
 	}
-	if r.Method == http.MethodPost {
+	quotedTable := quoteIdent(table)
+	quotedIDCol := quoteIdent(idCol)
+	quotedNameCol := quoteIdent(nameCol)
+	switch r.Method {
+	case http.MethodGet:
+	case http.MethodPost:
 		var p struct {
 			Name string `json:"name"`
 		}
@@ -1624,26 +1629,72 @@ func (a *app) basic(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var exists int
-		checkStmt := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s=?", table, nameCol)
-		if a.dialect == "postgres" {
-			checkStmt = fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s=?", quoteIdent(table), quoteIdent(nameCol))
-		}
+		checkStmt := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s=?", quotedTable, quotedNameCol)
 		_ = a.queryRow(checkStmt, p.Name).Scan(&exists)
 		if exists == 0 {
-			stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (?)", table, nameCol)
-			if a.dialect == "postgres" {
-				stmt = fmt.Sprintf("INSERT INTO %s (%s) VALUES (?)", quoteIdent(table), quoteIdent(nameCol))
-			}
+			stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (?)", quotedTable, quotedNameCol)
 			_, err := a.exec(stmt, p.Name)
 			if err != nil {
 				fail(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 		}
-	}
-	if r.Method == http.MethodDelete {
-		id := strings.TrimPrefix(kind, "")
-		_ = id
+	case http.MethodPut:
+		var p struct {
+			ID   int64  `json:"id"`
+			Name string `json:"name"`
+		}
+		if !decode(w, r, &p) {
+			return
+		}
+		p.Name = strings.TrimSpace(p.Name)
+		if p.ID <= 0 || p.Name == "" {
+			fail(w, http.StatusBadRequest, "مورد معتبر و نام جدید را وارد کنید")
+			return
+		}
+		var exists int
+		checkStmt := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s=? AND %s<>?", quotedTable, quotedNameCol, quotedIDCol)
+		if err := a.queryRow(checkStmt, p.Name, p.ID).Scan(&exists); err != nil {
+			fail(w, http.StatusInternalServerError, "بررسی نام اطلاعات اولیه انجام نشد")
+			return
+		}
+		if exists > 0 {
+			fail(w, http.StatusConflict, "این نام از قبل ثبت شده است")
+			return
+		}
+		result, err := a.exec(fmt.Sprintf("UPDATE %s SET %s=? WHERE %s=?", quotedTable, quotedNameCol, quotedIDCol), p.Name, p.ID)
+		if err != nil {
+			fail(w, http.StatusConflict, "ویرایش انجام نشد؛ نام تکراری است یا پایگاه داده آن را نپذیرفت")
+			return
+		}
+		if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+			fail(w, http.StatusNotFound, "گزینهٔ موردنظر پیدا نشد")
+			return
+		}
+	case http.MethodDelete:
+		var p struct {
+			ID int64 `json:"id"`
+		}
+		if !decode(w, r, &p) {
+			return
+		}
+		if p.ID <= 0 {
+			fail(w, http.StatusBadRequest, "گزینهٔ موردنظر معتبر نیست")
+			return
+		}
+		result, err := a.exec(fmt.Sprintf("DELETE FROM %s WHERE %s=?", quotedTable, quotedIDCol), p.ID)
+		if err != nil {
+			fail(w, http.StatusConflict, "این گزینه به اطلاعات دیگری وابسته است و حذف نشد؛ سوابق قبلی حفظ شده‌اند")
+			return
+		}
+		if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+			fail(w, http.StatusNotFound, "گزینهٔ موردنظر پیدا نشد")
+			return
+		}
+	default:
+		w.Header().Set("Allow", "GET, POST, PUT, DELETE")
+		fail(w, http.StatusMethodNotAllowed, "این روش درخواست پشتیبانی نمی‌شود")
+		return
 	}
 	writeJSON(w, a.lookup(table, idCol, nameCol))
 }
