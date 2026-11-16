@@ -1435,11 +1435,11 @@ func formatTextileReport(r reportSnapshot, reportType string) string {
 	}
 	base := fmt.Sprintf(
 		"%s\n🏢 %s\n📅 %s\n\n"+
-			"🏭 تولید و خروج\n• تعداد ثبت: %s\n• وزن: %s کیلو\n• متراژ: %s متر\n• مبلغ خروج: %s تومان\n"+
+			"🏭 تولید و خروج\n• تعداد ثبت: %s\n• وزن: %s کیلو\n• متراژ: %s متر\n• مبلغ خروج: %s ریال\n"+
 			"• ضایعات ثبت‌شده: %s کیلو\n• نرخ ضایعات: %s درصد\n• میانگین تولید روزانه: %s کیلو\n• روزهای دارای فعالیت: %s\n\n"+
-			"📥 ورود کالا و نخ\n• تعداد فاکتور: %s\n• وزن/مقدار: %s\n• مبلغ: %s تومان\n\n"+
+			"📥 ورود کالا و نخ\n• تعداد فاکتور: %s\n• وزن/مقدار: %s\n• مبلغ: %s ریال\n\n"+
 			"📤 خروج نخ\n• تعداد: %s\n• وزن: %s کیلو\n\n"+
-			"📦 موجودی فعلی\n• مقدار خالص: %s\n• ارزش: %s تومان",
+			"📦 موجودی فعلی\n• مقدار خالص: %s\n• ارزش: %s ریال",
 		title, fallback(r.Company, "نساجی"), periodLabel,
 		formatNumber(float64(r.OutputCount)), formatNumber(r.OutputWeight), formatNumber(r.OutputMeters), formatNumber(r.OutputTotal),
 		formatNumber(r.ScrapWeight), formatNumber(scrapRate), formatNumber(averageOutput), formatNumber(float64(r.ActiveDays)),

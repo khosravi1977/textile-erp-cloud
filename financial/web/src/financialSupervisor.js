@@ -25,7 +25,7 @@ export function suggestIncomingPrice(finance, draft, limit = 5) {
     .filter(row => text(row.id) !== currentId && !row.nonFinancial && normalizedName(row.itemName) === item
       && (row.inventoryType || 'yarn') === (draft?.inventoryType || 'yarn')
       && (row.unit || '') === (draft?.unit || '')
-      && (row.currency || 'IRT') === (draft?.currency || 'IRT')
+      && (row.currency || 'IRR') === 'IRR' && (draft?.currency || 'IRR') === 'IRR'
       && (row.source_type === 'operational_chelle_in') === (draft?.source_type === 'operational_chelle_in')
       && asOf && priceDate(row.date) && priceDate(row.date) <= asOf)
     .map(row => ({

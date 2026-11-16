@@ -38,7 +38,7 @@ func TestCollectWorkspaceAndFormat(t *testing.T) {
 	report.PeriodStart = "2026-07-26"
 	report.PeriodEnd = "2026-07-26"
 	text := formatTextileReport(report, "daily")
-	for _, expected := range []string{"گزارش روزانه", "126 کیلو", "840 متر", "6,600,000 تومان"} {
+	for _, expected := range []string{"گزارش روزانه", "126 کیلو", "840 متر", "6,600,000 ریال"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("report does not contain %q: %s", expected, text)
 		}

@@ -7,6 +7,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /textile-erp ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux go build -o /currency-normalize ./cmd/currency-normalize
 
 # Stage 2: Run
 FROM alpine:latest
@@ -14,6 +15,7 @@ RUN apk --no-cache add ca-certificates tzdata
 ENV TZ=Asia/Tehran
 WORKDIR /app
 COPY --from=builder /textile-erp .
+COPY --from=builder /currency-normalize .
 COPY --from=builder /app/internal/infrastructure/persistence/postgres/migrations ./internal/infrastructure/persistence/postgres/migrations
 
 EXPOSE 8081

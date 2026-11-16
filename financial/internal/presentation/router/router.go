@@ -105,6 +105,7 @@ func SetupRouter(services ...*telegramreport.Service) http.Handler {
 	mux.HandleFunc("/", h.Root)
 
 	var handler http.Handler = mux
+	handler = middleware.RialCurrency(handler)
 	handler = middleware.AuditLog(handler)
 	handler = middleware.Metrics(handler)
 	handler = middleware.AdminAuth(handler)

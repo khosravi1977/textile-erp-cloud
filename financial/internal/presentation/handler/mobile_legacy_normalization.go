@@ -73,6 +73,11 @@ func normalizeLegacyMobileExpenseState(raw json.RawMessage) (json.RawMessage, st
 				"accountId": transaction["accountId"], "counterparty": counterparty, "reportedCustomer": reportedCustomer,
 				"source_type": "mobile_sms", "sourceId": externalID, "bank": transaction["bank"],
 			}
+			for _, key := range []string{"currency", "sourceCurrency", "sourceAmount"} {
+				if value, ok := transaction[key]; ok {
+					expense[key] = value
+				}
+			}
 			if sourceMovement != nil {
 				for _, key := range []string{"date", "occurredJalali", "amount", "description", "accountId", "bank"} {
 					if value := sourceMovement[key]; strings.TrimSpace(stringValue(value)) != "" {

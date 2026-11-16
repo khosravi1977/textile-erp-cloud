@@ -244,7 +244,7 @@ func main() {
 	log.Printf("Operational cycle Go server started on :%s", port)
 	log.Printf("operational_db=%s", label)
 	log.Printf("operational_db_driver=%s", dialect)
-	log.Fatal(http.ListenAndServe(":"+port, withCORS(a.serializeDatabaseAccess(mux))))
+	log.Fatal(http.ListenAndServe(":"+port, withCORS(withRialCurrency(a.serializeDatabaseAccess(mux)))))
 }
 
 var operationalTenantTables = []string{

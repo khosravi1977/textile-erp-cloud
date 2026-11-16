@@ -492,6 +492,7 @@ function App() {
       </aside>
 
       <main className="workspace">
+        <p>واحد تمام مبالغ و قیمت‌ها: ریال (IRR)</p>
 
         <header className="topbar">
 
@@ -741,7 +742,7 @@ function DashboardPro() {
 
     ['فاکتور خروج', data.out_invoice_count, 'فاکتور'],
 
-    ['هزینه‌ها', fmt(data.expense_total), 'تومان'],
+    ['هزینه‌ها', fmt(data.expense_total), 'ریال'],
 
     ['طاقه موجود', stock.total_taghe, 'طاقه'],
 
@@ -2213,7 +2214,7 @@ function Expenses({ lookups, notify, refreshLookups }) {
 
       <Select label="زیرگروه" value={form.weaver_id} onChange={v => set('weaver_id', Number(v))} items={lookups.weavers} basicKind="weavers" refreshLookups={refreshLookups} notify={notify} />
 
-      <Input label="مبلغ" type="number" value={form.mablagh} onChange={v => set('mablagh', Number(v))} />
+      <Input label="مبلغ (ریال)" type="number" value={form.mablagh} onChange={v => set('mablagh', Number(v))} />
 
       <Select label="حساب پرداخت‌کننده" value={form.pay_account} onChange={v => { const acc = financialAccounts.find(a => String(a.id) === String(v)) || {}; set('pay_account', v); set('pay_account_name', acc.name || ''); }} items={financialAccounts} />
 
@@ -4317,7 +4318,7 @@ tr.big td.value-cell { font-size: 20px; } .barcode-box { flex: 1; min-height: 19
 
 function printReport(title, rows, columns) {
 
-  const head = columns.map(c => `<th>${safe(c[1])}</th>`).join('');
+  const head = columns.map(c => `<th>${safe(c[0] === 'mablagh' ? c[1] + ' (ریال)' : c[1])}</th>`).join('');
 
   const body = rows.map(r => `<tr>${columns.map(c => `<td>${safe(display(r[c[0]]))}</td>`).join('')}</tr>`).join('');
 
@@ -4355,7 +4356,7 @@ function exportExcel(title, rows = [], columns = []) {
 
   };
 
-  const header = `<Row>${columns.map(([, label]) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${xmlText(label)}</Data></Cell>`).join('')}</Row>`;
+  const header = `<Row>${columns.map(([key, label]) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${xmlText(key === 'mablagh' ? label + ' (ریال)' : label)}</Data></Cell>`).join('')}</Row>`;
 
   const body = rows.map(row => `<Row>${columns.map(([key]) => cell(row?.[key])).join('')}</Row>`).join('');
 

@@ -81,11 +81,11 @@ func (uc *ProductionUseCase) CreateProductionOrder(req CreateOrderRequest) (*Cre
 
     estimatedValue := req.YarnQty * req.YarnPrice
 
-    if estimatedValue > profile.CreditLimit.ToToman() {
+    if estimatedValue > float64(profile.CreditLimit.ToRials()) {
         creditOK = false
         warnings = append(warnings, fmt.Sprintf(
             "Estimated value (%.0f) exceeds credit limit (%.0f)",
-            estimatedValue, profile.CreditLimit.ToToman(),
+            estimatedValue, float64(profile.CreditLimit.ToRials()),
         ))
     }
 
@@ -152,13 +152,13 @@ func (uc *ProductionUseCase) CompleteProduction(req CompleteProductionRequest) (
         "Production completed: Input=%.0fkg, Output=%.0fkg, Waste=%.0fkg(std)+%.0fkg(excess), Downtime=%.0fdays, Net=%.0f",
         req.YarnInput, req.FabricOutput,
         wasteResult.StdWasteQty, wasteResult.ExcessWasteQty,
-        req.DowntimeDays, commission.NetAmount.ToToman(),
+        req.DowntimeDays, float64(commission.NetAmount.ToRials()),
     )
 
     return &CompleteProductionResponse{
         OrderID:         req.OrderID,
         WasteResult:     wasteResult,
-        DowntimePenalty: downtimeResult.Amount.ToToman(),
+        DowntimePenalty: float64(downtimeResult.Amount.ToRials()),
         Commission:      commission,
         Advice:          advices,
         Summary:         summary,

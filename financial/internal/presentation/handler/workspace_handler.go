@@ -1,14 +1,12 @@
 package handler
 
 import (
-	"log"
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -198,6 +196,9 @@ func loadWorkspace(r *http.Request, companyID int64) (workspaceDocument, error) 
 				doc.Checksum = checksum
 			}
 		}
+		if err == nil && workspaceNeedsRialMigration(decodeWorkspaceMap(doc.State)) {
+			return workspaceDocument{}, errors.New("Currency normalization is required; ask the administrator to run the audited rial migration")
+		}
 		return doc, err
 	})
 }
@@ -208,6 +209,9 @@ func saveWorkspace(r *http.Request, companyID, userID int64, expectedRevision *i
 	}
 	var saved workspaceDocument
 	err := postgres.WithCompanyTx(r.Context(), postgres.DB, companyID, func(tx *sql.Tx) error {
+		if err := lockRialCompany(r.Context(), tx, companyID); err != nil {
+			return err
+		}
 		var current workspaceDocument
 		err := tx.QueryRowContext(r.Context(), `
 			SELECT state, revision, checksum, updated_at
@@ -217,6 +221,9 @@ func saveWorkspace(r *http.Request, companyID, userID int64, expectedRevision *i
 		`, companyID).Scan(&current.State, &current.Revision, &current.Checksum, &current.UpdatedAt)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
+		}
+		if workspaceNeedsRialMigration(decodeWorkspaceMap(current.State)) || workspaceNeedsRialMigration(decodeWorkspaceMap(state)) {
+			return errors.New("rial currency migration required before saving")
 		}
 		if expectedRevision != nil && *expectedRevision != current.Revision {
 			return workspaceConflict{Current: current}
@@ -337,31 +344,6 @@ func accountingSourceKey(field string, row map[string]any) string {
 		return ""
 	}
 	return sourceType + ":" + sourceID
-}
-
-func validateWorkspaceState(raw json.RawMessage) (json.RawMessage, string, error) {
-	if len(raw) == 0 {
-		return nil, "", errors.New("Workspace state is required")
-	}
-	var state map[string]any
-	decoder := json.NewDecoder(strings.NewReader(string(raw)))
-	decoder.UseNumber()
-	if err := decoder.Decode(&state); err != nil || state == nil {
-		return nil, "", errors.New("Workspace state must be a JSON object")
-	}
-	for _, key := range []string{"invoices", "incomingInvoices", "manualCustomers", "yarnOutInvoices", "expenses", "receivableDocs", "payableDocs", "accounts", "movements", "ownedInventory", "openingBalances", "smsGroups", "smsBankSenders", "mobileTransactions", "journalEntries", "fiscalPeriods"} {
-		if value, ok := state[key]; ok {
-			if _, ok := value.([]any); !ok {
-				return nil, "", fmt.Errorf("Workspace field %s must be an array", key)
-			}
-		}
-	}
-	canonical, err := json.Marshal(state)
-	if err != nil {
-		return nil, "", err
-	}
-	sum := sha256.Sum256(canonical)
-	return canonical, hex.EncodeToString(sum[:]), nil
 }
 
 func writableWorkspaceFields(ctx context.Context) map[string]bool {
@@ -553,6 +535,10 @@ func number(value any) float64 {
 	switch typed := value.(type) {
 	case float64:
 		return typed
+	case int64:
+		return float64(typed)
+	case int:
+		return float64(typed)
 	case json.Number:
 		n, _ := typed.Float64()
 		return n
@@ -585,7 +571,7 @@ func alert(severity, title, message string) map[string]any {
 	return map[string]any{"severity": severity, "title": title, "message": message}
 }
 
-func formatAmount(value float64) string { return fmt.Sprintf("%.0f تومان", value) }
+func formatAmount(value float64) string { return fmt.Sprintf("%.0f ریال", value) }
 
 func absolute(value float64) float64 {
 	if value < 0 {

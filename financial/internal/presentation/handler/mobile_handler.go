@@ -15,6 +15,7 @@ import (
 
 	"github.com/erpsystem/textile-erp/internal/application/financecore"
 	"github.com/erpsystem/textile-erp/internal/infrastructure/persistence/postgres"
+	"github.com/erpsystem/textile-erp/internal/platform/monetary"
 	"github.com/erpsystem/textile-erp/internal/platform/requestctx"
 	"github.com/erpsystem/textile-erp/internal/presentation/middleware"
 )
@@ -329,16 +330,7 @@ func (h *APIHandler) MobileBootstrap(w http.ResponseWriter, r *http.Request) {
 		for key, value := range account {
 			copyAccount[key] = value
 		}
-		balance := mobileInt64(account["opening"])
-		for _, movement := range movements {
-			if stringValue(movement["accountId"]) == stringValue(account["id"]) {
-				if stringValue(movement["direction"]) == "in" {
-					balance += mobileInt64(movement["amount"])
-				} else {
-					balance -= mobileInt64(movement["amount"])
-				}
-			}
-		}
+		balance := mobileInt64(account["opening"]) + mobileAccountNet(movements, stringValue(account["id"]))
 		copyAccount["balance"] = balance
 		mobileAccounts = append(mobileAccounts, copyAccount)
 	}
@@ -360,11 +352,17 @@ func (h *APIHandler) MobileBootstrap(w http.ResponseWriter, r *http.Request) {
 			closeBridge()
 		}
 	}
-	RespondJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"company_id": companyID, "revision": doc.Revision, "accounts": mobileAccounts,
 		"customers": customers, "groups": rowsFrom(state, "smsGroups"), "bank_rules": rowsFrom(state, "smsBankSenders"),
 		"receivable_checks": rowsFrom(state, "receivableDocs"), "payable_checks": rowsFrom(state, "payableDocs"),
-	})
+	}
+	if err := adaptMobileBootstrap(payload, r.URL.Query().Get("currency")); err != nil {
+		RespondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.Header().Set("X-Money-Currency", stringValue(payload["currency"]))
+	RespondJSON(w, http.StatusOK, payload)
 }
 
 func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
@@ -384,6 +382,10 @@ func (h *APIHandler) MobileTransaction(w http.ResponseWriter, r *http.Request) {
 	var req mobileTransactionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.ExternalID) == "" || req.Amount <= 0 {
 		RespondError(w, http.StatusBadRequest, "Invalid transaction")
+		return
+	}
+	if err := normalizeMobileMoney(&req); err != nil {
+		RespondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	transactionType, err := classifyMobileTransaction(req.TransactionType, req.Direction, req.Group, req.Customer, req.CounterAccount)
@@ -622,6 +624,7 @@ func (h *APIHandler) persistMobileTransactionState(r *http.Request, companyID in
 			}
 			accounts[accountIndex]["opening"] = *req.ReportedBalance - movementNet - currentEffect
 			accounts[accountIndex]["lastReportedBalance"] = *req.ReportedBalance
+			accounts[accountIndex]["currency"] = "IRR"
 			accounts[accountIndex]["lastReportedJalali"] = strings.TrimSpace(req.OccurredJalali)
 			accounts[accountIndex]["lastMobileSyncAt"] = now
 		}
@@ -655,7 +658,7 @@ func (h *APIHandler) persistMobileTransactionState(r *http.Request, companyID in
 		if typed != nil && typed.PartyName != "" {
 			counterparty = typed.PartyName
 		}
-		mobileRow := map[string]any{"id": "sms-" + req.ExternalID, "externalId": req.ExternalID, "title": req.Title, "amount": req.Amount, "direction": req.Direction, "transactionType": transactionType, "transactionTypeExplicit": strings.TrimSpace(req.TransactionType) != "", "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "counterAccount": req.CounterAccount, "group": group, "subgroup": subgroup, "reportedCustomer": req.Customer, "counterparty": counterparty, "bank": accountName, "sender": req.Sender, "trackingNo": req.TrackingNo, "reportedBalance": req.ReportedBalance, "occurredAt": occurred, "occurredJalali": occurredJalali, "syncedAt": now}
+		mobileRow := map[string]any{"id": "sms-" + req.ExternalID, "externalId": req.ExternalID, "title": req.Title, "amount": req.Amount, "currency": "IRR", "sourceCurrency": req.SourceCurrency, "sourceAmount": req.SourceAmount, "direction": req.Direction, "transactionType": transactionType, "transactionTypeExplicit": strings.TrimSpace(req.TransactionType) != "", "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "counterAccount": req.CounterAccount, "group": group, "subgroup": subgroup, "reportedCustomer": req.Customer, "counterparty": counterparty, "bank": accountName, "sender": req.Sender, "trackingNo": req.TrackingNo, "reportedBalance": req.ReportedBalance, "occurredAt": occurred, "occurredJalali": occurredJalali, "syncedAt": now}
 		setUnconfirmedCounterparty(mobileRow, customer)
 		if typed != nil {
 			mobileRow["typedType"] = typed.TypedType
@@ -668,7 +671,7 @@ func (h *APIHandler) persistMobileTransactionState(r *http.Request, companyID in
 		if trackingNo == "" {
 			trackingNo = req.ExternalID
 		}
-		movement := map[string]any{"id": "mov-sms-" + req.ExternalID, "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "date": occurred, "occurredJalali": occurredJalali, "direction": req.Direction, "transactionType": transactionType, "amount": req.Amount, "counterparty": counterparty, "trackingNo": trackingNo, "description": req.Description, "sourceMobileTransaction": req.ExternalID, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName, "group": group, "subgroup": subgroup}
+		movement := map[string]any{"id": "mov-sms-" + req.ExternalID, "accountId": resolvedAccountID, "counterAccountId": counterAccountID, "date": occurred, "occurredJalali": occurredJalali, "direction": req.Direction, "transactionType": transactionType, "amount": req.Amount, "currency": "IRR", "sourceCurrency": req.SourceCurrency, "sourceAmount": req.SourceAmount, "counterparty": counterparty, "trackingNo": trackingNo, "description": req.Description, "sourceMobileTransaction": req.ExternalID, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName, "group": group, "subgroup": subgroup}
 		setUnconfirmedCounterparty(movement, customer)
 		if typed != nil {
 			movement["typedType"] = typed.TypedType
@@ -679,7 +682,7 @@ func (h *APIHandler) persistMobileTransactionState(r *http.Request, companyID in
 		createExpense := transactionType == "expense" && (typed == nil || typed.ExpenseLike)
 		if createExpense {
 			expenseID := "exp-sms-" + req.ExternalID
-			expense := map[string]any{"id": expenseID, "date": occurred, "occurredJalali": occurredJalali, "group": group, "subgroup": subgroup, "amount": req.Amount, "description": req.Description, "accountId": resolvedAccountID, "counterparty": counterparty, "reportedCustomer": req.Customer, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName}
+			expense := map[string]any{"id": expenseID, "date": occurred, "occurredJalali": occurredJalali, "group": group, "subgroup": subgroup, "amount": req.Amount, "currency": "IRR", "sourceCurrency": req.SourceCurrency, "sourceAmount": req.SourceAmount, "description": req.Description, "accountId": resolvedAccountID, "counterparty": counterparty, "reportedCustomer": req.Customer, "source_type": "mobile_sms", "sourceId": req.ExternalID, "bank": accountName}
 			if typed != nil {
 				expense["typedType"] = typed.TypedType
 				if typed.PartyName != "" {
@@ -732,45 +735,6 @@ func applyConfirmedCounterparty(row map[string]any, name string) {
 	row["counterpartySource"] = "erp_party_id"
 }
 
-type mobilePayableDocumentRequest struct {
-	ExternalID  string `json:"external_id"`
-	Customer    string `json:"customer"`
-	Amount      int64  `json:"amount"`
-	CheckNo     string `json:"check_no"`
-	CheckNoAlt  string `json:"checkNo"`
-	Sayad       string `json:"sayad"`
-	SayadID     string `json:"sayad_id"`
-	DueJalali   string `json:"due_jalali"`
-	DueAlt      string `json:"dueJalali"`
-	Bank        string `json:"bank"`
-	Account     string `json:"account"`
-	Beneficiary string `json:"beneficiary"`
-	Status      string `json:"status"`
-	Source      string `json:"source"`
-	Description string `json:"description"`
-}
-
-type mobileTransactionRequest struct {
-	ExternalID      string           `json:"external_id"`
-	Title           string           `json:"title"`
-	Direction       string           `json:"direction"`
-	AccountID       string           `json:"account_id"`
-	Group           string           `json:"group"`
-	Subgroup        string           `json:"subgroup"`
-	Customer        string           `json:"customer"`
-	TransactionType string           `json:"transaction_type"`
-	Bank            string           `json:"bank"`
-	Sender          string           `json:"sender"`
-	Description     string           `json:"description"`
-	OccurredJalali  string           `json:"occurred_jalali"`
-	Amount          int64            `json:"amount"`
-	ReportedBalance *int64           `json:"reported_balance"`
-	TrackingNo      string           `json:"tracking_no"`
-	CounterAccount  string           `json:"counter_account"`
-	Groups          []map[string]any `json:"groups"`
-	BankRules       []map[string]any `json:"bank_rules"`
-}
-
 // legacyTypeMapping maps the historic five-way mobile classification onto
 // the typed posting enum.
 var legacyTypeMapping = map[string]string{
@@ -820,14 +784,15 @@ func (h *APIHandler) postLegacyTypedTransaction(r *http.Request, companyID int64
 		BankAccountName:       mobileCanonicalBankName(req.Bank),
 		Direction:             direction,
 		Amount:                req.Amount,
-		TransactionDate:       req.OccurredJalali,
-		TransactionType:       mapped,
-		PartyID:               partyID,
-		CounterAccountName:    strings.TrimSpace(req.CounterAccount),
-		Description:           firstNonEmpty(req.Description, req.Title, req.TrackingNo),
-		BankReference:         req.TrackingNo,
-		Source:                financecore.SourceHesabyar,
-		RawSourceReference:    strings.TrimSpace(req.Customer),
+		Currency:              "IRR", SourceCurrency: req.SourceCurrency, SourceAmount: req.SourceAmount,
+		TransactionDate:    req.OccurredJalali,
+		TransactionType:    mapped,
+		PartyID:            partyID,
+		CounterAccountName: strings.TrimSpace(req.CounterAccount),
+		Description:        firstNonEmpty(req.Description, req.Title, req.TrackingNo),
+		BankReference:      req.TrackingNo,
+		Source:             financecore.SourceHesabyar,
+		RawSourceReference: strings.TrimSpace(req.Customer),
 	}
 	if typed.BankAccountName == "" {
 		typed.BankAccountName = mobileCanonicalBankName(req.AccountID)
@@ -865,6 +830,16 @@ func normalizeMobileDigits(value string) string {
 }
 
 func mobilePayableDocumentRow(req mobilePayableDocumentRequest, now time.Time) (map[string]any, error) {
+	unit, unitErr := monetary.Unit(req.Currency, monetary.Toman)
+	if unitErr != nil {
+		return nil, unitErr
+	}
+	sourceAmount := req.Amount
+	req.Amount, unitErr = monetary.ToRials(req.Amount, unit)
+	if unitErr != nil {
+		return nil, unitErr
+	}
+
 	externalID := strings.TrimSpace(req.ExternalID)
 	customer := strings.TrimSpace(req.Customer)
 	checkNo := strings.TrimSpace(req.CheckNo)
@@ -906,7 +881,7 @@ func mobilePayableDocumentRow(req mobilePayableDocumentRequest, now time.Time) (
 	}
 	return map[string]any{
 		"id": "pch-mobile-" + pairingHash(externalID)[:16], "externalId": externalID,
-		"customer": customer, "amount": req.Amount, "checkNo": checkNo, "sayadId": sayadID,
+		"customer": customer, "amount": req.Amount, "currency": "IRR", "sourceCurrency": unit, "sourceAmount": sourceAmount, "checkNo": checkNo, "sayadId": sayadID,
 		"dueJalali": dueJalali, "dueDate": mobileAccountingDate(dueJalali), "bank": bank,
 		"account": strings.TrimSpace(req.Account), "beneficiary": strings.TrimSpace(req.Beneficiary),
 		"status": status, "source": source, "source_type": "hesabyar_mobile", "sourceId": externalID,
@@ -1159,123 +1134,6 @@ func removeMobileRows(state map[string]any, key, externalID string) []any {
 	return result
 }
 
-func (h *APIHandler) MobileSettings(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		RespondError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		return
-	}
-	companyID := requestctx.CompanyID(r.Context())
-	if !h.mobileDeviceActive(r, companyID) {
-		RespondError(w, http.StatusUnauthorized, "Device is not paired")
-		return
-	}
-	var req struct {
-		Groups       []map[string]any `json:"groups"`
-		BankRules    []map[string]any `json:"bank_rules"`
-		BankBalances []struct {
-			Name       string `json:"name"`
-			Balance    int64  `json:"balance"`
-			ReportedAt string `json:"reported_at"`
-		} `json:"bank_balances"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		RespondError(w, http.StatusBadRequest, "Invalid settings")
-		return
-	}
-	for attempt := 0; attempt < 3; attempt++ {
-		doc, err := loadWorkspace(r, companyID)
-		if err != nil {
-			RespondError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		state := decodeWorkspaceMap(doc.State)
-		state["smsGroups"] = mapsToAny(req.Groups)
-		state["smsBankSenders"] = mapsToAny(req.BankRules)
-		accounts := rowsFrom(state, "accounts")
-		movements := rowsFrom(state, "movements")
-		for _, reported := range req.BankBalances {
-			accountName := mobileCanonicalBankName(reported.Name)
-			if accountName == "" {
-				continue
-			}
-			accountIndex := -1
-			for index, account := range accounts {
-				if mobileCanonicalBankName(stringValue(account["name"])) == accountName {
-					accountIndex = index
-					if stringValue(account["name"]) == accountName {
-						break
-					}
-				}
-			}
-			if accountIndex < 0 {
-				accountID := "bank-mobile-" + pairingHash(accountName)[:12]
-				accounts = append(accounts, map[string]any{"id": accountID, "name": accountName, "type": "بانک", "opening": int64(0), "source": "mobile_sms", "mobileManaged": true})
-				accountIndex = len(accounts) - 1
-			}
-			resolvedID := stringValue(accounts[accountIndex]["id"])
-			accounts[accountIndex]["name"] = accountName
-			latestExistingOrder := mobileDateOrderKey(stringValue(accounts[accountIndex]["lastReportedJalali"]))
-			duplicateIDs := map[string]bool{}
-			filteredAccounts := make([]map[string]any, 0, len(accounts))
-			for index, account := range accounts {
-				if index != accountIndex && mobileCanonicalBankName(stringValue(account["name"])) == accountName {
-					if candidate := mobileDateOrderKey(stringValue(account["lastReportedJalali"])); candidate > latestExistingOrder {
-						latestExistingOrder = candidate
-					}
-					duplicateIDs[stringValue(account["id"])] = true
-					continue
-				}
-				filteredAccounts = append(filteredAccounts, account)
-			}
-			if len(duplicateIDs) > 0 {
-				for _, movement := range movements {
-					if duplicateIDs[stringValue(movement["accountId"])] {
-						movement["accountId"] = resolvedID
-					}
-				}
-				accounts = filteredAccounts
-				for index, account := range accounts {
-					if stringValue(account["id"]) == resolvedID {
-						accountIndex = index
-						break
-					}
-				}
-			}
-			incomingOrder := mobileDateOrderKey(reported.ReportedAt)
-			if latestExistingOrder != "" && incomingOrder != "" && incomingOrder < latestExistingOrder {
-				continue
-			}
-			// Same formula as the UI's accountBalance (direct legs + transfer
-			// counter-legs) so the displayed balance lands exactly on the
-			// reported value; see mobileAccountNet.
-			movementNet := mobileAccountNet(movements, resolvedID)
-			accounts[accountIndex]["opening"] = reported.Balance - movementNet
-			accounts[accountIndex]["lastReportedBalance"] = reported.Balance
-			accounts[accountIndex]["lastReportedJalali"] = strings.TrimSpace(reported.ReportedAt)
-			accounts[accountIndex]["lastMobileSyncAt"] = time.Now().UTC().Format(time.RFC3339)
-		}
-		state["accounts"] = mapsToAny(accounts)
-		raw, _ := json.Marshal(state)
-		canonical, checksum, err := validateWorkspaceState(raw)
-		if err != nil {
-			RespondError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		expected := doc.Revision
-		saved, err := saveWorkspace(r, companyID, requestctx.UserID(r.Context()), &expected, canonical, checksum, nil)
-		if err == nil {
-			RespondJSON(w, http.StatusOK, map[string]any{"status": "synced", "revision": saved.Revision})
-			return
-		}
-		var conflict workspaceConflict
-		if !errors.As(err, &conflict) {
-			RespondError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-	}
-	RespondError(w, http.StatusConflict, "Workspace changed; retry sync")
-}
-
 func (h *APIHandler) mobileDeviceActive(r *http.Request, companyID int64) bool {
 	claims, err := middleware.VerifyJWT(strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
 	if err != nil {
@@ -1360,4 +1218,141 @@ func uniqueWorkspaceCustomers(state map[string]any) []map[string]any {
 		}
 	}
 	return out
+}
+
+func (h *APIHandler) MobileSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		RespondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	companyID := requestctx.CompanyID(r.Context())
+	if !h.mobileDeviceActive(r, companyID) {
+		RespondError(w, http.StatusUnauthorized, "Device is not paired")
+		return
+	}
+	var req struct {
+		Groups       []map[string]any `json:"groups"`
+		BankRules    []map[string]any `json:"bank_rules"`
+		Currency     string           `json:"currency"`
+		BankBalances []struct {
+			SourceCurrency string `json:"-"`
+			SourceBalance  int64  `json:"-"`
+			Currency       string `json:"currency"`
+			Name           string `json:"name"`
+			Balance        int64  `json:"balance"`
+			ReportedAt     string `json:"reported_at"`
+		} `json:"bank_balances"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondError(w, http.StatusBadRequest, "Invalid settings")
+		return
+	}
+	for i := range req.BankBalances {
+		unit, err := monetary.Unit(firstNonEmpty(req.BankBalances[i].Currency, req.Currency), monetary.Toman)
+		if err != nil {
+			RespondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.BankBalances[i].SourceCurrency, req.BankBalances[i].SourceBalance = unit, req.BankBalances[i].Balance
+		req.BankBalances[i].Balance, err = monetary.ToRials(req.BankBalances[i].Balance, unit)
+		if err != nil {
+			RespondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		doc, err := loadWorkspace(r, companyID)
+		if err != nil {
+			RespondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		state := decodeWorkspaceMap(doc.State)
+		state["smsGroups"] = mapsToAny(req.Groups)
+		state["smsBankSenders"] = mapsToAny(req.BankRules)
+		accounts := rowsFrom(state, "accounts")
+		movements := rowsFrom(state, "movements")
+		for _, reported := range req.BankBalances {
+			accountName := mobileCanonicalBankName(reported.Name)
+			if accountName == "" {
+				continue
+			}
+			accountIndex := -1
+			for index, account := range accounts {
+				if mobileCanonicalBankName(stringValue(account["name"])) == accountName {
+					accountIndex = index
+					if stringValue(account["name"]) == accountName {
+						break
+					}
+				}
+			}
+			if accountIndex < 0 {
+				accountID := "bank-mobile-" + pairingHash(accountName)[:12]
+				accounts = append(accounts, map[string]any{"id": accountID, "name": accountName, "type": "بانک", "opening": int64(0), "source": "mobile_sms", "mobileManaged": true})
+				accountIndex = len(accounts) - 1
+			}
+			resolvedID := stringValue(accounts[accountIndex]["id"])
+			accounts[accountIndex]["name"] = accountName
+			latestExistingOrder := mobileDateOrderKey(stringValue(accounts[accountIndex]["lastReportedJalali"]))
+			duplicateIDs := map[string]bool{}
+			filteredAccounts := make([]map[string]any, 0, len(accounts))
+			for index, account := range accounts {
+				if index != accountIndex && mobileCanonicalBankName(stringValue(account["name"])) == accountName {
+					if candidate := mobileDateOrderKey(stringValue(account["lastReportedJalali"])); candidate > latestExistingOrder {
+						latestExistingOrder = candidate
+					}
+					duplicateIDs[stringValue(account["id"])] = true
+					continue
+				}
+				filteredAccounts = append(filteredAccounts, account)
+			}
+			if len(duplicateIDs) > 0 {
+				for _, movement := range movements {
+					if duplicateIDs[stringValue(movement["accountId"])] {
+						movement["accountId"] = resolvedID
+					}
+				}
+				accounts = filteredAccounts
+				for index, account := range accounts {
+					if stringValue(account["id"]) == resolvedID {
+						accountIndex = index
+						break
+					}
+				}
+			}
+			incomingOrder := mobileDateOrderKey(reported.ReportedAt)
+			if latestExistingOrder != "" && incomingOrder != "" && incomingOrder < latestExistingOrder {
+				continue
+			}
+			// Same formula as the UI's accountBalance (direct legs + transfer
+			// counter-legs) so the displayed balance lands exactly on the
+			// reported value; see mobileAccountNet.
+			movementNet := mobileAccountNet(movements, resolvedID)
+			accounts[accountIndex]["opening"] = reported.Balance - movementNet
+			accounts[accountIndex]["lastReportedBalance"] = reported.Balance
+			accounts[accountIndex]["sourceCurrency"] = reported.SourceCurrency
+			accounts[accountIndex]["sourceReportedBalance"] = reported.SourceBalance
+			accounts[accountIndex]["currency"] = "IRR"
+			accounts[accountIndex]["lastReportedJalali"] = strings.TrimSpace(reported.ReportedAt)
+			accounts[accountIndex]["lastMobileSyncAt"] = time.Now().UTC().Format(time.RFC3339)
+		}
+		state["accounts"] = mapsToAny(accounts)
+		raw, _ := json.Marshal(state)
+		canonical, checksum, err := validateWorkspaceState(raw)
+		if err != nil {
+			RespondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		expected := doc.Revision
+		saved, err := saveWorkspace(r, companyID, requestctx.UserID(r.Context()), &expected, canonical, checksum, nil)
+		if err == nil {
+			RespondJSON(w, http.StatusOK, map[string]any{"status": "synced", "revision": saved.Revision})
+			return
+		}
+		var conflict workspaceConflict
+		if !errors.As(err, &conflict) {
+			RespondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	RespondError(w, http.StatusConflict, "Workspace changed; retry sync")
 }

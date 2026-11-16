@@ -204,8 +204,8 @@ export function buildFinancialHealthAccurate(finance, now = new Date()) {
   ].filter(Boolean);
   const status = alerts.some(item => item.severity === 'بحرانی') ? 'critical' : alerts.length ? 'warning' : 'healthy';
   const narrative = [
-    revenue > 0 ? `درآمد خالص از مالیات ${Math.round(revenue).toLocaleString('fa-IR')} تومان و سود عملیاتی ${Math.round(netProfit).toLocaleString('fa-IR')} تومان است.` : 'برای محاسبه سودآوری هنوز درآمد قابل اتکایی ثبت نشده است.',
-    `مطالبات جاری ${Math.round(receivables).toLocaleString('fa-IR')} تومان و بدهی جاری ${Math.round(payables).toLocaleString('fa-IR')} تومان است.`,
+    revenue > 0 ? `درآمد خالص از مالیات ${Math.round(revenue).toLocaleString('fa-IR')} ریال و سود عملیاتی ${Math.round(netProfit).toLocaleString('fa-IR')} ریال است.` : 'برای محاسبه سودآوری هنوز درآمد قابل اتکایی ثبت نشده است.',
+    `مطالبات جاری ${Math.round(receivables).toLocaleString('fa-IR')} ریال و بدهی جاری ${Math.round(payables).toLocaleString('fa-IR')} ریال است.`,
     varianceRows.length ? '' : 'برای تحلیل انحراف بودجه، ابتدا بودجه یا هدف مصوب باید در سامانه ثبت شود؛ عدد فرضی نمایش داده نمی‌شود.',
   ].filter(Boolean);
   const recommendations = [
