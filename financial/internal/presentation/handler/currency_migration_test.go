@@ -22,6 +22,26 @@ func TestRialMigrationAtomicAuditAndReversal(t *testing.T) {
 	if !strings.HasSuffix(cfg.DBName, "_test") {
 		t.Fatal("rial migration test requires a dedicated _test database")
 	}
+	cfg.ReadHost = ""
+	previousDB := postgres.DB
+	defer func() { postgres.DB = previousDB }()
+	admin, err := postgres.Connect(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	// Go runs packages concurrently. Own the fixture database instead of racing
+	// the API integration package's schema initialization on the shared DB.
+	database := fmt.Sprintf("rial_currency_%d_test", time.Now().UnixNano())
+	if _, err := admin.Exec("CREATE DATABASE " + database); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := admin.Exec("DROP DATABASE " + database); err != nil {
+			t.Error(err)
+		}
+	}()
+	cfg.DBName = database
 	db, err := postgres.Connect(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -53,6 +73,12 @@ func TestRialMigrationAtomicAuditAndReversal(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = postgres.WithCompanyTx(ctx, db, company, func(tx *sql.Tx) error {
+		seedState := decodeWorkspaceMap(raw)
+		seedAccount := rowsFrom(seedState, "accounts")[0]
+		seedAccount["opening"], seedAccount["date"] = 40, "2026-11-01"
+		if err := syncWorkspaceLedger(ctx, tx, company, 0, 1, map[string]any{}, seedState); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(`UPDATE bank_transactions SET currency=NULL,source_currency=NULL,source_amount=NULL WHERE company_id=$1`, company); err != nil {
 			return err
 		}

@@ -18,12 +18,6 @@ func prepareRialOpeningDates(ctx context.Context, tx *sql.Tx, company int64, old
 	}
 	cash := workspaceCashAccounts(oldState)
 	for _, row := range rowsFrom(newState, "accounts") {
-		if number(row["opening"]) == 0 {
-			continue
-		}
-		if _, err := financecore.AccountingDate(firstText(row, "date", "createdAt")); err == nil {
-			continue
-		}
 		id := stringValue(row["id"])
 		previous := oldAccounts[id]
 		var actual float64
@@ -35,7 +29,10 @@ func prepareRialOpeningDates(ctx context.Context, tx *sql.Tx, company int64, old
 		if date == "" {
 			date = time.Now().UTC().Format("2006-01-02")
 		}
-		row["date"], row["openingDateBasis"], row["sourceOpeningDateMissing"] = date, "currency_normalization", true
+		row["sourceOpeningLedgerNet"] = actual
+		if _, err := financecore.AccountingDate(firstText(row, "date", "createdAt")); err != nil && number(row["opening"]) != 0 {
+			row["date"], row["openingDateBasis"], row["sourceOpeningDateMissing"] = date, "currency_normalization", true
+		}
 		if previous != nil {
 			previous["date"], previous["opening"] = date, actual
 		}
