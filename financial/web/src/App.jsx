@@ -11,6 +11,9 @@ import { suggestIncomingPrice } from './financialSupervisor.js';
 import { formatTableValue, toPersianDigits } from './localization.js';
 import { normalizeEditableJalaliDate, finalizeJalaliDate } from './persianDateInput.js';
 import { isMonetaryColumn, monetaryColumnTotals, parseLocalizedNumber } from './reportTotals.js';
+import { buildCustomerStatement } from './customerStatement.js';
+import { customerFinance as customerFinanceCore } from './customerFinance.js';
+import CustomerStatement from './CustomerStatement.jsx';
 
 const FINANCIAL_DEV_ORIGIN = `${window.location.protocol}//${window.location.hostname}:5173`;
 const FINANCIAL_DEV_ORIGINS = new Set([
@@ -1248,63 +1251,7 @@ function accountBalance(account, movements) {
 
 
 
-function customerFinance(finance, customer) {
-
-  const invoices = finance.invoices.filter(x => x.customer === customer);
-
-  const openingRows = (finance.openingBalances || []).filter(x => x.customer === customer);
-
-  const openingReceivable = openingRows.filter(x => x.type === 'receivable').reduce((s, x) => s + Number(x.amount || 0), 0);
-
-  const openingPayable = openingRows.filter(x => x.type === 'payable').reduce((s, x) => s + Number(x.amount || 0), 0);
-
-  const total = invoices.reduce((s, x) => s + Number(x.total || 0), 0);
-
-  const paid = invoices.reduce((s, x) => s + paidAmount(x), 0);
-
-  const cash = invoices.flatMap(x => x.payments || []).filter(p => p.type === 'cash').reduce((s, p) => s + Number(p.amount || 0), 0);
-
-  const checks = invoices.flatMap(x => x.payments || []).filter(p => p.type === 'check').reduce((s, p) => s + Number(p.amount || 0), 0);
-
-  const barter = invoices.flatMap(x => x.payments || []).filter(p => p.type === 'barter_yarn' || p.type === 'barter_fabric').reduce((s, p) => s + Number(p.amount || 0), 0);
-
-  const assignedChecks = finance.receivableDocs.filter(x => x.assignedTo === customer).reduce((s, x) => s + Number(x.amount || 0), 0);
-
-  const incomingInvoices = finance.incomingInvoices.filter(x => x.customer === customer);
-
-  const yarnOutInvoices = (finance.yarnOutInvoices || []).filter(x => x.customer === customer);
-
-  const financialIncomingInvoices = incomingInvoices.filter(x => !x.nonFinancial);
-
-  const nonFinancialInventoryValue = incomingInvoices.filter(x => x.nonFinancial).reduce((s, x) => s + Number(x.amount || 0), 0);
-
-  const incomingTotal = financialIncomingInvoices.reduce((s, x) => s + Number(x.amount || 0), 0);
-
-  const yarnOutFinancialTotal = yarnOutInvoices.filter(x => x.outMode === 'sale' || x.outMode === 'barter').reduce((s, x) => s + Number(x.amount || 0), 0);
-
-  const paidOut = financialIncomingInvoices.reduce((s, x) => s + (x.payments || []).filter(p => p.type !== 'credit').reduce((sum, p) => sum + Number(p.amount || 0), 0), 0);
-
-  const payableToCustomer = financialIncomingInvoices.reduce((s, x) => s + Math.max(Number(x.amount || 0) - (x.payments || []).filter(p => p.type !== 'credit').reduce((sum, p) => sum + Number(p.amount || 0), 0), 0), 0);
-
-  const manualCustomerReceipts = (finance.movements || []).filter(x => x.transactionType === 'customer_receipt' && !x.sourceInvoice && !x.sourceIncomingInvoice && confirmedMovementCounterparty(x) === customer).reduce((s, x) => s + Number(x.amount || 0), 0);
-
-  const manualSupplierPayments = (finance.movements || []).filter(x => x.transactionType === 'supplier_payment' && !x.sourceInvoice && !x.sourceIncomingInvoice && confirmedMovementCounterparty(x) === customer).reduce((s, x) => s + Number(x.amount || 0), 0);
-
-  const invoiceDebtTotal = invoices.reduce((s, x) => s + invoiceDebt(x), 0);
-
-  const bouncedChecks = finance.receivableDocs
-    .filter(x => x.customer === customer && (x.status === 'bounced' || x.status === 'returned'))
-    .reduce((s, x) => s + Number(x.amount || 0), 0);
-
-  const receivableBalance = Math.max(invoiceDebtTotal + yarnOutFinancialTotal + openingReceivable + bouncedChecks - manualCustomerReceipts, 0);
-
-  const directAssignedChecks = finance.receivableDocs.filter(x => x.assignedTo === customer && !x.assignedIncomingInvoice).reduce((s, x) => s + Number(x.amount || 0), 0);
-
-  const netBalance = receivableBalance - payableToCustomer - openingPayable + manualSupplierPayments + directAssignedChecks;
-
-  return { invoices, incomingInvoices, openingRows, openingReceivable, openingPayable, total, paid, cash, checks, barter, bouncedChecks, assignedChecks, assignedDebt: 0, incomingTotal, paidOut, payableToCustomer, nonFinancialInventoryValue, yarnOutFinancialTotal, invoiceDebt: invoiceDebtTotal, debt: receivableBalance, netBalance };
-
-}
+const customerFinance = (finance, customer) => customerFinanceCore(finance, customer, { paidAmount, invoiceDebt, counterparty: confirmedMovementCounterparty, dateKey: jalaliSortKey });
 
 
 
@@ -6001,7 +5948,7 @@ function ReportsPage({ finance, setFinance }) {
 
     ...finance.movements.map(row => ({ type: 'گردش بانک/صندوق', invoice_no: row.sourceIncomingInvoice || row.sourceInvoice || row.id, date: row.date, customer: confirmedMovementCounterparty(row) || String(row.counterpartyCandidate || '').trim() || (row.transactionType === 'transfer' ? '-' : 'تأیید نشده'), item: row.description || '-', pricing_basis: row.direction === 'in' ? 'واريز' : 'برداشت', quantity: '', unit_price: '', total: row.direction === 'in' ? Number(row.amount || 0) : -Number(row.amount || 0), paid: Number(row.amount || 0), debt: 0 })),
 
-    ...finance.receivableDocs.map(row => ({ type: row.assignedTo ? 'واگذاري چک دريافتي' : 'چک دريافتي', invoice_no: row.checkNo || row.id, date: row.assignedAt || row.dueDate || '', customer: row.assignedTo || row.customer || '-', item: row.customer ? 'از ' + row.customer : '-', pricing_basis: statusLabel(row.status), quantity: '', unit_price: '', total: Number(row.amount || 0), paid: row.status === 'cleared' ? Number(row.amount || 0) : 0, debt: row.assignedTo ? Number(row.amount || 0) : 0 })),
+    ...finance.receivableDocs.map(row => ({ type: row.assignedTo ? 'واگذاري چک دريافتي' : 'چک دريافتي', invoice_no: row.checkNo || row.id, date: row.assignedAt || row.dueDate || '', customer: row.assignedTo || row.customer || '-', item: row.customer ? 'از ' + row.customer : '-', pricing_basis: statusLabel(row.status), quantity: '', unit_price: '', total: (row.assignedTo ? 1 : -1) * (['bounced', 'returned'].includes(row.status) ? 0 : Number(row.amount || 0)), paid: ['bounced', 'returned'].includes(row.status) ? 0 : Number(row.amount || 0), debt: row.assignedTo ? Number(row.amount || 0) : row.sourceInvoice || ['bounced', 'returned'].includes(row.status) ? 0 : -Number(row.amount || 0) })),
 
     ...finance.payableDocs.map(row => ({ type: 'چک پرداختي', invoice_no: row.checkNo || row.id, date: row.dueDate || '', customer: row.customer || '-', item: row.bank || '-', pricing_basis: statusLabel(row.status), quantity: '', unit_price: '', total: -Number(row.amount || 0), paid: row.status === 'paid' ? Number(row.amount || 0) : 0, debt: -Number(row.amount || 0) })),
 
@@ -6022,6 +5969,7 @@ function ReportsPage({ finance, setFinance }) {
   });
 
   const summary = customer === 'all' ? null : customerFinance(finance, customer);
+  const statement = customer === 'all' ? null : buildCustomerStatement(finance, customer, { dateKey: jalaliSortKey, counterparty: confirmedMovementCounterparty });
 
   const printReport = () => {
 
@@ -6039,8 +5987,9 @@ function ReportsPage({ finance, setFinance }) {
 
       {customer !== 'all' && <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">قرار پرداخت شخص</h3><span className="text-sm text-blue-200">{customer}</span></div><div className="grid grid-cols-3 gap-4"><label className="text-sm text-slate-300"><span className="mb-2 block">درصد پرداخت نقدي</span><TextInput className="w-full" type="number" min="0" max="100" value={activePlan.cashPercent} onChange={e => { const value = Math.min(100, Math.max(0, Number(e.target.value || 0))); savePlan({ cashPercent: value, checkPercent: 100 - value }); }} /></label><label className="text-sm text-slate-300"><span className="mb-2 block">درصد پرداخت چکي</span><TextInput className="w-full" type="number" min="0" max="100" value={activePlan.checkPercent} onChange={e => { const value = Math.min(100, Math.max(0, Number(e.target.value || 0))); savePlan({ checkPercent: value, cashPercent: 100 - value }); }} /></label><label className="text-sm text-slate-300"><span className="mb-2 block">سررسيد چک چند ماهه</span><TextInput className="w-full" type="number" min="0" value={activePlan.checkMonths} onChange={e => savePlan({ checkMonths: Math.max(0, Number(e.target.value || 0)) })} /></label></div><div className="mt-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-xs text-slate-300">تنظیمات در فضای شرکت ذخیره می‌شود و مبلغ نقد، مبلغ چک و سررسید تمام فاکتورهای این شخص بلافاصله در جدول، چاپ و خروجی اکسل محاسبه می‌شود.</div></Card>}
 
-      {summary && <div className="grid grid-cols-6 gap-4"><Field label="مانده خالص شخص" value={money(summary.netBalance) + ' تومان'} tone={summary.netBalance >= 0 ? 'text-amber-300' : 'text-emerald-300'} /><Field label="بدهی فاکتور خروج" value={money(summary.debt) + ' تومان'} tone="text-amber-300" /><Field label="بستانکاری فاکتور ورود" value={money(summary.payableToCustomer) + ' تومان'} tone="text-emerald-300" /><Field label="پرداختي خروجي" value={money(summary.paidOut) + ' تومان'} tone="text-blue-300" /><Field label="چک واگذار شده" value={money(summary.assignedChecks) + ' تومان'} tone="text-violet-300" /><Field label="جمع فاکتور ورود" value={money(summary.incomingTotal) + ' تومان'} /></div>}
+      {summary && <div className="grid grid-cols-6 gap-4"><Field label="مانده خالص شخص" value={money(Math.abs(summary.netBalance)) + ' تومان ' + (summary.netBalance > 0 ? 'بدهکار' : summary.netBalance < 0 ? 'بستانکار' : 'تسویه')} tone={summary.netBalance >= 0 ? 'text-amber-300' : 'text-emerald-300'} /><Field label="بدهی فاکتور خروج" value={money(summary.debt) + ' تومان'} tone="text-amber-300" /><Field label="بستانکاری فاکتور ورود" value={money(summary.payableToCustomer) + ' تومان'} tone="text-emerald-300" /><Field label="پرداختي خروجي" value={money(summary.paidOut) + ' تومان'} tone="text-blue-300" /><Field label="چک واگذار شده" value={money(summary.assignedChecks) + ' تومان'} tone="text-violet-300" /><Field label="جمع فاکتور ورود" value={money(summary.incomingTotal) + ' تومان'} /></div>}
 
+      {statement && <CustomerStatement customer={customer} statement={statement} money={money} toJalali={toJalali} onPrint={printSection} onExcel={exportExcel} />}
       <Card><h3 className="mb-4 font-bold">جدول گزارش مالي</h3><GenericTable rows={reportRows} showTotals /></Card>
 
     </div>
