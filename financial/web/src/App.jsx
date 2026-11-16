@@ -11,6 +11,7 @@ import { suggestIncomingPrice } from './financialSupervisor.js';
 import { formatTableValue, toPersianDigits } from './localization.js';
 import { normalizeEditableJalaliDate, finalizeJalaliDate } from './persianDateInput.js';
 import { isMonetaryColumn, monetaryColumnTotals, parseLocalizedNumber } from './reportTotals.js';
+import { rialColumnLabel } from './currency.js';
 import { buildCustomerStatement } from './customerStatement.js';
 import { customerFinance as customerFinanceCore } from './customerFinance.js';
 import CustomerStatement from './CustomerStatement.jsx';
@@ -1291,7 +1292,7 @@ function printSection(title, html) {
 
   const template = document.createElement('template');
 
-  template.innerHTML = String(html || '');
+  template.innerHTML = '<p>واحد تمام مبالغ و نرخ‌های پولی: ریال (IRR)</p>' + String(html || '');
 
   template.content.querySelectorAll('script,style,iframe,object,embed,link,meta').forEach(node => node.remove());
 
@@ -1404,7 +1405,7 @@ function exportExcel(title, rows = [], columns = null, totals = null) {
 
   };
 
-  const header = `<Row>${keys.map(([, label]) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${excelXMLText(label)}</Data></Cell>`).join('')}</Row>`;
+  const header = `<Row>${keys.map(([, label]) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${excelXMLText(rialColumnLabel(label))}</Data></Cell>`).join('')}</Row>`;
 
   const body = safeRows.map(row => `<Row>${keys.map(([key]) => cell(row?.[key])).join('')}</Row>`).join('');
 
@@ -1713,6 +1714,7 @@ export default function App() {
       </aside>
 
       <main className="mr-64 p-7">
+        <p className="mb-4 text-sm text-amber-300">واحد تمام مبالغ، قیمت‌ها و مانده‌ها: ریال (IRR)</p>
         <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-extrabold">{activePage.label}</h1>
@@ -2821,11 +2823,11 @@ function Dashboard({ finance }) {
 
       <div className="grid grid-cols-4 gap-4">
 
-        <Field label="مانده بدهي مشتريان" value={`${money(totalDebt)} تومان`} tone="text-amber-300" />
+        <Field label="مانده بدهي مشتريان" value={`${money(totalDebt)} ریال`} tone="text-amber-300" />
 
-        <Field label="اسناد پرداختي باز" value={`${money(payable)} تومان`} tone="text-red-300" />
+        <Field label="اسناد پرداختي باز" value={`${money(payable)} ریال`} tone="text-red-300" />
 
-        <Field label="موجودی بانک و صندوق" value={`${money(cashBalance)} تومان`} tone="text-emerald-300" />
+        <Field label="موجودی بانک و صندوق" value={`${money(cashBalance)} ریال`} tone="text-emerald-300" />
 
         <Field label="هشدار اعتبار کم" value={`${num(lowCredit.length)} مشتري`} tone={lowCredit.length ? 'text-red-300' : 'text-emerald-300'} />
 
@@ -3013,11 +3015,11 @@ function buildFinancialHealth(finance) {
 
   const narrative = [
 
-    salesTotal ? `در اين دوره ${money(salesTotal)} تومان درآمد ثبت شده و حاشيه سود خالص ${num(netProfitMargin)} درصد است.` : 'هنوز درآمد کافي براي تحليل سودآوري ثبت نشده است.',
+    salesTotal ? `در اين دوره ${money(salesTotal)} ریال درآمد ثبت شده و حاشيه سود خالص ${num(netProfitMargin)} درصد است.` : 'هنوز درآمد کافي براي تحليل سودآوري ثبت نشده است.',
 
     status === 'critical' ? 'بزرگ ترين ريسک فعلي در محدوده بحراني است و بايد قبل از توسعه فروش يا هزينه جديد کنترل شود.' : status === 'warning' ? 'وضعيت کلي قابل کنترل است اما چند شاخص نيازمند پيگيري مديريتي است.' : 'وضعيت مالي در محدوده سالم و تحت کنترل است.',
 
-    biggestVariance ? `بزرگ ترين عامل انحراف فعلي «${biggestVariance.title}» با اثر ${money(biggestVariance.amount)} تومان است.` : '',
+    biggestVariance ? `بزرگ ترين عامل انحراف فعلي «${biggestVariance.title}» با اثر ${money(biggestVariance.amount)} ریال است.` : '',
 
   ].filter(Boolean);
 
@@ -3069,11 +3071,11 @@ function FinancialHealthPage({ finance }) {
 
         <Field label="حاشيه سود خالص" value={`${num(health.kpis.netProfitMargin)}%`} tone={kpiTone(health.kpis.netProfitMargin, x => x >= 20, x => x >= 10)} />
 
-        <Field label="جریان نقد عملیاتی" value={`${money(health.kpis.operatingCashFlow)} تومان`} tone={health.kpis.operatingCashFlow >= 0 ? 'text-emerald-300' : 'text-red-300'} />
+        <Field label="جریان نقد عملیاتی" value={`${money(health.kpis.operatingCashFlow)} ریال`} tone={health.kpis.operatingCashFlow >= 0 ? 'text-emerald-300' : 'text-red-300'} />
 
         <Field label="نسبت جاري" value={num(health.kpis.currentRatio)} tone={kpiTone(health.kpis.currentRatio, x => x >= 1.5, x => x >= 1)} />
 
-        <Field label="EBITDA" value={`${money(health.kpis.ebitda)} تومان`} tone={health.kpis.ebitda >= 0 ? 'text-emerald-300' : 'text-red-300'} />
+        <Field label="EBITDA" value={`${money(health.kpis.ebitda)} ریال`} tone={health.kpis.ebitda >= 0 ? 'text-emerald-300' : 'text-red-300'} />
 
         <Field label="نسبت بدهي به حقوق صاحبان" value={num(health.kpis.debtToEquity)} tone={kpiTone(health.kpis.debtToEquity, x => x <= 1, x => x <= 2)} />
 
@@ -3097,7 +3099,7 @@ function FinancialHealthPage({ finance }) {
 
       <div className="grid grid-cols-2 gap-5">
 
-        <Card><h3 className="mb-4 font-bold">موجودي راکد و منسوخ</h3><div className="grid grid-cols-3 gap-3"><Field label="ارزش کل موجودی" value={`${money(health.inventoryValue)} تومان`} /><Field label="ارزش راکد" value={`${money(health.staleValue)} تومان`} tone={health.staleValue > health.inventoryValue * 0.1 ? 'text-red-300' : 'text-emerald-300'} /><Field label="درصد راکد" value={`${num(health.inventoryValue ? Math.round((health.staleValue / health.inventoryValue) * 1000) / 10 : 0)}%`} /></div></Card>
+        <Card><h3 className="mb-4 font-bold">موجودي راکد و منسوخ</h3><div className="grid grid-cols-3 gap-3"><Field label="ارزش کل موجودی" value={`${money(health.inventoryValue)} ریال`} /><Field label="ارزش راکد" value={`${money(health.staleValue)} ریال`} tone={health.staleValue > health.inventoryValue * 0.1 ? 'text-red-300' : 'text-emerald-300'} /><Field label="درصد راکد" value={`${num(health.inventoryValue ? Math.round((health.staleValue / health.inventoryValue) * 1000) / 10 : 0)}%`} /></div></Card>
 
         <Card><h3 className="mb-4 font-bold">تحليل انحرافات بودجه</h3><GenericTable rows={health.varianceRows} /></Card>
 
@@ -3340,13 +3342,13 @@ function InitialDataPage({ finance, setFinance }) {
 
       <div className="grid grid-cols-4 gap-4">
 
-        <Field label="طلب افتتاحیه مشتریان" value={`${money(balanceSummary.receivable)} تومان`} tone="text-emerald-300" />
+        <Field label="طلب افتتاحیه مشتریان" value={`${money(balanceSummary.receivable)} ریال`} tone="text-emerald-300" />
 
-        <Field label="بدهی افتتاحیه به اشخاص" value={`${money(balanceSummary.payable)} تومان`} tone="text-red-300" />
+        <Field label="بدهی افتتاحیه به اشخاص" value={`${money(balanceSummary.payable)} ریال`} tone="text-red-300" />
 
-        <Field label="چک‌های افتتاحیه" value={`${money(checkTotal)} تومان`} tone="text-blue-300" />
+        <Field label="چک‌های افتتاحیه" value={`${money(checkTotal)} ریال`} tone="text-blue-300" />
 
-        <Field label="موجودی افتتاحیه انبار مالی" value={`${money(inventoryTotal)} تومان`} tone="text-amber-300" />
+        <Field label="موجودی افتتاحیه انبار مالی" value={`${money(inventoryTotal)} ریال`} tone="text-amber-300" />
 
       </div>
 
@@ -3685,13 +3687,13 @@ function YarnOutInvoicePage({ finance, setFinance }) {
 
     <div className="space-y-5">
 
-      <div className="grid grid-cols-4 gap-4"><Field label="خروجي در انتظار" value={num(pendingYarnOut.length)} /><Field label="خروج ثبت شده" value={num(rows.length)} /><Field label="وزن خروجي" value={`${num(rows.reduce((s, x) => s + Number(x.quantity || 0), 0))} کيلو`} tone="text-amber-300" /><Field label="هزینه مالی" value={`${money(rows.reduce((s, x) => s + Number(x.amount || 0), 0))} تومان`} tone="text-emerald-300" /></div>
+      <div className="grid grid-cols-4 gap-4"><Field label="خروجي در انتظار" value={num(pendingYarnOut.length)} /><Field label="خروج ثبت شده" value={num(rows.length)} /><Field label="وزن خروجي" value={`${num(rows.reduce((s, x) => s + Number(x.quantity || 0), 0))} کيلو`} tone="text-amber-300" /><Field label="هزینه مالی" value={`${money(rows.reduce((s, x) => s + Number(x.amount || 0), 0))} ریال`} tone="text-emerald-300" /></div>
 
       <Card><div className="flex flex-wrap items-center justify-between gap-4"><div><h3 className="font-bold">منبع فاکتور خروج نخ</h3><p className="mt-2 text-sm text-slate-400">یک خروج عملیاتی را انتخاب کنید یا بدون وابستگی به عملیات، فاکتور خروج نخ جدید صادر کنید.</p></div><PrimaryButton onClick={beginManualInvoice}>صدور فاکتور خروج نخ جدید</PrimaryButton></div><div className={`mt-3 rounded-md border p-3 text-sm ${form.source_type === 'manual' ? 'border-emerald-700 bg-emerald-950 text-emerald-100' : 'border-blue-700 bg-blue-950 text-blue-100'}`}>{form.source_type === 'manual' ? 'حالت صدور مستقل فعال است؛ نام شخص و نخ را می‌توانید تایپ یا از پیشنهادها انتخاب کنید.' : 'فاکتور بر اساس خروج انتخاب‌شده از بخش عملیاتی تکمیل می‌شود.'}</div></Card>
 
       <div className="grid grid-cols-[2fr_0.7fr] gap-4">
 
-        <Card><h3 className="mb-4 font-bold">{form.source_type === 'manual' ? 'صدور فاکتور خروج نخ مستقل' : L.title}</h3><form className="space-y-4" onSubmit={save}><div className="grid grid-cols-3 gap-3"><label className="text-sm text-slate-300"><span className="mb-2 block">{L.date}</span><DateInput className="w-full" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></label>{form.source_type === 'manual' ? <label className="text-sm text-slate-300">شخص / مشتری<TextInput className="mt-2 w-full" list="manual-yarn-out-customers" placeholder={L.selectCustomer} value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })} /><datalist id="manual-yarn-out-customers">{customers.map(c => <option key={c} value={c} />)}</datalist></label> : <div className="flex items-end gap-2"><SelectInput value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })}><option value="">{L.selectCustomer}</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><button type="button" title="افزودن به اطلاعات اولیه" className="shrink-0 rounded-md border border-amber-700 bg-slate-900 px-3 py-2 text-amber-200 hover:border-amber-400" onClick={() => addLookupItem('/operational/customers', 'نام مشتری / شخص جدید:', name => { setForm({ ...form, customer: name }); refreshOperational(); })}>+</button></div>}{form.source_type === 'manual' ? <label className="text-sm text-slate-300">نوع نخ<TextInput className="mt-2 w-full" list="manual-yarn-out-items" placeholder={L.selectYarn} value={form.itemName} onChange={e => { const itemName = e.target.value; setForm({ ...form, itemName, costUnitPrice: averageYarnCost(itemName) || '' }); }} /><datalist id="manual-yarn-out-items">{yarns.map(y => <option key={y} value={y} />)}</datalist></label> : <div className="flex items-end gap-2"><SelectInput value={form.itemName} onChange={e => { const itemName = e.target.value; setForm({ ...form, itemName, costUnitPrice: averageYarnCost(itemName) || '' }); }}><option value="">{L.selectYarn}</option>{yarns.map(y => <option key={y} value={y}>{y}</option>)}</SelectInput><button type="button" title="افزودن به اطلاعات اولیه" className="shrink-0 rounded-md border border-amber-700 bg-slate-900 px-3 py-2 text-amber-200 hover:border-amber-400" onClick={() => addLookupItem('/operational/yarn-items', 'نوع نخ جدید:', name => { setForm({ ...form, itemName: name, costUnitPrice: averageYarnCost(name) || '' }); refreshOperational(); })}>+</button></div>}<SelectInput value={form.outMode} onChange={e => setForm({ ...form, outMode: e.target.value, unitPrice: '', amount: '' })}>{modes.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</SelectInput><SelectInput value={form.stockType} onChange={e => setForm({ ...form, stockType: e.target.value, costUnitPrice: e.target.value === 'amanat' ? '' : (form.costUnitPrice || averageYarnCost(form.itemName) || '') })}>{stockTypes.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}</SelectInput><TextInput type="number" placeholder={L.quantity} value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value, amount: '' })} />{mode.needsPrice && <><TextInput type="number" placeholder={L.unitPrice} value={form.unitPrice} onChange={e => setForm({ ...form, unitPrice: e.target.value, amount: '' })} /><TextInput type="number" placeholder={L.amount} value={amount || ''} onChange={e => setForm({ ...form, amount: e.target.value })} />{form.stockType !== 'amanat' && <TextInput type="number" min="0" placeholder="بهای تمام‌شده واحد" value={form.costUnitPrice} onChange={e => setForm({ ...form, costUnitPrice: e.target.value })} />}</>}<TextInput className="col-span-3" placeholder={L.desc} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></div><div className={`rounded-md border p-3 text-sm ${mode.needsPrice ? 'border-amber-700 bg-amber-950 text-amber-100' : 'border-emerald-700 bg-emerald-950 text-emerald-100'}`}>{mode.needsPrice ? `${L.priceHelp}${shouldRecognizeYarnCost ? ' بهای تمام‌شده خروج نیز جداگانه در موجودی و هزینه فروش ثبت می‌شود.' : ''}` : L.noPriceHelp}</div><div className="grid grid-cols-4 gap-3"><Field label="مقدار کسر از انبار" value={`${num(Math.abs(Number(form.quantity || 0)))} کيلو`} tone="text-red-300" /><Field label="نرخ فروش/تهاتر" value={mode.needsPrice ? money(form.unitPrice) : '-'} /><Field label="مبلغ فروش/تهاتر" value={mode.needsPrice ? money(amount) + ' تومان' : 'بدون اثر ريالي'} /><Field label="بهای تمام‌شده خروج" value={shouldRecognizeYarnCost ? money(costAmount) + ' تومان' : '-'} tone="text-amber-300" /></div>{(() => { const n = buildOperationalMismatch(form, data, editingId); if (!n) return null; const already = mismatchByKey[`${form.source_type}:${String(form.sourceId)}`]; return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm text-amber-100"><span>⚠️ {n.message}</span>{already ? <span className="text-xs">اعلان این مغایرت قبلاً ارسال شده است.</span> : <button type="button" className="rounded-md border border-amber-500 bg-amber-900 px-3 py-2 text-xs text-amber-100 hover:border-amber-300" onClick={() => apiJSON('/operational/mismatch-reports', { method: 'POST', body: n.payload }).then(() => window.alert('اعلان مغایرت به بخش عملیاتی ارسال شد؛ پس از اصلاح رکورد در بخش عملیاتی، نسخه اصلاح‌شده برای ثبت مجدد نمایش داده می‌شود.')).catch(err => window.alert('ارسال اعلان مغایرت ناموفق بود: ' + ((err && err.message) || '')))}>اعلان مغایرت به بخش عملیاتی</button>}</div>; })()}
+        <Card><h3 className="mb-4 font-bold">{form.source_type === 'manual' ? 'صدور فاکتور خروج نخ مستقل' : L.title}</h3><form className="space-y-4" onSubmit={save}><div className="grid grid-cols-3 gap-3"><label className="text-sm text-slate-300"><span className="mb-2 block">{L.date}</span><DateInput className="w-full" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></label>{form.source_type === 'manual' ? <label className="text-sm text-slate-300">شخص / مشتری<TextInput className="mt-2 w-full" list="manual-yarn-out-customers" placeholder={L.selectCustomer} value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })} /><datalist id="manual-yarn-out-customers">{customers.map(c => <option key={c} value={c} />)}</datalist></label> : <div className="flex items-end gap-2"><SelectInput value={form.customer} onChange={e => setForm({ ...form, customer: e.target.value })}><option value="">{L.selectCustomer}</option>{customers.map(c => <option key={c} value={c}>{c}</option>)}</SelectInput><button type="button" title="افزودن به اطلاعات اولیه" className="shrink-0 rounded-md border border-amber-700 bg-slate-900 px-3 py-2 text-amber-200 hover:border-amber-400" onClick={() => addLookupItem('/operational/customers', 'نام مشتری / شخص جدید:', name => { setForm({ ...form, customer: name }); refreshOperational(); })}>+</button></div>}{form.source_type === 'manual' ? <label className="text-sm text-slate-300">نوع نخ<TextInput className="mt-2 w-full" list="manual-yarn-out-items" placeholder={L.selectYarn} value={form.itemName} onChange={e => { const itemName = e.target.value; setForm({ ...form, itemName, costUnitPrice: averageYarnCost(itemName) || '' }); }} /><datalist id="manual-yarn-out-items">{yarns.map(y => <option key={y} value={y} />)}</datalist></label> : <div className="flex items-end gap-2"><SelectInput value={form.itemName} onChange={e => { const itemName = e.target.value; setForm({ ...form, itemName, costUnitPrice: averageYarnCost(itemName) || '' }); }}><option value="">{L.selectYarn}</option>{yarns.map(y => <option key={y} value={y}>{y}</option>)}</SelectInput><button type="button" title="افزودن به اطلاعات اولیه" className="shrink-0 rounded-md border border-amber-700 bg-slate-900 px-3 py-2 text-amber-200 hover:border-amber-400" onClick={() => addLookupItem('/operational/yarn-items', 'نوع نخ جدید:', name => { setForm({ ...form, itemName: name, costUnitPrice: averageYarnCost(name) || '' }); refreshOperational(); })}>+</button></div>}<SelectInput value={form.outMode} onChange={e => setForm({ ...form, outMode: e.target.value, unitPrice: '', amount: '' })}>{modes.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</SelectInput><SelectInput value={form.stockType} onChange={e => setForm({ ...form, stockType: e.target.value, costUnitPrice: e.target.value === 'amanat' ? '' : (form.costUnitPrice || averageYarnCost(form.itemName) || '') })}>{stockTypes.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}</SelectInput><TextInput type="number" placeholder={L.quantity} value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value, amount: '' })} />{mode.needsPrice && <><TextInput type="number" placeholder={L.unitPrice} value={form.unitPrice} onChange={e => setForm({ ...form, unitPrice: e.target.value, amount: '' })} /><TextInput type="number" placeholder={L.amount} value={amount || ''} onChange={e => setForm({ ...form, amount: e.target.value })} />{form.stockType !== 'amanat' && <TextInput type="number" min="0" placeholder="بهای تمام‌شده واحد" value={form.costUnitPrice} onChange={e => setForm({ ...form, costUnitPrice: e.target.value })} />}</>}<TextInput className="col-span-3" placeholder={L.desc} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></div><div className={`rounded-md border p-3 text-sm ${mode.needsPrice ? 'border-amber-700 bg-amber-950 text-amber-100' : 'border-emerald-700 bg-emerald-950 text-emerald-100'}`}>{mode.needsPrice ? `${L.priceHelp}${shouldRecognizeYarnCost ? ' بهای تمام‌شده خروج نیز جداگانه در موجودی و هزینه فروش ثبت می‌شود.' : ''}` : L.noPriceHelp}</div><div className="grid grid-cols-4 gap-3"><Field label="مقدار کسر از انبار" value={`${num(Math.abs(Number(form.quantity || 0)))} کيلو`} tone="text-red-300" /><Field label="نرخ فروش/تهاتر" value={mode.needsPrice ? money(form.unitPrice) : '-'} /><Field label="مبلغ فروش/تهاتر" value={mode.needsPrice ? money(amount) + ' ریال' : 'بدون اثر ريالي'} /><Field label="بهای تمام‌شده خروج" value={shouldRecognizeYarnCost ? money(costAmount) + ' ریال' : '-'} tone="text-amber-300" /></div>{(() => { const n = buildOperationalMismatch(form, data, editingId); if (!n) return null; const already = mismatchByKey[`${form.source_type}:${String(form.sourceId)}`]; return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm text-amber-100"><span>⚠️ {n.message}</span>{already ? <span className="text-xs">اعلان این مغایرت قبلاً ارسال شده است.</span> : <button type="button" className="rounded-md border border-amber-500 bg-amber-900 px-3 py-2 text-xs text-amber-100 hover:border-amber-300" onClick={() => apiJSON('/operational/mismatch-reports', { method: 'POST', body: n.payload }).then(() => window.alert('اعلان مغایرت به بخش عملیاتی ارسال شد؛ پس از اصلاح رکورد در بخش عملیاتی، نسخه اصلاح‌شده برای ثبت مجدد نمایش داده می‌شود.')).catch(err => window.alert('ارسال اعلان مغایرت ناموفق بود: ' + ((err && err.message) || '')))}>اعلان مغایرت به بخش عملیاتی</button>}</div>; })()}
             <PrimaryButton className="w-full" type="submit">{editingId ? L.editSave : L.save}</PrimaryButton>{editingId && <GhostButton onClick={resetForm}>{L.reset}</GhostButton>}</form></Card>
 
         <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">{L.pending}</h3><span className="text-xs text-slate-400">{loading ? 'در حال دريافت...' : num(pendingYarnOut.length) + ' مورد'}</span></div>{error && <ErrorBox message={error} />}<div className="max-h-[620px] space-y-2 overflow-auto">{pendingYarnOut.length ? pendingYarnOut.map(row => <button key={row.id} type="button" className="w-full rounded-md border border-slate-700 bg-slate-900 p-3 text-right text-sm hover:border-amber-500" onClick={() => selectOperational(row)}><div className="flex items-center justify-between gap-2"><span className="font-bold text-amber-200">{row.yarn_name || '-'}</span><span className="rounded-full bg-slate-950 px-2 py-1 text-xs text-amber-200">{num(row.weight)} کيلو{misFlag('operational_yarn_out', row.id)}</span></div><div className="mt-1 text-xs text-slate-400">{row.customer_name || '-'} | {row.doc_no || '-'}</div><div className="mt-1 text-xs text-slate-500">{toJalali(row.date)}</div></button>) : <EmptyState />}</div></Card>
@@ -4076,7 +4078,7 @@ function IncomingInvoicePage({ finance, setFinance, reviewedSave, revision, only
 
     <div className="space-y-5">
 
-      <div className="grid grid-cols-3 gap-4"><Field label={onlySource === 'chelle' ? 'تعداد فاکتور ورود چله' : 'تعداد فاکتور ورود'} value={num(rows.length)} /><Field label="جمع مبلغ ورودی" value={money(rows.reduce((sum, x) => sum + Number(x.amount || 0), 0)) + ' تومان'} tone="text-emerald-300" /><Field label={onlySource === 'chelle' ? 'چله‌های در انتظار مالی' : 'موجودی قطعات عملیاتی'} value={onlySource === 'chelle' ? num(pendingOperational.length) + ' مورد' : num(data.spareParts.length) + ' رکورد'} /></div>
+      <div className="grid grid-cols-3 gap-4"><Field label={onlySource === 'chelle' ? 'تعداد فاکتور ورود چله' : 'تعداد فاکتور ورود'} value={num(rows.length)} /><Field label="جمع مبلغ ورودی" value={money(rows.reduce((sum, x) => sum + Number(x.amount || 0), 0)) + ' ریال'} tone="text-emerald-300" /><Field label={onlySource === 'chelle' ? 'چله‌های در انتظار مالی' : 'موجودی قطعات عملیاتی'} value={onlySource === 'chelle' ? num(pendingOperational.length) + ' مورد' : num(data.spareParts.length) + ' رکورد'} /></div>
 
       {!onlySource && <Card><div className="flex flex-wrap items-center justify-between gap-4"><div><h3 className="font-bold">منبع فاکتور ورود نخ</h3><p className="mt-2 text-sm text-slate-400">یک ورود عملیاتی را انتخاب کنید یا بدون وابستگی به عملیات، فاکتور ورود نخ جدید صادر کنید.</p></div><PrimaryButton onClick={beginManualInvoice}>صدور فاکتور ورود نخ جدید</PrimaryButton></div><div className={`mt-3 rounded-md border p-3 text-sm ${form.source_type === 'manual' ? 'border-emerald-700 bg-emerald-950 text-emerald-100' : 'border-blue-700 bg-blue-950 text-blue-100'}`}>{form.source_type === 'manual' ? 'حالت صدور مستقل فعال است؛ نام شخص و کالا را می‌توانید تایپ یا از پیشنهادها انتخاب کنید.' : 'فاکتور بر اساس ورود انتخاب‌شده از بخش عملیاتی تکمیل می‌شود.'}</div></Card>}
 
@@ -4099,23 +4101,23 @@ function IncomingInvoicePage({ finance, setFinance, reviewedSave, revision, only
               <TextInput type="number" placeholder="مبلغ قبل از مالیات" value={subtotal || ''} onChange={e => setForm({ ...form, subtotal: e.target.value })} />
               <TextInput className="col-span-2" placeholder="شرح" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
               <TextInput type="number" min="0" max="100" placeholder="نرخ مالیات (درصد)" value={form.taxRate || finance.accountingSettings?.defaultVatRate || ''} disabled={!form.taxable || form.nonFinancial} onChange={e => setForm({ ...form, taxRate: e.target.value })} />
-              <label className="col-span-3 flex items-center gap-3 rounded-md border border-blue-700 bg-blue-950 p-3 text-sm text-blue-100"><input type="checkbox" disabled={form.nonFinancial} checked={!!form.taxable && !form.nonFinancial} onChange={e => setForm({ ...form, taxable: e.target.checked })} /><span>خرید مشمول مالیات بر ارزش افزوده است؛ مبلغ {money(taxAmount)} تومان به اعتبار مالیاتی خرید ثبت می‌شود.</span></label>
+              <label className="col-span-3 flex items-center gap-3 rounded-md border border-blue-700 bg-blue-950 p-3 text-sm text-blue-100"><input type="checkbox" disabled={form.nonFinancial} checked={!!form.taxable && !form.nonFinancial} onChange={e => setForm({ ...form, taxable: e.target.checked })} /><span>خرید مشمول مالیات بر ارزش افزوده است؛ مبلغ {money(taxAmount)} ریال به اعتبار مالیاتی خرید ثبت می‌شود.</span></label>
               <label className="col-span-3 flex items-center gap-3 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm text-amber-100"><input type="checkbox" checked={!!form.nonFinancial} onChange={e => setForm({ ...form, nonFinancial: e.target.checked, taxable: e.target.checked ? false : form.taxable })} /><span>نخ/کالاي اماني کارمزدي؛ مبلغ فقط براي ارزش کالايي و اعتبارسنجي ثبت شود و در صورتحساب ريالي مشتري اثر نگذارد.</span></label>
             </div>
             {priceSuggestion.price > 0 && <div className="rounded-lg border border-blue-800 bg-blue-950/60 p-4 text-sm text-blue-100">
-              <div className="flex flex-wrap items-center justify-between gap-3"><div><strong>پیشنهاد ناظر مالی: نرخ {money(priceSuggestion.price)} تومان</strong><div className="mt-1 text-xs text-blue-200">مبنای پیشنهاد: {priceSuggestion.basis} | دامنه سابقه: {money(priceSuggestion.min)} تا {money(priceSuggestion.max)} تومان</div></div><PrimaryButton onClick={() => setForm(current => ({ ...current, unitPrice: priceSuggestion.price, subtotal: '' }))}>اعمال قیمت پیشنهادی</PrimaryButton></div>
-              <details className="mt-3"><summary>مشاهده فاکتورهای مبنای پیشنهاد</summary>{priceSuggestion.samples.map(sample => <div key={sample.id} className="mt-2 text-xs"><bdi>{sample.id}</bdi> | {toJalali(sample.date)} | {sample.customer} | {money(sample.price)} تومان</div>)}</details>
+              <div className="flex flex-wrap items-center justify-between gap-3"><div><strong>پیشنهاد ناظر مالی: نرخ {money(priceSuggestion.price)} ریال</strong><div className="mt-1 text-xs text-blue-200">مبنای پیشنهاد: {priceSuggestion.basis} | دامنه سابقه: {money(priceSuggestion.min)} تا {money(priceSuggestion.max)} ریال</div></div><PrimaryButton onClick={() => setForm(current => ({ ...current, unitPrice: priceSuggestion.price, subtotal: '' }))}>اعمال قیمت پیشنهادی</PrimaryButton></div>
+              <details className="mt-3"><summary>مشاهده فاکتورهای مبنای پیشنهاد</summary>{priceSuggestion.samples.map(sample => <div key={sample.id} className="mt-2 text-xs"><bdi>{sample.id}</bdi> | {toJalali(sample.date)} | {sample.customer} | {money(sample.price)} ریال</div>)}</details>
             </div>}
             {form.nonFinancial
               ? <div className="rounded-md border border-emerald-700 bg-emerald-950 p-4 text-sm text-emerald-100">اين فاکتور بدون اثر ريالي ثبت مي‌شود؛ چک، نقد، بدهکاري يا بستانکاري براي مشتري ايجاد نمي‌شود، اما مقدار و ارزش کالا در حساب کالايي و اعتبارسنجي لحاظ مي‌شود.</div>
               : <div className="rounded-md border border-slate-700 bg-slate-900 p-4"><div className="mb-3 flex items-center justify-between"><h4 className="font-bold">رديف هاي تسويه فاکتور ورود</h4><PrimaryButton onClick={() => setPayments(prev => [...prev, newPaymentLine('credit')])}>افزودن رديف</PrimaryButton></div><div className="space-y-3">{payments.map(p => <IncomingPaymentLine key={p.id} payment={p} accounts={finance.accounts} receivableDocs={openReceivableDocs} onChange={patch => updatePayment(p.id, patch)} onRemove={() => removePayment(p.id)} onAddAccount={quickAddAccount} />)}</div></div>}
-            <div className="grid grid-cols-5 gap-3"><Field label="مبلغ قبل مالیات" value={money(subtotal) + ' تومان'} /><Field label="مالیات/عوارض" value={money(form.nonFinancial ? 0 : taxAmount) + ' تومان'} tone="text-blue-300" /><Field label="جمع فاکتور" value={money(invoiceTotal) + ' تومان'} /><Field label="جمع تسويه" value={money(form.nonFinancial ? 0 : paid) + ' تومان'} tone={form.nonFinancial || paid === invoiceTotal ? 'text-emerald-300' : 'text-amber-300'} /><Field label={form.nonFinancial ? 'اثر ريالي' : 'مانده'} value={form.nonFinancial ? 'بدون اثر در صورتحساب' : money(invoiceTotal - paid) + ' تومان'} tone={form.nonFinancial || invoiceTotal - paid === 0 ? 'text-emerald-300' : 'text-red-300'} /></div>
+            <div className="grid grid-cols-5 gap-3"><Field label="مبلغ قبل مالیات" value={money(subtotal) + ' ریال'} /><Field label="مالیات/عوارض" value={money(form.nonFinancial ? 0 : taxAmount) + ' ریال'} tone="text-blue-300" /><Field label="جمع فاکتور" value={money(invoiceTotal) + ' ریال'} /><Field label="جمع تسويه" value={money(form.nonFinancial ? 0 : paid) + ' ریال'} tone={form.nonFinancial || paid === invoiceTotal ? 'text-emerald-300' : 'text-amber-300'} /><Field label={form.nonFinancial ? 'اثر ريالي' : 'مانده'} value={form.nonFinancial ? 'بدون اثر در صورتحساب' : money(invoiceTotal - paid) + ' ریال'} tone={form.nonFinancial || invoiceTotal - paid === 0 ? 'text-emerald-300' : 'text-red-300'} /></div>
 {(() => { const n = buildOperationalMismatch(form, data, editingId); if (!n) return null; return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-700 bg-amber-950 p-3 text-sm text-amber-100"><span>⚠️ {n.message}</span><button type="button" className="rounded-md border border-amber-500 bg-amber-900 px-3 py-2 text-xs text-amber-100 hover:border-amber-300" onClick={() => apiJSON('/operational/mismatch-reports', { method: 'POST', body: n.payload }).then(() => window.alert('اعلان مغایرت به بخش عملیاتی ارسال شد؛ پس از اصلاح رکورد در بخش عملیاتی، نسخه اصلاح‌شده برای ثبت مجدد نمایش داده می‌شود.')).catch(err => window.alert('ارسال اعلان مغایرت ناموفق بود: ' + ((err && err.message) || '')))}>اعلان مغایرت به بخش عملیاتی</button></div>; })()}
                         {reviewMessage && <div role="status" className="rounded-md border border-blue-700 bg-slate-950 p-4 text-blue-100">{reviewMessage}</div>}
             {reviewDraft && <div className="rounded-lg border border-emerald-700 bg-emerald-950/60 p-5 text-emerald-50">
               <h3 className="font-bold">اثر خالص ثبت پیشنهادی — هنوز ذخیره نشده است</h3>
               <p className="my-3 text-sm leading-7">این جدول از موتور حسابداری سرور است. در ویرایش، فقط تفاوت نسبت به سند قبلی نمایش داده می‌شود. بدهکار/بستانکار ستون‌های سند حسابداری هستند؛ بدهکار شدن دارایی مانند بانک یعنی افزایش آن، و بستانکار شدن یعنی کاهش. پیشنهاد قیمت، قیمت قطعی روز نیست.</p>
-              <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr><th>حساب</th><th>شخص</th><th>بدهکار (تومان)</th><th>بستانکار (تومان)</th></tr></thead><tbody>
+              <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr><th>حساب</th><th>شخص</th><th>بدهکار (ریال)</th><th>بستانکار (ریال)</th></tr></thead><tbody>
                 {reviewDraft.review.lines.map((line, index) => <tr key={index}><td className="p-3">{line.accountName}</td><td>{line.party || '—'}</td><td>{money(line.debit)}</td><td>{money(line.credit)}</td></tr>)}
               </tbody><tfoot><tr className="border-t border-emerald-700 font-bold"><td>جمع اثر</td><td></td><td>{money(reviewDraft.review.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0))}</td><td>{money(reviewDraft.review.lines.reduce((sum, line) => sum + Number(line.credit || 0), 0))}</td></tr></tfoot></table></div>
               {!reviewDraft.review.lines.length && <p className="py-3">تغییر خالص ریالی ندارد؛ اطلاعات غیرریالی و موجودی همچنان باید بررسی شوند.</p>}
@@ -4577,7 +4579,7 @@ function InvoicePage({ finance, setFinance }) {
 
   const printInvoice = invoice => {
 
-    const paymentsText = (invoice.payments || []).map(row => `${paymentTypes.find(type => type.id === row.type)?.label || row.type}: ${money(row.amount)} تومان`).join('<br>') || '-';
+    const paymentsText = (invoice.payments || []).map(row => `${paymentTypes.find(type => type.id === row.type)?.label || row.type}: ${money(row.amount)} ریال`).join('<br>') || '-';
 
     printSection(`فاکتور مالی شماره ${invoice.number}`, `<table><tbody><tr><th>تاریخ</th><td>${toJalali(invoice.date)}</td><th>شخص</th><td>${invoice.customer || '-'}</td></tr><tr><th>کالا</th><td>${invoice.item || '-'}</td><th>مقدار</th><td>${num(invoice.quantity)}</td></tr><tr><th>نرخ واحد</th><td>${money(invoice.unitPrice)}</td><th>مبلغ کل</th><td>${money(invoice.total)}</td></tr><tr><th>روش تسویه</th><td colspan="3">${paymentsText}</td></tr></tbody></table>`);
 
@@ -4693,7 +4695,7 @@ function InvoicePage({ finance, setFinance }) {
 
             </div>
 
-            <label className="flex items-center gap-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-sm"><input type="checkbox" checked={taxable} onChange={e => setTaxable(e.target.checked)} /><span>این فاکتور مشمول مالیات است؛ نرخ {num(finance.accountingSettings?.defaultVatRate || 0)}٪ و مبلغ مالیات {money(taxAmount)} تومان</span></label>
+            <label className="flex items-center gap-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-sm"><input type="checkbox" checked={taxable} onChange={e => setTaxable(e.target.checked)} /><span>این فاکتور مشمول مالیات است؛ نرخ {num(finance.accountingSettings?.defaultVatRate || 0)}٪ و مبلغ مالیات {money(taxAmount)} ریال</span></label>
 
 
 
@@ -4723,11 +4725,11 @@ function InvoicePage({ finance, setFinance }) {
 
             <div className="grid grid-cols-3 gap-3">
 
-              <Field label="مبلغ فاکتور" value={`${money(total)} تومان`} />
+              <Field label="مبلغ فاکتور" value={`${money(total)} ریال`} />
 
-              <Field label="جمع تعیین تکلیف" value={`${money(paid)} تومان`} tone={paid === total ? 'text-emerald-300' : 'text-amber-300'} />
+              <Field label="جمع تعیین تکلیف" value={`${money(paid)} ریال`} tone={paid === total ? 'text-emerald-300' : 'text-amber-300'} />
 
-              <Field label="مانده تعيين نشده" value={`${money(remaining)} تومان`} tone={remaining === 0 ? 'text-emerald-300' : 'text-red-300'} />
+              <Field label="مانده تعيين نشده" value={`${money(remaining)} ریال`} tone={remaining === 0 ? 'text-emerald-300' : 'text-red-300'} />
 
             </div>
 
@@ -5276,7 +5278,7 @@ function CostsPage({ finance, setFinance }) {
 
     <div className="space-y-5">
 
-      <div className="grid grid-cols-4 gap-4"><Field label="تعداد هزينه" value={num(rows.length)} /><Field label="جمع هزينه" value={`${money(total)} تومان`} tone="text-red-300" /><Field label="هزینه عملیاتی" value={num(operational.length)} /><Field label="هزینه مالی" value={num(financial.length)} /></div>
+      <div className="grid grid-cols-4 gap-4"><Field label="تعداد هزينه" value={num(rows.length)} /><Field label="جمع هزينه" value={`${money(total)} ریال`} tone="text-red-300" /><Field label="هزینه عملیاتی" value={num(operational.length)} /><Field label="هزینه مالی" value={num(financial.length)} /></div>
 
       <Card>
 
@@ -5649,7 +5651,7 @@ function DocsPage({ kind, finance, setFinance }) {
 
     <div className="space-y-5">
 
-      <div className="grid grid-cols-3 gap-4"><Field label="تعداد سند" value={num(rows.length)} /><Field label="مبلغ باز" value={`${money(totalOpen)} تومان`} tone={isReceivable ? 'text-blue-300' : 'text-red-300'} /><Field label="سررسيد اين ماه" value={`${money(rows.filter(x => sameMonth(x.dueDate, 0)).reduce((s, x) => s + Number(x.amount || 0), 0))} تومان`} /></div>
+      <div className="grid grid-cols-3 gap-4"><Field label="تعداد سند" value={num(rows.length)} /><Field label="مبلغ باز" value={`${money(totalOpen)} ریال`} tone={isReceivable ? 'text-blue-300' : 'text-red-300'} /><Field label="سررسيد اين ماه" value={`${money(rows.filter(x => sameMonth(x.dueDate, 0)).reduce((s, x) => s + Number(x.amount || 0), 0))} ریال`} /></div>
 
       {!isReceivable && <Card><h3 className="mb-4 font-bold">{editingCheckbookId ? 'ویرایش دسته‌چک' : 'تعریف دسته‌چک'}</h3><form className="grid grid-cols-5 gap-3" onSubmit={saveCheckbook}><TextInput placeholder="عنوان دسته‌چک" value={checkbook.title} onChange={e => setCheckbook({ ...checkbook, title: e.target.value })} /><TextInput placeholder="بانک" value={checkbook.bank} onChange={e => setCheckbook({ ...checkbook, bank: e.target.value })} /><TextInput type="number" placeholder="از شماره" value={checkbook.fromNo} onChange={e => setCheckbook({ ...checkbook, fromNo: e.target.value })} /><TextInput type="number" placeholder="تا شماره" value={checkbook.toNo} onChange={e => setCheckbook({ ...checkbook, toNo: e.target.value })} /><div className="flex gap-2"><PrimaryButton className="flex-1" type="submit">{editingCheckbookId ? 'ذخیره ویرایش' : 'ثبت دسته‌چک'}</PrimaryButton>{editingCheckbookId && <GhostButton onClick={cancelCheckbookEdit}>انصراف</GhostButton>}</div></form>{checkbookMessage.text && <div role="status" className={`mt-3 rounded-md border p-3 text-sm ${checkbookMessage.type === 'error' ? 'border-red-800 bg-red-950 text-red-100' : 'border-emerald-800 bg-emerald-950 text-emerald-100'}`}>{checkbookMessage.text}</div>}<div className="mt-4"><CheckbooksTable rows={finance.checkbooks || []} payableDocs={finance.payableDocs || []} onEdit={editCheckbook} onDelete={deleteCheckbook} /></div></Card>}
 
@@ -5712,7 +5714,7 @@ function BankCashPage({ finance, setFinance }) {
 
     <div className="space-y-5">
 
-      <div className="grid grid-cols-4 gap-4">{finance.accounts.map(a => <Field key={a.id} label={a.type + ': ' + a.name} value={money(accountBalance(a, finance.movements)) + ' تومان'} tone="text-emerald-300" />)}</div>
+      <div className="grid grid-cols-4 gap-4">{finance.accounts.map(a => <Field key={a.id} label={a.type + ': ' + a.name} value={money(accountBalance(a, finance.movements)) + ' ریال'} tone="text-emerald-300" />)}</div>
 
       <div className="space-y-5">
 
@@ -5837,7 +5839,7 @@ function ProfessionalBankCashPage({ finance, setFinance, onGo }) {
   const printMovements = () => printSection('صورت گردش بانک و صندوق', `<p>بازه گزارش: ${filters.fromDate ? toJalali(filters.fromDate) : 'ابتدای دوره'} تا ${filters.toDate ? toJalali(filters.toDate) : 'انتهای دوره'}</p><table><thead><tr><th>تاریخ</th><th>حساب</th><th>ماهیت</th><th>طرف حساب</th><th>مبلغ</th><th>رهگیری</th><th>شناسه سند هزینه</th><th>تطبیق</th></tr></thead><tbody>${rows.map(row => `<tr><td>${toJalali(row.date)}</td><td>${row.accountName}</td><td>${typedTransactionLabels[row.typedType] || typeLabels[row.transactionType] || row.direction}</td><td>${counterpartyText(row)}</td><td>${money(row.amount)}</td><td>${row.trackingNo || '-'}</td><td>${row.expenseTraceId || '-'}</td><td>${row.reconciled ? 'تطبیق شد' : 'باز'}</td></tr>`).join('')}</tbody></table>`);
 
   return <div className="space-y-5">
-    <div className="grid grid-cols-4 gap-4">{finance.accounts.map(a => <Field key={a.id} label={`${a.type}: ${a.name}`} value={`${money(accountBalance(a, finance.movements))} تومان`} tone={accountBalance(a, finance.movements) >= 0 ? 'text-emerald-300' : 'text-red-300'} />)}</div>
+    <div className="grid grid-cols-4 gap-4">{finance.accounts.map(a => <Field key={a.id} label={`${a.type}: ${a.name}`} value={`${money(accountBalance(a, finance.movements))} ریال`} tone={accountBalance(a, finance.movements) >= 0 ? 'text-emerald-300' : 'text-red-300'} />)}</div>
     <Card><h3 className="mb-4 font-bold">تعریف بانک یا صندوق</h3><form className="grid grid-cols-4 gap-3" onSubmit={addAccount}><TextInput placeholder="نام حساب" value={account.name} onChange={e => setAccount({ ...account, name: e.target.value })} /><SelectInput value={account.type} onChange={e => setAccount({ ...account, type: e.target.value })}><option>بانک</option><option>صندوق</option></SelectInput><TextInput type="number" placeholder="موجودی اولیه" value={account.opening} onChange={e => setAccount({ ...account, opening: e.target.value })} /><PrimaryButton type="submit">ثبت حساب</PrimaryButton></form></Card>
     <Card><h3 className="mb-4 font-bold">ثبت دریافت، پرداخت یا انتقال</h3><form className="grid grid-cols-4 gap-3" onSubmit={addMovement}>
       <SelectInput value={movement.transactionType} onChange={e => changeType(e.target.value)}><option value="customer_receipt">دریافت از مشتری</option><option value="supplier_payment">پرداخت به فروشنده</option><option value="transfer">انتقال بین حساب‌ها</option><option value="expense">پرداخت مستقیم هزینه</option><option value="other_income">سایر درآمد</option><option value="capital">آورده/برداشت سرمایه</option></SelectInput>
@@ -5898,7 +5900,7 @@ function AccountingPage({ finance, setFinance, revision }) {
   const printTrial = () => printSection('تراز آزمایشی', `<table><thead><tr><th>کد</th><th>حساب</th><th>بدهکار</th><th>بستانکار</th><th>مانده</th></tr></thead><tbody>${(report.trialBalance || []).map(row => `<tr><td>${toPersianDigits(row.code)}</td><td>${row.name}</td><td>${money(row.debit)}</td><td>${money(row.credit)}</td><td>${money(row.balance)}</td></tr>`).join('')}</tbody></table>`);
   return <div className="space-y-5">
     {error && <ErrorBox message={error} />}
-    <div className="grid grid-cols-5 gap-4"><Field label="جمع بدهکار" value={money(s.total_debit) + ' تومان'} /><Field label="جمع بستانکار" value={money(s.total_credit) + ' تومان'} /><Field label="سود/زیان دوره" value={money(profit) + ' تومان'} tone={profit >= 0 ? 'text-emerald-300' : 'text-red-300'} /><Field label="دارایی خالص" value={money(s.assets) + ' تومان'} /><Field label="کنترل تراز" value={balanced ? 'تراز است' : 'عدم تراز'} tone={balanced ? 'text-emerald-300' : 'text-red-300'} /></div>
+    <div className="grid grid-cols-5 gap-4"><Field label="جمع بدهکار" value={money(s.total_debit) + ' ریال'} /><Field label="جمع بستانکار" value={money(s.total_credit) + ' ریال'} /><Field label="سود/زیان دوره" value={money(profit) + ' ریال'} tone={profit >= 0 ? 'text-emerald-300' : 'text-red-300'} /><Field label="دارایی خالص" value={money(s.assets) + ' ریال'} /><Field label="کنترل تراز" value={balanced ? 'تراز است' : 'عدم تراز'} tone={balanced ? 'text-emerald-300' : 'text-red-300'} /></div>
     <Card><h3 className="mb-4 font-bold">ثبت سند دستی دوبل</h3><form className="grid grid-cols-6 gap-3" onSubmit={addManual}><DateInput value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /><SelectInput value={form.debitCode} onChange={e => setForm({ ...form, debitCode: e.target.value })}>{chart.map(row => <option key={row[0]} value={row[0]}>بدهکار: {toPersianDigits(row[0])} - {row[1]}</option>)}</SelectInput><SelectInput value={form.creditCode} onChange={e => setForm({ ...form, creditCode: e.target.value })}>{chart.map(row => <option key={row[0]} value={row[0]}>بستانکار: {toPersianDigits(row[0])} - {row[1]}</option>)}</SelectInput><TextInput type="number" min="1" placeholder="مبلغ" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} /><TextInput placeholder="طرف حساب (اختیاری)" value={form.party} onChange={e => setForm({ ...form, party: e.target.value })} /><PrimaryButton type="submit">ثبت سند</PrimaryButton><TextInput className="col-span-6" placeholder="شرح سند" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></form></Card>
     <Card><h3 className="mb-4 font-bold">دوره مالی و قفل ثبت</h3><form className="grid grid-cols-4 gap-3" onSubmit={addPeriod}><TextInput placeholder="عنوان دوره" value={periodForm.title} onChange={e => setPeriodForm({ ...periodForm, title: e.target.value })} /><DateInput value={periodForm.startDate} onChange={e => setPeriodForm({ ...periodForm, startDate: e.target.value })} /><DateInput value={periodForm.endDate} onChange={e => setPeriodForm({ ...periodForm, endDate: e.target.value })} /><PrimaryButton type="submit">ایجاد دوره</PrimaryButton></form><div className="mt-4 space-y-2">{(report.periods || []).map(row => <div key={row.id} className="flex items-center justify-between rounded-md border border-slate-700 bg-slate-950 p-3 text-sm"><span>{row.title} | {toJalali(row.start_date)} تا {toJalali(row.end_date)}</span><GhostButton onClick={() => togglePeriod(row)}>{row.status === 'Closed' ? 'بازکردن دوره' : 'بستن دوره'}</GhostButton></div>)}</div></Card>
     <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">تراز آزمایشی دفتر کل</h3><div className="flex gap-2"><PrimaryButton onClick={load}>{loading ? 'در حال دریافت...' : 'بازخوانی'}</PrimaryButton><PrimaryButton onClick={printTrial}>چاپ تراز</PrimaryButton><PrimaryButton onClick={() => exportExcel('تراز آزمایشی دفتر کل', (report.trialBalance || []).map(row => ({ code: row.code, account: row.name, type: row.type, debit: row.debit, credit: row.credit, balance: row.balance })))}>خروجی اکسل</PrimaryButton></div></div><GenericTable rows={(report.trialBalance || []).map(row => ({ code: row.code, account: row.name, type: row.type, debit: row.debit, credit: row.credit, balance: row.balance }))} /></Card>
@@ -5987,7 +5989,7 @@ function ReportsPage({ finance, setFinance }) {
 
       {customer !== 'all' && <Card><div className="mb-4 flex items-center justify-between"><h3 className="font-bold">قرار پرداخت شخص</h3><span className="text-sm text-blue-200">{customer}</span></div><div className="grid grid-cols-3 gap-4"><label className="text-sm text-slate-300"><span className="mb-2 block">درصد پرداخت نقدي</span><TextInput className="w-full" type="number" min="0" max="100" value={activePlan.cashPercent} onChange={e => { const value = Math.min(100, Math.max(0, Number(e.target.value || 0))); savePlan({ cashPercent: value, checkPercent: 100 - value }); }} /></label><label className="text-sm text-slate-300"><span className="mb-2 block">درصد پرداخت چکي</span><TextInput className="w-full" type="number" min="0" max="100" value={activePlan.checkPercent} onChange={e => { const value = Math.min(100, Math.max(0, Number(e.target.value || 0))); savePlan({ checkPercent: value, cashPercent: 100 - value }); }} /></label><label className="text-sm text-slate-300"><span className="mb-2 block">سررسيد چک چند ماهه</span><TextInput className="w-full" type="number" min="0" value={activePlan.checkMonths} onChange={e => savePlan({ checkMonths: Math.max(0, Number(e.target.value || 0)) })} /></label></div><div className="mt-3 rounded-md border border-slate-700 bg-slate-900 p-3 text-xs text-slate-300">تنظیمات در فضای شرکت ذخیره می‌شود و مبلغ نقد، مبلغ چک و سررسید تمام فاکتورهای این شخص بلافاصله در جدول، چاپ و خروجی اکسل محاسبه می‌شود.</div></Card>}
 
-      {summary && <div className="grid grid-cols-6 gap-4"><Field label="مانده خالص شخص" value={money(Math.abs(summary.netBalance)) + ' تومان ' + (summary.netBalance > 0 ? 'بدهکار' : summary.netBalance < 0 ? 'بستانکار' : 'تسویه')} tone={summary.netBalance >= 0 ? 'text-amber-300' : 'text-emerald-300'} /><Field label="بدهی فاکتور خروج" value={money(summary.debt) + ' تومان'} tone="text-amber-300" /><Field label="بستانکاری فاکتور ورود" value={money(summary.payableToCustomer) + ' تومان'} tone="text-emerald-300" /><Field label="پرداختي خروجي" value={money(summary.paidOut) + ' تومان'} tone="text-blue-300" /><Field label="چک واگذار شده" value={money(summary.assignedChecks) + ' تومان'} tone="text-violet-300" /><Field label="جمع فاکتور ورود" value={money(summary.incomingTotal) + ' تومان'} /></div>}
+      {summary && <div className="grid grid-cols-6 gap-4"><Field label="مانده خالص شخص" value={money(Math.abs(summary.netBalance)) + ' ریال ' + (summary.netBalance > 0 ? 'بدهکار' : summary.netBalance < 0 ? 'بستانکار' : 'تسویه')} tone={summary.netBalance >= 0 ? 'text-amber-300' : 'text-emerald-300'} /><Field label="بدهی فاکتور خروج" value={money(summary.debt) + ' ریال'} tone="text-amber-300" /><Field label="بستانکاری فاکتور ورود" value={money(summary.payableToCustomer) + ' ریال'} tone="text-emerald-300" /><Field label="پرداختي خروجي" value={money(summary.paidOut) + ' ریال'} tone="text-blue-300" /><Field label="چک واگذار شده" value={money(summary.assignedChecks) + ' ریال'} tone="text-violet-300" /><Field label="جمع فاکتور ورود" value={money(summary.incomingTotal) + ' ریال'} /></div>}
 
       {statement && <CustomerStatement customer={customer} statement={statement} money={money} toJalali={toJalali} onPrint={printSection} onExcel={exportExcel} />}
       <Card><h3 className="mb-4 font-bold">جدول گزارش مالي</h3><GenericTable rows={reportRows} showTotals /></Card>
@@ -6048,7 +6050,7 @@ function TaxReportPage({ finance }) {
 
   };
 
-  return <div className="space-y-5"><Card><div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گزارش مالیاتی ایران</h3><div className="flex flex-wrap gap-2"><DateInput value={fromDate} onChange={e => setFromDate(e.target.value)} /><DateInput value={toDate} onChange={e => setToDate(e.target.value)} /><PrimaryButton onClick={printTax}>چاپ گزارش مالیاتی</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش مالیاتی', rows, [['type','نوع'],['invoice_no','شماره'],['date','تاریخ'],['party','طرف حساب'],['description','شرح'],['taxable_amount','مبلغ مشمول'],['vat','مالیات و عوارض'],['total','جمع']], { label: 'جمع', taxable_amount: salesTotal + purchasesTotal + expensesTotal, vat: payableVat })}>خروجی اکسل</PrimaryButton></div></div></Card><div className="grid grid-cols-4 gap-4"><Field label="جمع فروش/درآمد" value={money(salesTotal) + ' تومان'} tone="text-emerald-300" /><Field label="جمع خرید/ورود" value={money(purchasesTotal) + ' تومان'} tone="text-blue-300" /><Field label="جمع هزینه" value={money(expensesTotal) + ' تومان'} tone="text-red-300" /><Field label="مالیات ارزش افزوده قابل پرداخت" value={money(payableVat) + ' تومان'} tone={payableVat >= 0 ? 'text-amber-300' : 'text-emerald-300'} /></div><Card><h3 className="mb-4 font-bold">ریز اقلام مالیاتی</h3><GenericTable rows={rows} /></Card><Card><h3 className="mb-4 font-bold">کنترل حسابدار</h3><div className="text-sm leading-7 text-slate-300">نرخ پیشنهادی فعلی {num(vatRate * 100)}٪ است. فقط اسنادی که هنگام ثبت «مشمول مالیات» شده‌اند در اعتبار و بدهی مالیاتی محاسبه می‌شوند. این خروجی گزارش کنترلی است؛ ارسال رسمی سامانه مؤدیان نیازمند شناسه کالا/خدمت، شماره اقتصادی، الگوی صورتحساب و امضای الکترونیکی معتبر است.</div></Card></div>;
+  return <div className="space-y-5"><Card><div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-bold">گزارش مالیاتی ایران</h3><div className="flex flex-wrap gap-2"><DateInput value={fromDate} onChange={e => setFromDate(e.target.value)} /><DateInput value={toDate} onChange={e => setToDate(e.target.value)} /><PrimaryButton onClick={printTax}>چاپ گزارش مالیاتی</PrimaryButton><PrimaryButton onClick={() => exportExcel('گزارش مالیاتی', rows, [['type','نوع'],['invoice_no','شماره'],['date','تاریخ'],['party','طرف حساب'],['description','شرح'],['taxable_amount','مبلغ مشمول'],['vat','مالیات و عوارض'],['total','جمع']], { label: 'جمع', taxable_amount: salesTotal + purchasesTotal + expensesTotal, vat: payableVat })}>خروجی اکسل</PrimaryButton></div></div></Card><div className="grid grid-cols-4 gap-4"><Field label="جمع فروش/درآمد" value={money(salesTotal) + ' ریال'} tone="text-emerald-300" /><Field label="جمع خرید/ورود" value={money(purchasesTotal) + ' ریال'} tone="text-blue-300" /><Field label="جمع هزینه" value={money(expensesTotal) + ' ریال'} tone="text-red-300" /><Field label="مالیات ارزش افزوده قابل پرداخت" value={money(payableVat) + ' ریال'} tone={payableVat >= 0 ? 'text-amber-300' : 'text-emerald-300'} /></div><Card><h3 className="mb-4 font-bold">ریز اقلام مالیاتی</h3><GenericTable rows={rows} /></Card><Card><h3 className="mb-4 font-bold">کنترل حسابدار</h3><div className="text-sm leading-7 text-slate-300">نرخ پیشنهادی فعلی {num(vatRate * 100)}٪ است. فقط اسنادی که هنگام ثبت «مشمول مالیات» شده‌اند در اعتبار و بدهی مالیاتی محاسبه می‌شوند. این خروجی گزارش کنترلی است؛ ارسال رسمی سامانه مؤدیان نیازمند شناسه کالا/خدمت، شماره اقتصادی، الگوی صورتحساب و امضای الکترونیکی معتبر است.</div></Card></div>;
 
 }
 
@@ -6102,13 +6104,13 @@ function CreditPage({ finance }) {
 
     yarnBalance >= 0 ? `مانده نخ محاسباتي مثبت يا صفر است: ${num(yarnBalance)} کيلو.` : `مانده نخ محاسباتي منفي است: ${num(yarnBalance)} کيلو.`,
 
-    `مانده مالي مشتري ${money(financial.debt)} تومان است.`,
+    `مانده مالي مشتري ${money(financial.debt)} ریال است.`,
 
-    `چک هاي دريافتني سررسيد نشده/باز مشتري ${money(futureChecks)} تومان است و در کاهش ريسک لحاظ شد.`,
+    `چک هاي دريافتني سررسيد نشده/باز مشتري ${money(futureChecks)} ریال است و در کاهش ريسک لحاظ شد.`,
 
-    `ارزش نخ و پارچه مالکي تهاتري مشتري ${money(ownedYarn + ownedFabric)} تومان است.`,
+    `ارزش نخ و پارچه مالکي تهاتري مشتري ${money(ownedYarn + ownedFabric)} ریال است.`,
 
-    `مانده ريسک خالص پس از کسر چک و تهاتر ${money(netExposure)} تومان است.`,
+    `مانده ريسک خالص پس از کسر چک و تهاتر ${money(netExposure)} ریال است.`,
 
     maxDelay > 0 ? `اين مشتري در پرداخت اسناد ${num(maxDelay)} روز تاخير دارد و از امتياز اعتبار او کسر شد.` : 'تاخير سررسيد شده ثبت نشده است.',
 
@@ -6124,7 +6126,7 @@ function CreditPage({ finance }) {
 
       {loading && <p className="text-sm text-slate-400">در حال دريافت...</p>}
 
-      {error ? <ErrorBox message={error} /> : <><div className="grid grid-cols-4 gap-4"><Field label="امتياز اعتبار" value={num(score)} tone={tone} /><Field label="وضعيت" value={level} tone={tone} /><Field label="مانده ریسک خالص" value={`${money(netExposure)} تومان`} tone={netExposure > 0 ? 'text-amber-300' : 'text-emerald-300'} /><Field label="مانده نخ" value={`${num(yarnBalance)} کيلو`} tone={yarnBalance >= 0 ? 'text-emerald-300' : 'text-red-300'} /></div><Card><h3 className="mb-4 font-bold">دلايل اعتبار يا عدم اعتبار</h3><div className="space-y-2">{reasons.map((reason, index) => <div key={index} className="rounded-md border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">{reason}</div>)}</div></Card><Card><h3 className="mb-4 font-bold">فاکتورهاي موثر در اعتبار</h3><GenericTable rows={financialInvoices.map(x => ({ invoice_no: x.number, date: x.date, item: x.item, pricing_basis: x.basis === 'weight' ? 'وزني' : 'متري', quantity: x.quantity, unit_price: x.unitPrice, total: x.total, paid: paidAmount(x), debt: invoiceDebt(x) }))} /></Card></>}
+      {error ? <ErrorBox message={error} /> : <><div className="grid grid-cols-4 gap-4"><Field label="امتياز اعتبار" value={num(score)} tone={tone} /><Field label="وضعيت" value={level} tone={tone} /><Field label="مانده ریسک خالص" value={`${money(netExposure)} ریال`} tone={netExposure > 0 ? 'text-amber-300' : 'text-emerald-300'} /><Field label="مانده نخ" value={`${num(yarnBalance)} کيلو`} tone={yarnBalance >= 0 ? 'text-emerald-300' : 'text-red-300'} /></div><Card><h3 className="mb-4 font-bold">دلايل اعتبار يا عدم اعتبار</h3><div className="space-y-2">{reasons.map((reason, index) => <div key={index} className="rounded-md border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">{reason}</div>)}</div></Card><Card><h3 className="mb-4 font-bold">فاکتورهاي موثر در اعتبار</h3><GenericTable rows={financialInvoices.map(x => ({ invoice_no: x.number, date: x.date, item: x.item, pricing_basis: x.basis === 'weight' ? 'وزني' : 'متري', quantity: x.quantity, unit_price: x.unitPrice, total: x.total, paid: paidAmount(x), debt: invoiceDebt(x) }))} /></Card></>}
 
     </div>
 
@@ -6281,7 +6283,7 @@ function AdvisorPage({ finance }) {
     liquidityGap < 0 && {
       level: 'فوری',
       title: 'پوشش کسری نقدینگی',
-      detail: 'شکاف پیش‌بینی‌شده ' + money(Math.abs(liquidityGap)) + ' تومان است.',
+      detail: 'شکاف پیش‌بینی‌شده ' + money(Math.abs(liquidityGap)) + ' ریال است.',
       action: 'وصول چک‌های نزدیک، تعویق پرداخت کم‌اهمیت و کاهش هزینه قابل‌کنترل را امروز بررسی کنید.',
     },
     unpostedOperationalInvoices > 0 && {
@@ -6293,7 +6295,7 @@ function AdvisorPage({ finance }) {
     totalDebt > 0 && {
       level: totalRevenue > 0 && totalDebt > totalRevenue * 0.5 ? 'فوری' : 'مهم',
       title: 'کاهش مطالبات و ریسک مشتری',
-      detail: 'مانده مشتریان و واگذاری‌ها ' + money(totalDebt) + ' تومان است.',
+      detail: 'مانده مشتریان و واگذاری‌ها ' + money(totalDebt) + ' ریال است.',
       action: 'سه مشتری با مانده بالاتر را برای تماس و برنامه وصول در اولویت قرار دهید.',
     },
     topForecast && {
@@ -6314,25 +6316,25 @@ function AdvisorPage({ finance }) {
 
   const advices = [
 
-    liquidityGap < 0 && 'با احتساب هزينه هاي پيش بيني شده، کسري نقدينگي احتمالي در افق ' + num(months) + ' ماهه ' + money(Math.abs(liquidityGap)) + ' تومان است. بايد از چک هاي وصولي نزديک، کاهش هزينه هاي قابل کنترل و مذاکره براي سررسيد اسناد پرداختي استفاده شود.',
+    liquidityGap < 0 && 'با احتساب هزينه هاي پيش بيني شده، کسري نقدينگي احتمالي در افق ' + num(months) + ' ماهه ' + money(Math.abs(liquidityGap)) + ' ریال است. بايد از چک هاي وصولي نزديک، کاهش هزينه هاي قابل کنترل و مذاکره براي سررسيد اسناد پرداختي استفاده شود.',
 
-    liquidityGap >= 0 && 'پس از کسر هزينه هاي پيش بيني شده، پوشش نقدينگي افق ' + num(months) + ' ماهه مثبت است و حدود ' + money(liquidityGap) + ' تومان حاشيه داريد.',
+    liquidityGap >= 0 && 'پس از کسر هزينه هاي پيش بيني شده، پوشش نقدينگي افق ' + num(months) + ' ماهه مثبت است و حدود ' + money(liquidityGap) + ' ریال حاشيه داريد.',
 
-    forecastTotal > 0 && 'بر اساس سابقه هزينه هاي ثبت شده، حدود ' + money(forecastTotal) + ' تومان هزينه براي ' + num(months) + ' ماه آينده پيش بيني مي شود. اين مبلغ بايد قبل از تصميم گيري براي پرداخت هاي جديد کنار گذاشته شود.',
+    forecastTotal > 0 && 'بر اساس سابقه هزينه هاي ثبت شده، حدود ' + money(forecastTotal) + ' ریال هزينه براي ' + num(months) + ' ماه آينده پيش بيني مي شود. اين مبلغ بايد قبل از تصميم گيري براي پرداخت هاي جديد کنار گذاشته شود.',
 
-    topForecast && 'بزرگ ترين هزينه پيش بيني شده «' + topForecast.title + '» با ميانگين ماهانه ' + money(topForecast.monthly_average) + ' تومان است. براي اين سرفصل سقف بودجه و تاريخ تامين وجه تعريف کنيد.',
+    topForecast && 'بزرگ ترين هزينه پيش بيني شده «' + topForecast.title + '» با ميانگين ماهانه ' + money(topForecast.monthly_average) + ' ریال است. براي اين سرفصل سقف بودجه و تاريخ تامين وجه تعريف کنيد.',
 
-    dueChecks > 0 && 'در ماه جاري ' + money(dueChecks) + ' تومان چک دريافتي سررسيد مي شود؛ براي هر چک پيگيري وصول و وضعيت بانک ثبت شود.',
+    dueChecks > 0 && 'در ماه جاري ' + money(dueChecks) + ' ریال چک دريافتي سررسيد مي شود؛ براي هر چک پيگيري وصول و وضعيت بانک ثبت شود.',
 
-    payables > 0 && 'اسناد پرداختي باز ' + money(payables) + ' تومان است. پرداخت ها را بر اساس سررسيد، ريسک جريمه و اهميت تامين کننده اولويت بندي کنيد.',
+    payables > 0 && 'اسناد پرداختي باز ' + money(payables) + ' ریال است. پرداخت ها را بر اساس سررسيد، ريسک جريمه و اهميت تامين کننده اولويت بندي کنيد.',
 
-    topExpense && 'بزرگ ترين سرفصل هزينه ثبت شده «' + topExpense.title + '» با مبلغ ' + money(topExpense.amount) + ' تومان است. سهم آن را نسبت به فروش و فاکتورهاي مالي بررسي کنيد.',
+    topExpense && 'بزرگ ترين سرفصل هزينه ثبت شده «' + topExpense.title + '» با مبلغ ' + money(topExpense.amount) + ' ریال است. سهم آن را نسبت به فروش و فاکتورهاي مالي بررسي کنيد.',
 
-    unassignedChecks > 0 && money(unassignedChecks) + ' تومان چک دريافتي هنوز واگذار يا وصول نشده است. تعيين تکليف اين اسناد مي تواند فشار نقدينگي را کم کند.',
+    unassignedChecks > 0 && money(unassignedChecks) + ' ریال چک دريافتي هنوز واگذار يا وصول نشده است. تعيين تکليف اين اسناد مي تواند فشار نقدينگي را کم کند.',
 
-    assignedDebt > 0 && money(assignedDebt) + ' تومان چک دريافتني به اشخاص ثالث واگذار شده و در مانده بدهي آن اشخاص لحاظ شده است. گزارش اشخاص واگذارگيرنده را کنترل کنيد.',
+    assignedDebt > 0 && money(assignedDebt) + ' ریال چک دريافتني به اشخاص ثالث واگذار شده و در مانده بدهي آن اشخاص لحاظ شده است. گزارش اشخاص واگذارگيرنده را کنترل کنيد.',
 
-    totalDebt > 0 && 'مانده بدهي مشتريان و واگذاري ها ' + money(totalDebt) + ' تومان است. مشتريان با مانده بالا و بدون چک معتبر بايد در وضعيت کنترل اعتبار قرار بگيرند.',
+    totalDebt > 0 && 'مانده بدهي مشتريان و واگذاري ها ' + money(totalDebt) + ' ریال است. مشتريان با مانده بالا و بدون چک معتبر بايد در وضعيت کنترل اعتبار قرار بگيرند.',
 
     data.invoices.length > finance.invoices.length && num(data.invoices.length - finance.invoices.length) + ' فاکتور عملياتي هنوز ثبت مالي نشده اند؛ تا ثبت نشوند سود، مانده و اعتبارسنجي کامل واقعي نيست.',
 
@@ -6382,7 +6384,7 @@ function AdvisorPage({ finance }) {
 
     const forecastHtml = '<h2>پيش بيني هزينه ها</h2><table><thead><tr><th>عنوان</th><th>ميانگين ماهانه</th><th>افق ماه</th><th>مبلغ پيش بيني</th></tr></thead><tbody>' + forecastBody + '</tbody></table>';
 
-    const html = '<p>امتیاز سلامت کسب‌وکار: ' + num(healthScore) + ' از ۱۰۰ (' + healthLabel + ')</p><p>کامل بودن داده‌ها: ' + num(dataCompleteness) + '٪</p><p>افق بررسي: ' + num(months) + ' ماه</p><p>شکاف نقدينگي پس از پيش بيني هزينه: ' + money(liquidityGap) + ' تومان</p><ul>' + advices.map(a => '<li>' + a + '</li>').join('') + '</ul>' + forecastHtml;
+    const html = '<p>امتیاز سلامت کسب‌وکار: ' + num(healthScore) + ' از ۱۰۰ (' + healthLabel + ')</p><p>کامل بودن داده‌ها: ' + num(dataCompleteness) + '٪</p><p>افق بررسي: ' + num(months) + ' ماه</p><p>شکاف نقدينگي پس از پيش بيني هزينه: ' + money(liquidityGap) + ' ریال</p><ul>' + advices.map(a => '<li>' + a + '</li>').join('') + '</ul>' + forecastHtml;
 
     printSection('گزارش تحلیل و مشاور هوشمند نساجی', html);
 
@@ -6410,7 +6412,7 @@ function AdvisorPage({ finance }) {
         </div>}
       </Card>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4"><Field label="امتیاز سلامت کسب‌وکار" value={num(healthScore) + ' از ۱۰۰ — ' + healthLabel} tone={healthTone} /><Field label="کامل بودن داده‌ها" value={num(dataCompleteness) + '٪'} tone={dataCompleteness >= 80 ? 'text-emerald-300' : 'text-amber-300'} /><Field label="شکاف نقدینگی با پیش‌بینی هزینه" value={money(liquidityGap) + ' تومان'} tone={liquidityGap >= 0 ? 'text-emerald-300' : 'text-red-300'} /><Field label="مانده مشتریان و واگذاری‌ها" value={money(totalDebt) + ' تومان'} tone="text-amber-300" /></div>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4"><Field label="امتیاز سلامت کسب‌وکار" value={num(healthScore) + ' از ۱۰۰ — ' + healthLabel} tone={healthTone} /><Field label="کامل بودن داده‌ها" value={num(dataCompleteness) + '٪'} tone={dataCompleteness >= 80 ? 'text-emerald-300' : 'text-amber-300'} /><Field label="شکاف نقدینگی با پیش‌بینی هزینه" value={money(liquidityGap) + ' ریال'} tone={liquidityGap >= 0 ? 'text-emerald-300' : 'text-red-300'} /><Field label="مانده مشتریان و واگذاری‌ها" value={money(totalDebt) + ' ریال'} tone="text-amber-300" /></div>
 
       <Card><div className="mb-4 flex flex-wrap items-center justify-between gap-2"><h3 className="font-bold">اقدام‌های اولویت‌دار مدیر</h3><span className="text-xs text-slate-400">از مهم‌ترین مورد به کم‌ریسک‌ترین مورد</span></div><div className="grid gap-3 md:grid-cols-2">{priorities.length ? priorities.map((item, index) => <div key={`${item.title}-${index}`} className={`rounded-lg border p-4 ${item.level === 'فوری' ? 'border-red-800 bg-red-950/60' : item.level === 'مهم' ? 'border-amber-800 bg-amber-950/50' : 'border-slate-700 bg-slate-900'}`}><div className="flex items-center justify-between gap-2"><strong className="text-slate-100">{item.title}</strong><span className="rounded-full border border-current px-2 py-1 text-xs text-slate-300">{item.level}</span></div><p className="mt-2 text-sm leading-7 text-slate-300">{item.detail}</p><p className="mt-2 text-sm font-bold leading-7 text-blue-200">{item.action}</p></div>) : <div className="rounded-lg border border-emerald-800 bg-emerald-950/50 p-4 text-sm text-emerald-100">مورد فوری پیدا نشد؛ ثبت منظم داده‌ها و مرور هفتگی گزارش ادامه پیدا کند.</div>}</div></Card>
 

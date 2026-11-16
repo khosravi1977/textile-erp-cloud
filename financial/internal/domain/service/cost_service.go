@@ -111,13 +111,13 @@ func (cs *CostService) GetProfitabilityForCompany(companyID int64, revenue value
 
 	var marginPercent float64
 	if revenue.ToRials() > 0 {
-		marginPercent = (profit.ToToman() / revenue.ToToman()) * 100
+		marginPercent = (float64(profit.ToRials()) / float64(revenue.ToRials())) * 100
 	}
 
 	return map[string]interface{}{
-		"revenue":        revenue.ToToman(),
-		"total_costs":    summary.TotalCosts.ToToman(),
-		"profit":         profit.ToToman(),
+		"revenue":        revenue.ToRials(),
+		"total_costs":    summary.TotalCosts.ToRials(),
+		"profit":         profit.ToRials(),
 		"margin_percent": fmt.Sprintf("%.1f%%", marginPercent),
 		"is_profitable":  !profit.IsNegative(),
 		"period_days":    days,

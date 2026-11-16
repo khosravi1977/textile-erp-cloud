@@ -349,7 +349,7 @@ func validatePayments(id, label string, total float64, payments []map[string]any
 		}
 	}
 	if !amountsEqual(total, paid) {
-		return fmt.Errorf("تسویه %s %s کامل نیست؛ مبلغ سند %.0f و جمع روش‌های تسویه %.0f تومان است", label, id, total, paid)
+		return fmt.Errorf("تسویه %s %s کامل نیست؛ مبلغ سند %.0f و جمع روش‌های تسویه %.0f ریال است", label, id, total, paid)
 	}
 	return nil
 }
@@ -755,7 +755,7 @@ func insertLedgerEntry(ctx context.Context, tx *sql.Tx, companyID, userID, branc
 		return fmt.Errorf("دوره مالی تاریخ %s بسته است و ثبت یا تغییر سند در آن مجاز نیست", entry.Date)
 	}
 	keyHash := sha256.Sum256([]byte(entry.Key))
-	externalKey := fmt.Sprintf("WS:%d:%s:%s:%s", revision, direction, hex.EncodeToString(keyHash[:8]), contentHash[:16])
+	externalKey := rialLedgerNamespace(fmt.Sprintf("WS:%d:%s:%s:%s", revision, direction, hex.EncodeToString(keyHash[:8]), contentHash[:16]), entry.SourceType)
 	var reversalOf any
 	if direction == "R" {
 		var id int64

@@ -215,17 +215,17 @@ function renderFinance() {
   const cash = valueNumber(summary.cash_balance);
 
   byId("financeMetrics").innerHTML = [
-    metricCard("موجودی بانک و صندوق", formatMoney(cash), "تومان", "مانده ثبت‌شده همه حساب‌ها", cash < 0 ? "danger" : "positive"),
-    metricCard("حاشیه ناخالص", formatMoney(margin), "تومان", "فروش منهای خرید و هزینه", margin < 0 ? "danger" : "positive"),
-    metricCard("مطالبات باز", formatMoney(summary.open_receivables), "تومان", "مبالغی که باید دریافت شود", valueNumber(summary.open_receivables) > 0 ? "warning" : ""),
-    metricCard("بدهی و پرداختنی باز", formatMoney(summary.open_payables), "تومان", "تعهدهای پرداخت‌نشده", valueNumber(summary.open_payables) > cash ? "danger" : "")
+    metricCard("موجودی بانک و صندوق", formatMoney(cash), "ریال", "مانده ثبت‌شده همه حساب‌ها", cash < 0 ? "danger" : "positive"),
+    metricCard("حاشیه ناخالص", formatMoney(margin), "ریال", "فروش منهای خرید و هزینه", margin < 0 ? "danger" : "positive"),
+    metricCard("مطالبات باز", formatMoney(summary.open_receivables), "ریال", "مبالغی که باید دریافت شود", valueNumber(summary.open_receivables) > 0 ? "warning" : ""),
+    metricCard("بدهی و پرداختنی باز", formatMoney(summary.open_payables), "ریال", "تعهدهای پرداخت‌نشده", valueNumber(summary.open_payables) > cash ? "danger" : "")
   ].join("");
 
   byId("cashFlow").innerHTML = [
     ["فروش ثبت‌شده", summary.total_sales, "sales"],
     ["خرید ثبت‌شده", summary.total_purchases, "purchase"],
     ["هزینه ثبت‌شده", summary.total_expenses, "expense"]
-  ].map(([label, value, kind]) => `<div class="flow-item ${kind}"><span>${label}</span><strong>${formatMoney(value)} <small>تومان</small></strong></div>`).join("");
+  ].map(([label, value, kind]) => `<div class="flow-item ${kind}"><span>${label}</span><strong>${formatMoney(value)} <small>ریال</small></strong></div>`).join("");
 
   byId("financeAlertCount").textContent = formatNumber(state.financialAlerts.length, true);
   byId("financeAlerts").innerHTML = state.financialAlerts.length

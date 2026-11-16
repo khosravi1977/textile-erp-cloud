@@ -265,7 +265,7 @@ func (is *InventoryService) GetStockSummaryForCompany(companyID int64) map[strin
 
 	return map[string]interface{}{
 		"total_items":  totalItems,
-		"total_value":  totalValue.ToToman(),
+		"total_value":  totalValue.ToRials(),
 		"low_stock":    lowStock,
 		"out_of_stock": outOfStock,
 		"transactions": len(txns),

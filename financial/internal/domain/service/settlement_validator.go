@@ -83,8 +83,8 @@ func (sv *SettlementValidator) ValidateSettlement(
     newDebt := currentDebt.Subtract(settlement.TotalAmount)
     if newDebt.IsGreaterThan(customerProfile.CreditLimit) {
         result.Warnings = append(result.Warnings,
-            fmt.Sprintf("After settlement, debt (%.0f) still exceeds credit limit (%.0f)",
-                newDebt.ToToman(), customerProfile.CreditLimit.ToToman()))
+            fmt.Sprintf("After settlement, debt (%d) still exceeds credit limit (%d)",
+                newDebt.ToRials(), customerProfile.CreditLimit.ToRials()))
     }
     
     return result

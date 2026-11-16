@@ -143,35 +143,6 @@ func ValidTransactionTypes() []string {
 	return types
 }
 
-// AllocationInput attaches a receipt to a document (invoice).
-type AllocationInput struct {
-	DocumentType    string `json:"document_type"`
-	DocumentID      string `json:"document_id"`
-	AllocatedAmount int64  `json:"allocated_amount"`
-}
-
-// TransactionRequest is the HesabYar / ERP posting contract.
-type TransactionRequest struct {
-	ExternalTransactionID string            `json:"external_transaction_id"`
-	IdempotencyKey        string            `json:"idempotency_key"`
-	BankAccountID         int64             `json:"bank_account_id"`
-	BankAccountName       string            `json:"bank_account_name"`
-	Direction             string            `json:"direction"`
-	Amount                int64             `json:"amount"`
-	TransactionDate       string            `json:"transaction_date"` // ISO or Jalali yyyy/mm/dd
-	TransactionTime       string            `json:"transaction_time"`
-	TransactionType       string            `json:"transaction_type"`
-	PartyID               int64             `json:"party_id"`
-	CounterAccountID      int64             `json:"counter_account_id"`
-	CounterAccountName    string            `json:"counter_account_name"`
-	InterestAmount        int64             `json:"interest_amount"`
-	Description           string            `json:"description"`
-	BankReference         string            `json:"bank_reference"`
-	Source                string            `json:"source"`
-	RawSourceReference    string            `json:"raw_source_reference"`
-	Allocations           []AllocationInput `json:"allocations"`
-}
-
 // PostResult reports the outcome of an idempotent posting attempt.
 type PostResult struct {
 	Status            string `json:"status"` // created | duplicate | needs_review
@@ -410,6 +381,11 @@ func (s *Service) PostTransaction(
 	req TransactionRequest,
 	withGL bool,
 ) (PostResult, error) {
+	var normalizeErr error
+	req, normalizeErr = NormalizeRialRequest(req)
+	if normalizeErr != nil {
+		return PostResult{}, normalizeErr
+	}
 	if err := Validate(req); err != nil {
 		return PostResult{}, err
 	}
@@ -431,15 +407,24 @@ func (s *Service) PostTransaction(
 		return PostResult{}, err
 	}
 
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended('rial-policy:' || $1::text,0))", companyID); err != nil {
+		return PostResult{}, err
+	}
 	// Idempotency: the same external id must never post twice.
-	var existingID int64
-	var existingStatus, existingPosting string
+	var existingID, existingAmount int64
+	var existingStatus, existingPosting, existingCurrency string
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, status, posting_status
+		SELECT id, status, posting_status, amount, COALESCE(currency,'')
 		FROM bank_transactions
 		WHERE company_id=$1 AND external_transaction_id=$2
-	`, companyID, req.ExternalTransactionID).Scan(&existingID, &existingStatus, &existingPosting)
+	`, companyID, req.ExternalTransactionID).Scan(&existingID, &existingStatus, &existingPosting, &existingAmount, &existingCurrency)
 	if err == nil {
+		if existingCurrency != "IRR" {
+			return PostResult{}, errors.New("currency migration required before retrying this transaction")
+		}
+		if existingAmount != req.Amount {
+			return PostResult{}, errors.New("duplicate transaction id has a different rial amount")
+		}
 		return PostResult{
 			Status: "duplicate", BankTransactionID: existingID,
 			PostingStatus: existingPosting,
@@ -508,10 +493,10 @@ func (s *Service) PostTransaction(
 			transaction_date, transaction_time, transaction_type,
 			party_id, counter_account_id,
 			interest_amount, description, bank_reference,
-			source, raw_source_reference,
+			source, raw_source_reference, currency, source_currency, source_amount,
 			status, posting_status, journal_voucher_id, created_by
 		)
-		VALUES($1,$2,NULLIF($3,''),$4,$5,$6,$7,NULLIF($8,''),$9,NULLIF($10,0),NULLIF($11,0),NULLIF($12,0),$13,NULLIF($14,''),$15,NULLIF($16,''),'ACTIVE',$17,NULLIF($18,0),$19)
+		VALUES($1,$2,NULLIF($3,''),$4,$5,$6,$7,NULLIF($8,''),$9,NULLIF($10,0),NULLIF($11,0),NULLIF($12,0),$13,NULLIF($14,''),$15,NULLIF($16,''),'IRR',$20,$21,'ACTIVE',$17,NULLIF($18,0),$19)
 		RETURNING id
 	`, companyID, req.ExternalTransactionID, req.IdempotencyKey,
 		req.BankAccountID, req.Direction, req.Amount,
@@ -519,7 +504,7 @@ func (s *Service) PostTransaction(
 		req.PartyID, counterAccountID,
 		req.InterestAmount, truncate(req.Description, 400), truncate(req.BankReference, 120),
 		req.Source, truncate(req.RawSourceReference, 200),
-		postingStatus, voucherID, nullableUser(userID),
+		postingStatus, voucherID, nullableUser(userID), req.SourceCurrency, req.SourceAmount,
 	).Scan(&transactionID)
 	if err != nil {
 		return PostResult{}, err
@@ -572,6 +557,9 @@ func (s *Service) ReverseTransaction(ctx context.Context, companyID, userID, tra
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, "SELECT set_config('app.company_id', $1, false)", strconv.FormatInt(companyID, 10)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended('rial-policy:' || $1::text,0))", companyID); err != nil {
 		return err
 	}
 	var externalID, txnType, direction, status string
@@ -741,6 +729,7 @@ func (s *Service) PartyLedger(ctx context.Context, companyID, partyID int64) ([]
 
 // BankTransaction is the list payload for the bank & cash ledger view.
 type BankTransaction struct {
+	Currency        string `json:"currency"`
 	ID              int64  `json:"id"`
 	ExternalID      string `json:"external_transaction_id"`
 	TransactionType string `json:"transaction_type"`
@@ -767,7 +756,7 @@ func (s *Service) ListTransactions(ctx context.Context, companyID int64, limit i
 			SELECT t.id, t.external_transaction_id, t.transaction_type, t.direction,
 			       t.amount, t.transaction_date::text, t.bank_account_id,
 			       COALESCE(a.name,''), COALESCE(t.party_id,0), COALESCE(p.name,''),
-			       COALESCE(t.description,''), t.source, t.status, t.posting_status
+			       COALESCE(t.description,''), t.source, t.status, t.posting_status, COALESCE(t.currency,'')
 			FROM bank_transactions t
 			LEFT JOIN bank_accounts a ON a.id=t.bank_account_id
 			LEFT JOIN parties p ON p.id=t.party_id
@@ -785,8 +774,11 @@ func (s *Service) ListTransactions(ctx context.Context, companyID int64, limit i
 			if err := rows.Scan(&item.ID, &item.ExternalID, &item.TransactionType, &item.Direction,
 				&item.Amount, &item.TransactionDate, &item.BankAccountID,
 				&item.BankAccountName, &item.PartyID, &item.PartyName,
-				&item.Description, &item.Source, &item.Status, &item.PostingStatus); err != nil {
+				&item.Description, &item.Source, &item.Status, &item.PostingStatus, &item.Currency); err != nil {
 				return nil, err
+			}
+			if item.Currency != "IRR" {
+				return nil, errors.New("rial currency migration required")
 			}
 			result = append(result, item)
 		}

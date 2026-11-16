@@ -108,7 +108,7 @@ func mergeHesabyarTransactionsIntoWorkspaceState(state map[string]any, transacti
 		now := syncedAt.Format(time.RFC3339)
 		mobileRow := map[string]any{
 			"id": "sms-" + externalID, "externalId": externalID, "title": tx.Description,
-			"amount": tx.Amount, "direction": direction, "transactionType": legacyType,
+			"amount": tx.Amount, "currency": "IRR", "direction": direction, "transactionType": legacyType,
 			"transactionTypeExplicit": true, "accountId": accountID, "group": group,
 			"subgroup": subgroup, "counterparty": counterparty, "bank": tx.BankAccountName,
 			"trackingNo": trackingNo, "occurredAt": date, "occurredJalali": occurredJalali,
@@ -121,7 +121,7 @@ func mergeHesabyarTransactionsIntoWorkspaceState(state map[string]any, transacti
 		movement := map[string]any{
 			"id": "mov-sms-" + externalID, "accountId": accountID, "date": date,
 			"occurredJalali": occurredJalali, "direction": direction, "transactionType": legacyType,
-			"amount": tx.Amount, "counterparty": counterparty, "trackingNo": trackingNo,
+			"amount": tx.Amount, "currency": "IRR", "counterparty": counterparty, "trackingNo": trackingNo,
 			"description": tx.Description, "sourceMobileTransaction": externalID,
 			"source_type": "mobile_sms", "sourceId": externalID, "bank": tx.BankAccountName,
 			"group": group, "subgroup": subgroup, "typedType": typedType, "typedCoreBackfill": true,
@@ -136,7 +136,7 @@ func mergeHesabyarTransactionsIntoWorkspaceState(state map[string]any, transacti
 			expenseID := "exp-sms-" + externalID
 			expense := map[string]any{
 				"id": expenseID, "date": date, "occurredJalali": occurredJalali,
-				"group": group, "subgroup": subgroup, "amount": tx.Amount,
+				"group": group, "subgroup": subgroup, "amount": tx.Amount, "currency": "IRR",
 				"description": tx.Description, "accountId": accountID, "counterparty": counterparty,
 				"source_type": "mobile_sms", "sourceId": externalID, "bank": tx.BankAccountName,
 				"typedType": typedType, "typedCoreBackfill": true,

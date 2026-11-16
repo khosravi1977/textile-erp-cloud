@@ -18,7 +18,7 @@ test('historical pricing excludes future, consignment, other currency/unit and c
   const suggestion = suggestIncomingPrice({ incomingInvoices: [
     { ...base, id: 'valid' }, { ...base, id: 'future', date: '2027-01-01', unitPrice: 900 },
     { ...base, id: 'consigned', nonFinancial: true, unitPrice: 800 },
-    { ...base, id: 'rial', currency: 'IRR', unitPrice: 1200 },
+    { ...base, id: 'toman', currency: 'IRT', unitPrice: 1200 },
     { ...base, id: 'unit', unit: 'meter', unitPrice: 500 },
     { ...base, id: 'chelle', source_type: 'operational_chelle_in', unitPrice: 300 },
   ] }, { customer: 'علی کریمی', itemName: 'نخ 20', date: '1405/06/10' });

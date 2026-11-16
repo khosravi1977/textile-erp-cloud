@@ -19,6 +19,10 @@ func (h *APIHandler) GetAccountingReports(w http.ResponseWriter, r *http.Request
 		return
 	}
 	companyID := requestctx.CompanyID(r.Context())
+	if _, err := loadWorkspace(r, companyID); err != nil {
+		RespondError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
 	result, err := postgres.WithCompanySession(r.Context(), postgres.DB, companyID, func(q postgres.SessionQueryable) (map[string]any, error) {
 		trialBalance, err := queryAccountingRows(r, q, `
 			SELECT a.code, a.name, a.type,

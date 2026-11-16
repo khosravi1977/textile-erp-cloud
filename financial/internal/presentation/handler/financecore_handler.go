@@ -8,6 +8,7 @@ import (
 
 	"github.com/erpsystem/textile-erp/internal/application/financecore"
 	"github.com/erpsystem/textile-erp/internal/infrastructure/persistence/postgres"
+	"github.com/erpsystem/textile-erp/internal/platform/monetary"
 	"github.com/erpsystem/textile-erp/internal/platform/requestctx"
 )
 
@@ -96,6 +97,23 @@ func (h *APIHandler) MobileTypedTransaction(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	req := payload.TransactionRequest
+	if req.Currency == "" {
+		req.Currency = "IRT"
+	}
+	var moneyErr error
+	req, moneyErr = financecore.NormalizeRialRequest(req)
+	if moneyErr != nil {
+		RespondError(w, http.StatusBadRequest, moneyErr.Error())
+		return
+	}
+	if payload.ReportedBalance != nil {
+		value, err := monetary.ToRials(*payload.ReportedBalance, req.SourceCurrency)
+		if err != nil {
+			RespondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		payload.ReportedBalance = &value
+	}
 	externalID := strings.TrimSpace(req.ExternalTransactionID)
 	typedType := strings.ToUpper(strings.TrimSpace(req.TransactionType))
 	if externalID == "" || req.Amount <= 0 || typedType == "" {
@@ -141,17 +159,18 @@ func (h *APIHandler) MobileTypedTransaction(w http.ResponseWriter, r *http.Reque
 			BankAccountName:       strings.TrimSpace(req.BankAccountName),
 			Direction:             strings.ToUpper(strings.TrimSpace(req.Direction)),
 			Amount:                req.Amount,
-			TransactionDate:       strings.TrimSpace(req.TransactionDate),
-			TransactionTime:       strings.TrimSpace(req.TransactionTime),
-			TransactionType:       typedType,
-			PartyID:               partyID,
-			CounterAccountID:      req.CounterAccountID,
-			CounterAccountName:    strings.TrimSpace(req.CounterAccountName),
-			InterestAmount:        req.InterestAmount,
-			Description:           strings.TrimSpace(req.Description),
-			BankReference:         strings.TrimSpace(req.BankReference),
-			Source:                financecore.SourceHesabyar,
-			RawSourceReference:    partyName,
+			Currency:              "IRR", SourceCurrency: req.SourceCurrency, SourceAmount: req.SourceAmount,
+			TransactionDate:    strings.TrimSpace(req.TransactionDate),
+			TransactionTime:    strings.TrimSpace(req.TransactionTime),
+			TransactionType:    typedType,
+			PartyID:            partyID,
+			CounterAccountID:   req.CounterAccountID,
+			CounterAccountName: strings.TrimSpace(req.CounterAccountName),
+			InterestAmount:     req.InterestAmount,
+			Description:        strings.TrimSpace(req.Description),
+			BankReference:      strings.TrimSpace(req.BankReference),
+			Source:             financecore.SourceHesabyar,
+			RawSourceReference: partyName,
 		}
 		result, err := service.PostTransaction(r.Context(), companyID, requestctx.UserID(r.Context()), typed, false)
 		if err != nil {
@@ -177,6 +196,7 @@ func (h *APIHandler) MobileTypedTransaction(w http.ResponseWriter, r *http.Reque
 		Description:     strings.TrimSpace(req.Description),
 		OccurredJalali:  strings.TrimSpace(req.TransactionDate),
 		Amount:          req.Amount,
+		Currency:        "IRR", SourceCurrency: req.SourceCurrency, SourceAmount: req.SourceAmount,
 		TrackingNo:      strings.TrimSpace(req.BankReference),
 		ReportedBalance: payload.ReportedBalance,
 	}
