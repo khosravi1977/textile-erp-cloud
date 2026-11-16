@@ -89,6 +89,9 @@ jobs:
         working-directory: financial
       - name: Kustomize render
         run: |
-          sudo snap install kubectl --classic
-          kubectl kustomize deploy/k8s
+          curl --fail --silent --show-error --location --retry 3 --max-time 90 \
+            https://dl.k8s.io/release/v1.30.14/bin/linux/amd64/kubectl -o "$RUNNER_TEMP/kubectl"
+          echo "7ccac981ece0098284d8961973295f5124d78eab7b89ba5023f35591baa16271  $RUNNER_TEMP/kubectl" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/kubectl"
+          "$RUNNER_TEMP/kubectl" kustomize deploy/k8s
         working-directory: financial
