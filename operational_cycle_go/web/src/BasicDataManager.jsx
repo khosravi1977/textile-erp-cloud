@@ -37,7 +37,7 @@ export default function BasicDataManager({ basicDefs, lookups, refresh, notify, 
   };
 
   const remove = async (kind, item) => {
-    if (!window.confirm(`«${item.name}» از فهرست حذف شود؟ سوابق قبلی تغییر نمی‌کنند و اگر رکوردی به این گزینه وابسته باشد، حذف انجام نمی‌شود.`)) return;
+    if (!window.confirm(`«${item.name}» از فهرست حذف شود؟ این گزینه بایگانی می‌شود و سوابق قبلی حفظ می‌شوند.`)) return;
     try {
       await request(`/basic/${kind}`, { method: 'DELETE', body: { id: Number(item.id) } });
       await refresh();
