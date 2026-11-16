@@ -2374,7 +2374,7 @@ function OutInvoice({ lookups, notify, refreshLookups }) {
 
       <h2>لیست فاکتورهای خروج</h2>
 
-      <Filters filters={[['invoice_no','شماره فاکتور'],['mosh','مشتری'],['kala','کالا'],['sanad','شماره سند']]} rows={rows} values={filters} setValues={setFilters} onPrint={() => printReport('لیست فاکتورهای خروج', visible, invoiceCols)} onExcel={() => exportExcel('لیست فاکتورهای خروج', visible, invoiceCols)} />
+      <Filters filters={[['invoice_no','شماره فاکتور'],['mosh','مشتری'],['kala','کالا'],['sanad','شماره سند']]} rows={rows} values={filters} setValues={setFilters} onPrint={() => printReport('لیست فاکتورهای خروج', visible, invoiceCols)} onExcel={async () => { try { exportExcel('لیست فاکتورهای خروج', filterRows(await api('/out-invoice?all=1'), filters), invoiceCols); } catch (err) { notify(err?.message || 'دریافت اطلاعات کامل انجام نشد'); } }} />
 
       <Table rows={visible} columns={invoiceCols} onEdit={edit} onDelete={del} />
 
@@ -2394,7 +2394,7 @@ function ReportsPro() {
 
   useEffect(() => {
 
-    Promise.all([api('/nakh-khor'), api('/out-invoice'), api('/expenses')]).then(([yarnOut, invoices, expenses]) => setData({ yarnOut, invoices, expenses })).catch(() => {});
+    Promise.all([api('/nakh-khor?all=1'), api('/out-invoice?all=1'), api('/expenses?all=1')]).then(([yarnOut, invoices, expenses]) => setData({ yarnOut, invoices, expenses })).catch(() => {});
 
   }, []);
 
@@ -3222,7 +3222,7 @@ function OutInvoicePro({ lookups, notify, refreshLookups }) {
 
         <button onClick={() => printReport('گزارش فاکتور خروج', visible, invoiceCols)}>گزارش فاکتورها</button>
 
-        <button onClick={() => exportExcel('گزارش فاکتور خروج', visible, invoiceCols)}>اکسل فاکتورها</button>
+        <button onClick={async () => { try { exportExcel('گزارش فاکتور خروج', filterRows(await api('/out-invoice?all=1'), filters), invoiceCols); } catch (err) { notify(err?.message || 'دریافت اطلاعات کامل انجام نشد'); } }}>اکسل فاکتورها</button>
 
         <button className="primary" onClick={save}>اتمام فاکتور و ذخیره</button>
 
@@ -3236,7 +3236,7 @@ function OutInvoicePro({ lookups, notify, refreshLookups }) {
 
       <h2>فاکتورهای ثبت شده قبلی</h2>
 
-      <Filters filters={[['invoice_no','شماره فاکتور'],['mosh','مشتری'],['kala','نام کالا'],['sanad','شماره سند']]} rows={rows} values={filters} setValues={setFilters} onPrint={() => printReport('فاکتورهای ثبت شده قبلی', visible, invoiceCols)} onExcel={() => exportExcel('فاکتورهای ثبت شده قبلی', visible, invoiceCols)} />
+      <Filters filters={[['invoice_no','شماره فاکتور'],['mosh','مشتری'],['kala','نام کالا'],['sanad','شماره سند']]} rows={rows} values={filters} setValues={setFilters} onPrint={() => printReport('فاکتورهای ثبت شده قبلی', visible, invoiceCols)} onExcel={async () => { try { exportExcel('فاکتورهای ثبت شده قبلی', filterRows(await api('/out-invoice?all=1'), filters), invoiceCols); } catch (err) { notify(err?.message || 'دریافت اطلاعات کامل انجام نشد'); } }} />
 
       <Table rows={visible} columns={invoiceCols} onEdit={edit} onDelete={del} />
 
@@ -3276,7 +3276,7 @@ function ReportsPro2() {
 
   useEffect(() => {
 
-    Promise.all([api('/nakh-khor'), api('/out-invoice'), api('/expenses'), api('/management-report')]).then(([yarnOut, invoices, expenses, management]) => setData({ yarnOut, invoices, expenses, management })).catch(() => {});
+    Promise.all([api('/nakh-khor?all=1'), api('/out-invoice?all=1'), api('/expenses?all=1'), api('/management-report?all=1')]).then(([yarnOut, invoices, expenses, management]) => setData({ yarnOut, invoices, expenses, management })).catch(() => {});
 
   }, []);
 
@@ -4177,7 +4177,7 @@ function CrudPage({ title, endpoint, empty, renderForm, columns, notify, afterSa
 
       <h2>لیست {title}</h2>
 
-      <Filters filters={filters} rows={items} values={filterValues} setValues={setFilterValues} onPrint={() => printReport(`لیست ${title}`, visible, columns)} onExcel={() => exportExcel(`لیست ${title}`, visible, columns)} />
+      <Filters filters={filters} rows={items} values={filterValues} setValues={setFilterValues} onPrint={() => printReport(`لیست ${title}`, visible, columns)} onExcel={async () => { try { exportExcel(`لیست ${title}`, filterRows(await api(`${endpoint}${endpoint.includes("?") ? "&" : "?"}all=1`), filterValues), columns); } catch (err) { notify(err?.message || "دریافت اطلاعات کامل برای خروجی اکسل انجام نشد"); } }} />
 
       {loading ? <div className="empty">در حال بارگذاری...</div> : <Table rows={visible} columns={columns} onEdit={edit} onDelete={del} />}
 

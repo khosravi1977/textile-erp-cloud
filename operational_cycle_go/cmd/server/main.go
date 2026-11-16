@@ -1651,7 +1651,7 @@ func (a *app) basic(w http.ResponseWriter, r *http.Request) {
 func (a *app) nakhVor(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.query(`SELECT nv.id_nakh_vor, nv.tarikh_nakh_vor, nv.hambaft_nakh_vor, nv.w_vor_nakh_vor, nv.moshname_nakh_vor, nv.nakh_name_nakh_vor, COALESCE(m.id_mosh_name,0), COALESCE(n.id_nakh_name,0) FROM nakh_vor nv LEFT JOIN mosh_name m ON m.name_mosh=nv.moshname_nakh_vor LEFT JOIN nakh_name n ON n.name_nakh_name=nv.nakh_name_nakh_vor ORDER BY nv.id_nakh_vor DESC LIMIT 200`)
+		rows, err := a.query(exportListQuery(r, `SELECT nv.id_nakh_vor, nv.tarikh_nakh_vor, nv.hambaft_nakh_vor, nv.w_vor_nakh_vor, nv.moshname_nakh_vor, nv.nakh_name_nakh_vor, COALESCE(m.id_mosh_name,0), COALESCE(n.id_nakh_name,0) FROM nakh_vor nv LEFT JOIN mosh_name m ON m.name_mosh=nv.moshname_nakh_vor LEFT JOIN nakh_name n ON n.name_nakh_name=nv.nakh_name_nakh_vor ORDER BY nv.id_nakh_vor DESC LIMIT 200`))
 		writeRows(w, rows, err, []string{"id", "tarikh", "hambaft", "weight", "mosh", "nakh", "mosh_id", "nakh_id"})
 	case http.MethodPost:
 		var p struct {
@@ -1737,7 +1737,7 @@ func (a *app) warperYarnAmounts(warper, owner, hambaft, yarn string, excludeChel
 func (a *app) chelle(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.query(`SELECT c.id_chelle, c.tarikh_chelle, c.shom_chelle, c.nakh_chelle, c.w_chelle, c.pich_chelle, c.mosh_chelle, c.hambaft_chelle, c.codnavard_chelle, COALESCE(c.machin_chelle,''), COALESCE(n.id_nakh_name,0), COALESCE(cp.id_chellepich,0), COALESCE(m.id_mosh_name,0), COALESCE(k.id_kod_navard,0) FROM chelle c LEFT JOIN nakh_name n ON n.name_nakh_name=c.nakh_chelle LEFT JOIN chellepich cp ON cp.name_chellepich=c.pich_chelle LEFT JOIN mosh_name m ON m.name_mosh=c.mosh_chelle LEFT JOIN kod_navard k ON k.kod_kod_navard=c.codnavard_chelle ORDER BY c.id_chelle DESC LIMIT 200`)
+		rows, err := a.query(exportListQuery(r, `SELECT c.id_chelle, c.tarikh_chelle, c.shom_chelle, c.nakh_chelle, c.w_chelle, c.pich_chelle, c.mosh_chelle, c.hambaft_chelle, c.codnavard_chelle, COALESCE(c.machin_chelle,''), COALESCE(n.id_nakh_name,0), COALESCE(cp.id_chellepich,0), COALESCE(m.id_mosh_name,0), COALESCE(k.id_kod_navard,0) FROM chelle c LEFT JOIN nakh_name n ON n.name_nakh_name=c.nakh_chelle LEFT JOIN chellepich cp ON cp.name_chellepich=c.pich_chelle LEFT JOIN mosh_name m ON m.name_mosh=c.mosh_chelle LEFT JOIN kod_navard k ON k.kod_kod_navard=c.codnavard_chelle ORDER BY c.id_chelle DESC LIMIT 200`))
 		writeRows(w, rows, err, []string{"id", "tarikh", "shom_chelle", "nakh", "weight", "pich", "mosh", "hambaft", "kod_navard", "machine", "nakh_id", "pich_id", "mosh_id", "kod_navard_id"})
 	case http.MethodPost:
 		var p struct {
@@ -1824,7 +1824,7 @@ func (a *app) gere(w http.ResponseWriter, r *http.Request) {
 			writeRows(w, rows, err, []string{"id", "shom_chelle", "weight", "hambaft"})
 			return
 		}
-		rows, err := a.query(`SELECT g.id_gere, g.tarikh_gere, g.name_gere, g.shom_chelle_gere, g.machin_gere, COALESCE(gr.id_gerezan,0), COALESCE(g.chelle_id_gere,0) FROM gere g LEFT JOIN gerezan gr ON gr.name_gerezan=g.name_gere ORDER BY COALESCE(g.tarikh_gere,'') DESC, g.id_gere DESC LIMIT 200`)
+		rows, err := a.query(exportListQuery(r, `SELECT g.id_gere, g.tarikh_gere, g.name_gere, g.shom_chelle_gere, g.machin_gere, COALESCE(gr.id_gerezan,0), COALESCE(g.chelle_id_gere,0) FROM gere g LEFT JOIN gerezan gr ON gr.name_gerezan=g.name_gere ORDER BY COALESCE(g.tarikh_gere,'') DESC, g.id_gere DESC LIMIT 200`))
 		writeRows(w, rows, err, []string{"id", "tarikh", "name_gere", "shom_chelle", "machine", "gerezan_id", "chelle_id"})
 	case http.MethodPost:
 		var p struct {
@@ -1926,7 +1926,7 @@ func (a *app) nakhSalon(w http.ResponseWriter, r *http.Request) {
 			writeRows(w, rows, err, []string{"id", "shom_chelle", "machine", "weight", "hambaft", "mosh_name", "nakh_name"})
 			return
 		}
-		rows, err := a.query(`SELECT ns.id_nakh_salon, ns.tarikh_nakh_salon, ns.shom_machin_nakh_salon, ns.ham_nakh_salon, ns.w_nakh_salon, ns.shom_chelle_nakh_salon, ns.mosh_name_nakh_salon, ns.vor_khor_nakh_salon, COALESCE(ns.chelle_id_nakh_salon,0), COALESCE(ns.nakh_name_nakh_salon,'') FROM nakh_salon ns ORDER BY ns.id_nakh_salon DESC LIMIT 200`)
+		rows, err := a.query(exportListQuery(r, `SELECT ns.id_nakh_salon, ns.tarikh_nakh_salon, ns.shom_machin_nakh_salon, ns.ham_nakh_salon, ns.w_nakh_salon, ns.shom_chelle_nakh_salon, ns.mosh_name_nakh_salon, ns.vor_khor_nakh_salon, COALESCE(ns.chelle_id_nakh_salon,0), COALESCE(ns.nakh_name_nakh_salon,'') FROM nakh_salon ns ORDER BY ns.id_nakh_salon DESC LIMIT 200`))
 		writeRows(w, rows, err, []string{"id", "tarikh", "machine", "ham_nakh", "weight", "shom_chelle", "mosh_name", "vor_khor", "chelle_id", "nakh_name"})
 	case http.MethodPost:
 		var p struct {
@@ -2024,7 +2024,7 @@ func (a *app) nakhKhor(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, a.yarnInventory())
 			return
 		}
-		rows, err := a.query(`SELECT id_nakh_khor, tarikh_nakh_khor, hambaft_nakh_khor, ABS(COALESCE(w_vor_nakh_khor,0)), moshname_nakh_khor, nakh_name_nakh_khor, COALESCE(NULLIF(owner_mosh_nakh_khor,''),moshname_nakh_khor), COALESCE(destination_type_nakh_khor,'warper') FROM nakh_khor ORDER BY id_nakh_khor DESC LIMIT 300`)
+		rows, err := a.query(exportListQuery(r, `SELECT id_nakh_khor, tarikh_nakh_khor, hambaft_nakh_khor, ABS(COALESCE(w_vor_nakh_khor,0)), moshname_nakh_khor, nakh_name_nakh_khor, COALESCE(NULLIF(owner_mosh_nakh_khor,''),moshname_nakh_khor), COALESCE(destination_type_nakh_khor,'warper') FROM nakh_khor ORDER BY id_nakh_khor DESC LIMIT 300`))
 		writeRows(w, rows, err, []string{"id", "tarikh", "hambaft", "weight", "mosh", "nakh", "owner_mosh", "destination_type"})
 	case http.MethodPost:
 		var p struct {
@@ -2087,7 +2087,7 @@ func (a *app) nakhKhorByID(w http.ResponseWriter, r *http.Request) {
 func (a *app) emptyBeamOut(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.query(`
+		rows, err := a.query(exportListQuery(r, `
 			SELECT e.id_empty_beam_out, COALESCE(e.tarikh_empty_beam_out,''), COALESCE(e.kod_navard,''),
 			       COALESCE(e.chellepich_name,''), COALESCE(e.description,''),
 			       COALESCE(k.id_kod_navard,0), COALESCE(cp.id_chellepich,0),
@@ -2102,7 +2102,7 @@ func (a *app) emptyBeamOut(w http.ResponseWriter, r *http.Request) {
 			FROM empty_beam_out e
 			LEFT JOIN kod_navard k ON k.kod_kod_navard=e.kod_navard
 			LEFT JOIN chellepich cp ON cp.name_chellepich=e.chellepich_name
-			ORDER BY e.id_empty_beam_out DESC LIMIT 300`)
+			ORDER BY e.id_empty_beam_out DESC LIMIT 300`))
 		if err != nil {
 			fail(w, 500, err.Error())
 			return
@@ -2605,7 +2605,7 @@ func (a *app) salon(w http.ResponseWriter, r *http.Request) {
 func (a *app) outInvoice(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		a.writeOutInvoices(w, 200)
+		a.writeOutInvoices(w, r.URL.Query().Get("all") == "1")
 	case http.MethodPost:
 		var p struct {
 			InvoiceNo           string   `json:"invoice_no"`
@@ -3249,7 +3249,7 @@ func (taghe tagheData) record() record {
 func (a *app) expenses(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.query(`SELECT h.id_h_rozmare, h.tarikh_h_rozmare, h.onvan_hazine, h.operator_name, COALESCE(h.weaver_name,''), h.mablagh_h_rozmare, COALESCE(h.tozih_h_rozmare,''), COALESCE(h.shomare_sanad,''), COALESCE(c.id_hazine,0), COALESCE(o.id_operator,0), COALESCE(wv.id_weaver,0), COALESCE(h.pay_account,''), COALESCE(h.pay_account_name,'') FROM h_rozmare h LEFT JOIN hazine c ON c.onvan_hazine=h.onvan_hazine LEFT JOIN operator_name o ON o.name_operator=h.operator_name LEFT JOIN weaver_name wv ON wv.name_weaver=h.weaver_name ORDER BY h.id_h_rozmare DESC LIMIT 300`)
+		rows, err := a.query(exportListQuery(r, `SELECT h.id_h_rozmare, h.tarikh_h_rozmare, h.onvan_hazine, h.operator_name, COALESCE(h.weaver_name,''), h.mablagh_h_rozmare, COALESCE(h.tozih_h_rozmare,''), COALESCE(h.shomare_sanad,''), COALESCE(c.id_hazine,0), COALESCE(o.id_operator,0), COALESCE(wv.id_weaver,0), COALESCE(h.pay_account,''), COALESCE(h.pay_account_name,'') FROM h_rozmare h LEFT JOIN hazine c ON c.onvan_hazine=h.onvan_hazine LEFT JOIN operator_name o ON o.name_operator=h.operator_name LEFT JOIN weaver_name wv ON wv.name_weaver=h.weaver_name ORDER BY h.id_h_rozmare DESC LIMIT 300`))
 		writeRows(w, rows, err, []string{"id", "tarikh", "onvan_hazine", "operator_name", "weaver_name", "mablagh", "tozih", "shomare_sanad", "hazine_id", "operator_id", "weaver_id", "pay_account", "pay_account_name"})
 	case http.MethodPost:
 		var p struct {
@@ -3421,7 +3421,7 @@ func (a *app) expenseByID(w http.ResponseWriter, r *http.Request) {
 func (a *app) productionWaste(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.query(`SELECT id_waste,COALESCE(waste_date,''),machine,shom_chelle,waste_type,weight,COALESCE(reason,''),COALESCE(operator_name,''),COALESCE(description,''),COALESCE(chelle_id_waste,0),COALESCE(corrective_action,'') FROM production_waste ORDER BY id_waste DESC LIMIT 500`)
+		rows, err := a.query(exportListQuery(r, `SELECT id_waste,COALESCE(waste_date,''),machine,shom_chelle,waste_type,weight,COALESCE(reason,''),COALESCE(operator_name,''),COALESCE(description,''),COALESCE(chelle_id_waste,0),COALESCE(corrective_action,'') FROM production_waste ORDER BY id_waste DESC LIMIT 500`))
 		writeRows(w, rows, err, []string{"id", "tarikh", "machine", "shom_chelle", "waste_type", "weight", "reason", "operator_name", "description", "chelle_id", "corrective_action"})
 	case http.MethodPost:
 		var p struct {
@@ -5209,8 +5209,13 @@ func (a *app) warperYarnBalance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) latestOutInvoices(limit int) []record {
-	rows, err := a.query(`SELECT shom_f_khor, MIN(tarikh_f_khor), MIN(mosh_f_khor), MIN(shomare_sanad), MIN(COALESCE(kala_name_f_khor,'')), COUNT(*)
-		FROM f_khor GROUP BY shom_f_khor ORDER BY MAX(id_f_khor) DESC LIMIT ?`, limit)
+	query := `SELECT shom_f_khor, MIN(tarikh_f_khor), MIN(mosh_f_khor), MIN(shomare_sanad), MIN(COALESCE(kala_name_f_khor,'')), COUNT(*) FROM f_khor GROUP BY shom_f_khor ORDER BY MAX(id_f_khor) DESC`
+	args := []any{}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := a.query(query, args...)
 	if err != nil {
 		return []record{}
 	}
@@ -5387,8 +5392,8 @@ func (a *app) operationalDataQuality() []record {
 	return out
 }
 
-func (a *app) productionWasteRows() []record {
-	rows, err := a.query(`SELECT id_waste,COALESCE(waste_date,''),machine,shom_chelle,waste_type,weight,COALESCE(reason,''),COALESCE(operator_name,''),COALESCE(description,''),COALESCE(chelle_id_waste,0),COALESCE(corrective_action,'') FROM production_waste ORDER BY id_waste DESC LIMIT 500`)
+func (a *app) productionWasteRows(r *http.Request) []record {
+	rows, err := a.query(exportListQuery(r, `SELECT id_waste,COALESCE(waste_date,''),machine,shom_chelle,waste_type,weight,COALESCE(reason,''),COALESCE(operator_name,''),COALESCE(description,''),COALESCE(chelle_id_waste,0),COALESCE(corrective_action,'') FROM production_waste ORDER BY id_waste DESC LIMIT 500`))
 	if err != nil {
 		return []record{}
 	}
@@ -5424,9 +5429,9 @@ func (a *app) managementReport(w http.ResponseWriter, r *http.Request) {
 		"yarn_inventory":   a.yarnInventory(),
 		"warper_balances":  a.warperYarnBalances(),
 		"machines":         machines,
-		"waste":            a.productionWasteRows(),
+		"waste":            a.productionWasteRows(r),
 		"stock":            a.stockSummary(),
-		"out_invoices":     a.latestOutInvoices(200),
+		"out_invoices":     a.latestOutInvoices(reportInvoiceLimit(r)),
 		"notifications":    a.notifications(),
 		"data_quality":     a.operationalDataQuality(),
 	})
@@ -5449,14 +5454,18 @@ func (a *app) tagheInfo(w http.ResponseWriter, code string) {
 	writeJSON(w, record{"success": true, "id": id, "metr": metr, "weight": weight, "machine": machine, "kala": kala, "ham_pod": hamPod, "ham_chelle": hamChelle, "shom_chelle": shom})
 }
 
-func (a *app) writeOutInvoices(w http.ResponseWriter, limit int) {
+func (a *app) writeOutInvoices(w http.ResponseWriter, all bool) {
 	codeList := "GROUP_CONCAT(f.taghe_cod_f_khor)"
 	if a.dialect == "postgres" {
 		codeList = "STRING_AGG(f.taghe_cod_f_khor, ',' ORDER BY f.id_f_khor)"
 	}
-	rows, err := a.query(`SELECT f.shom_f_khor, MIN(f.tarikh_f_khor), MIN(f.mosh_f_khor), MIN(f.shomare_sanad), MIN(COALESCE(f.kala_name_f_khor,'')), COUNT(*), COALESCE(SUM(s.metr_salon),0), COALESCE(SUM(s.w_salon),0), `+codeList+`
+	query := `SELECT f.shom_f_khor, MIN(f.tarikh_f_khor), MIN(f.mosh_f_khor), MIN(f.shomare_sanad), MIN(COALESCE(f.kala_name_f_khor,'')), COUNT(*), COALESCE(SUM(s.metr_salon),0), COALESCE(SUM(s.w_salon),0), ` + codeList + `
 		FROM f_khor f LEFT JOIN salon s ON s.id_salon=CAST(f.taghe_cod_f_khor AS INTEGER)
-		GROUP BY f.shom_f_khor ORDER BY MAX(f.id_f_khor) DESC LIMIT ?`, limit)
+		GROUP BY f.shom_f_khor ORDER BY MAX(f.id_f_khor) DESC`
+	if !all {
+		query += ` LIMIT 200`
+	}
+	rows, err := a.query(query)
 	if err != nil {
 		fail(w, 500, err.Error())
 		return
@@ -5857,7 +5866,7 @@ func withCORS(next http.Handler) http.Handler {
 func (a *app) vKhMoto(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.query(`SELECT id, COALESCE(tarikh_v_kh_moto,'') AS tarikh, COALESCE(operation_type,''), COALESCE(name_kala,''), COALESCE(shomare_kala,''), COALESCE(from_location,''), COALESCE(to_location,''), COALESCE(person,''), COALESCE(status,''), COALESCE(tozih_v_kh_moto,'') AS tozih, COALESCE(tarikh_bazgasht,'') FROM v_kh_moto ORDER BY id DESC LIMIT 300`)
+		rows, err := a.query(exportListQuery(r, `SELECT id, COALESCE(tarikh_v_kh_moto,'') AS tarikh, COALESCE(operation_type,''), COALESCE(name_kala,''), COALESCE(shomare_kala,''), COALESCE(from_location,''), COALESCE(to_location,''), COALESCE(person,''), COALESCE(status,''), COALESCE(tozih_v_kh_moto,'') AS tozih, COALESCE(tarikh_bazgasht,'') FROM v_kh_moto ORDER BY id DESC LIMIT 300`))
 		writeRows(w, rows, err, []string{"id", "tarikh", "operation_type", "name_kala", "shomare_kala", "from_location", "to_location", "person", "status", "tozih", "tarikh_bazgasht"})
 	case http.MethodPost:
 		var p struct {

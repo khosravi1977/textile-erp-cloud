@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 import { useRef, useCallback } from 'react';
 import QRCode from 'qrcode';
@@ -2712,19 +2712,19 @@ function useOperationalData() {
 
       apiGetSafe('/operational/yarn-items'),
 
-      apiGetSafe('/operational/out-invoices?limit=200'),
+      apiGetSafe('/operational/out-invoices?all=1'),
 
-      apiGetSafe('/operational/yarn-incoming?limit=200'),
+      apiGetSafe('/operational/yarn-incoming?all=1'),
 
       apiGetSafe('/operational/chelle-incoming?limit=200'),
 
-      apiGetSafe('/operational/yarn-outgoing?limit=200'),
+      apiGetSafe('/operational/yarn-outgoing?all=1'),
 
-      apiGetSafe('/operational/expenses?limit=200'),
+      apiGetSafe('/operational/expenses?all=1'),
 
-      apiGetSafe('/operational/misc-incoming?limit=200'),
+      apiGetSafe('/operational/misc-incoming?all=1'),
 
-      apiGetSafe('/operational/spare-parts-inventory?limit=200'),
+      apiGetSafe('/operational/spare-parts-inventory?all=1'),
       apiGetSafe('/operational/mismatch-reports'),
 
     ])
