@@ -94,7 +94,15 @@ func (a *app) basic(w http.ResponseWriter, r *http.Request) {
 		}
 		if oldName != payload.Name {
 			for _, ref := range basicTextReferences(kind) {
-				if _, err := txExec(a.dialect, tx, fmt.Sprintf("UPDATE %s SET %s=? WHERE %s=?", quoteIdent(ref.table), quoteIdent(ref.column), quoteIdent(ref.column)), payload.Name, oldName); err != nil {
+				query := fmt.Sprintf("UPDATE %s SET %s=? WHERE %s=?", quoteIdent(ref.table), quoteIdent(ref.column), quoteIdent(ref.column))
+				if ref.table == "nakh_khor" && ref.column == "moshname_nakh_khor" {
+					if kind == "customers" {
+						query += " AND COALESCE(destination_type_nakh_khor,'warper')='other'"
+					} else if kind == "warpers" {
+						query += " AND COALESCE(destination_type_nakh_khor,'warper')='warper'"
+					}
+				}
+				if _, err := txExec(a.dialect, tx, query, payload.Name, oldName); err != nil {
 					fail(w, http.StatusInternalServerError, "به‌روزرسانی پیوندهای اطلاعات قبلی انجام نشد")
 					return
 				}
@@ -130,7 +138,8 @@ type basicTextReference struct {
 func basicTextReferences(kind string) []basicTextReference {
 	refs := map[string][]basicTextReference{
 		"customers": {
-			{"nakh_vor", "moshname_nakh_vor"}, {"nakh_khor", "moshname_nakh_khor"},
+			{"nakh_vor", "moshname_nakh_vor"},
+			{"nakh_khor", "moshname_nakh_khor"},
 			{"nakh_khor", "owner_mosh_nakh_khor"}, {"nakh_salon", "mosh_name_nakh_salon"},
 			{"chelle", "mosh_chelle"}, {"f_khor", "mosh_f_khor"},
 		},
@@ -141,11 +150,15 @@ func basicTextReferences(kind string) []basicTextReference {
 		"fabrics": {
 			{"salon", "kala_salon"}, {"chelle_formul", "kala_name"}, {"f_khor", "kala_name_f_khor"},
 		},
-		"warpers": {{"chelle", "pich_chelle"}, {"empty_beam_out", "chellepich_name"}},
-		"beams":   {{"chelle", "codnavard_chelle"}, {"empty_beam_out", "kod_navard"}},
-		"costs":   {{"h_rozmare", "onvan_hazine"}},
+		"warpers": {
+			{"chelle", "pich_chelle"}, {"empty_beam_out", "chellepich_name"},
+			{"nakh_khor", "moshname_nakh_khor"},
+		},
+		"beams": {{"chelle", "codnavard_chelle"}, {"empty_beam_out", "kod_navard"}},
+		"costs": {{"h_rozmare", "onvan_hazine"}},
 		"operators": {
 			{"machinery_service", "operator_name"}, {"production_waste", "operator_name"}, {"h_rozmare", "operator_name"},
+			{"v_kh_moto", "person"},
 		},
 		"tiers":   {{"gere", "name_gere"}},
 		"weavers": {{"h_rozmare", "weaver_name"}},

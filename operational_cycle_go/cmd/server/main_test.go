@@ -27,12 +27,15 @@ func TestBasicLookupCanRenameAndSafelyDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	call := func(method, body string) *httptest.ResponseRecorder {
+	callKind := func(kind, method, body string) *httptest.ResponseRecorder {
 		t.Helper()
-		request := httptest.NewRequest(method, "/api/basic/customers", bytes.NewBufferString(body))
+		request := httptest.NewRequest(method, "/api/basic/"+kind, bytes.NewBufferString(body))
 		response := httptest.NewRecorder()
 		application.basic(response, request)
 		return response
+	}
+	call := func(method, body string) *httptest.ResponseRecorder {
+		return callKind("customers", method, body)
 	}
 	lookup := func(response *httptest.ResponseRecorder) []lookupItem {
 		t.Helper()
@@ -72,6 +75,62 @@ func TestBasicLookupCanRenameAndSafelyDelete(t *testing.T) {
 	var historicalCustomer string
 	if err := application.queryRow(`SELECT moshname_nakh_vor FROM nakh_vor WHERE hambaft_nakh_vor='HB-1'`).Scan(&historicalCustomer); err != nil || historicalCustomer != "روسری راه‌راه ۲۵۰" {
 		t.Fatalf("rename did not preserve historical customer resolution: got %q err=%v", historicalCustomer, err)
+	}
+	sharedName := "نام مشترک مشتری و چله‌پیچ"
+	if _, err := application.exec("INSERT INTO mosh_name (name_mosh) VALUES (?)", sharedName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec("INSERT INTO chellepich (name_chellepich) VALUES (?)", sharedName); err != nil {
+		t.Fatal(err)
+	}
+	var sharedCustomerID, sharedWarperID int64
+	if err := application.queryRow("SELECT id_mosh_name FROM mosh_name WHERE name_mosh=?", sharedName).Scan(&sharedCustomerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.queryRow("SELECT id_chellepich FROM chellepich WHERE name_chellepich=?", sharedName).Scan(&sharedWarperID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec(`INSERT INTO nakh_khor (moshname_nakh_khor,owner_mosh_nakh_khor,nakh_name_nakh_khor,hambaft_nakh_khor,w_vor_nakh_khor,destination_type_nakh_khor) VALUES (?, 'مالک', 'نخ تست', 'HB-2', -1, 'warper'), (?, 'مالک', 'نخ تست', 'HB-2', -1, 'other')`, sharedName, sharedName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec("INSERT INTO v_kh_moto (person) VALUES (?)", "اپراتور قدیم"); err != nil {
+		t.Fatal(err)
+	}
+	var operatorID int64
+	if _, err := application.exec("INSERT INTO operator_name (name_operator) VALUES (?)", "اپراتور قدیم"); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.queryRow("SELECT id_operator FROM operator_name WHERE name_operator=?", "اپراتور قدیم").Scan(&operatorID); err != nil {
+		t.Fatal(err)
+	}
+	operatorRename := callKind("operators", http.MethodPut, "{\"id\":"+strconv.FormatInt(operatorID, 10)+",\"name\":\"اپراتور جدید\"}")
+	if operatorRename.Code != http.StatusOK {
+		t.Fatalf("operator rename failed: %d %s", operatorRename.Code, operatorRename.Body.String())
+	}
+	var renamedOperator string
+	if err := application.queryRow("SELECT person FROM v_kh_moto").Scan(&renamedOperator); err != nil || renamedOperator != "اپراتور جدید" {
+		t.Fatalf("operator rename did not update miscellaneous movement history: got %q err=%v", renamedOperator, err)
+	}
+	customerRename := call(http.MethodPut, "{\"id\":"+strconv.FormatInt(sharedCustomerID, 10)+",\"name\":\"مشتری تازه\"}")
+	if customerRename.Code != http.StatusOK {
+		t.Fatalf("customer rename failed: %d %s", customerRename.Code, customerRename.Body.String())
+	}
+	var otherDestination, warperDestination string
+	if err := application.queryRow("SELECT moshname_nakh_khor FROM nakh_khor WHERE destination_type_nakh_khor='other'").Scan(&otherDestination); err != nil || otherDestination != "مشتری تازه" {
+		t.Fatalf("customer rename did not update customer destination: got %q err=%v", otherDestination, err)
+	}
+	if err := application.queryRow("SELECT moshname_nakh_khor FROM nakh_khor WHERE destination_type_nakh_khor='warper'").Scan(&warperDestination); err != nil || warperDestination != sharedName {
+		t.Fatalf("customer rename changed a same-named warper destination: got %q err=%v", warperDestination, err)
+	}
+	warperRename := callKind("warpers", http.MethodPut, "{\"id\":"+strconv.FormatInt(sharedWarperID, 10)+",\"name\":\"چله‌پیچ تازه\"}")
+	if warperRename.Code != http.StatusOK {
+		t.Fatalf("warper rename failed: %d %s", warperRename.Code, warperRename.Body.String())
+	}
+	if err := application.queryRow("SELECT moshname_nakh_khor FROM nakh_khor WHERE destination_type_nakh_khor='warper'").Scan(&warperDestination); err != nil || warperDestination != "چله‌پیچ تازه" {
+		t.Fatalf("warper rename did not update warper destination: got %q err=%v", warperDestination, err)
+	}
+	if err := application.queryRow("SELECT moshname_nakh_khor FROM nakh_khor WHERE destination_type_nakh_khor='other'").Scan(&otherDestination); err != nil || otherDestination != "مشتری تازه" {
+		t.Fatalf("warper rename changed customer destination: got %q err=%v", otherDestination, err)
 	}
 
 	second := call(http.MethodPost, "{\"name\":\"مشتری دوم\"}")
