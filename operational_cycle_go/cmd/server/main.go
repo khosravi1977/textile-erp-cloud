@@ -2467,7 +2467,11 @@ func (a *app) salonFormula(w http.ResponseWriter, r *http.Request) {
 func (a *app) salon(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.query(`SELECT s.id_salon, s.tarikh_salon, s.metr_salon, s.w_salon, s.machin_salon, s.user_salon, s.kala_salon, s.ham_pod_salon, s.ham_chelle_salon, s.shom_chelle_salon, COALESCE(k.id_kala_name,0), COALESCE(s.chelle_id_salon,0), COALESCE(s.tar_percent_salon,50), COALESCE(s.pod_percent_salon,50) FROM salon s LEFT JOIN kala_name k ON k.name_kala_name=s.kala_salon ORDER BY s.id_salon DESC LIMIT 200`)
+		query := `SELECT s.id_salon, s.tarikh_salon, s.metr_salon, s.w_salon, s.machin_salon, s.user_salon, s.kala_salon, s.ham_pod_salon, s.ham_chelle_salon, s.shom_chelle_salon, COALESCE(k.id_kala_name,0), COALESCE(s.chelle_id_salon,0), COALESCE(s.tar_percent_salon,50), COALESCE(s.pod_percent_salon,50) FROM salon s LEFT JOIN kala_name k ON k.name_kala_name=s.kala_salon ORDER BY s.id_salon DESC`
+		if r.URL.Query().Get("all") != "1" {
+			query += ` LIMIT 200`
+		}
+		rows, err := a.query(query)
 		writeRows(w, rows, err, []string{"id", "tarikh", "metr", "weight", "machine", "user", "kala", "ham_pod", "ham_chelle", "shom_chelle", "kala_id", "chelle_id", "tar_percent", "pod_percent"})
 	case http.MethodPost:
 		var p struct {

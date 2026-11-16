@@ -480,8 +480,10 @@ th { color: #b7c7df; font-weight: 700; }
 .empty { background: #101b30; border-radius: 8px; padding: 22px; color: #9fb4d4; text-align: center; }
 .toast {
   position: fixed;
-  left: 28px;
-  bottom: 28px;
+  left: 50%;
+  top: max(16px, env(safe-area-inset-top));
+  transform: translateX(-50%);
+  max-width: calc(100vw - 32px);
   background: #064e3b;
   border: 1px solid #10b981;
   border-radius: 8px;
