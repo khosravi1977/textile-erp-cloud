@@ -120,6 +120,10 @@ func TestBasicLookupCanRenameAndSafelyDelete(t *testing.T) {
 	if err := application.queryRow("SELECT COUNT(*) FROM mosh_name WHERE id_mosh_name=? AND is_active=0", customerID).Scan(&preserved); err != nil || preserved != 1 {
 		t.Fatalf("archived customer data was not retained: count=%d err=%v", preserved, err)
 	}
+	restored := call(http.MethodPost, "{\"name\":\"روسری راه‌راه ۲۵۰\"}")
+	if restored.Code != http.StatusOK || findID(lookup(restored), "روسری راه‌راه ۲۵۰") != customerID {
+		t.Fatalf("adding an archived name should restore its existing entry: %d %s", restored.Code, restored.Body.String())
+	}
 
 	if _, err := application.exec("INSERT INTO service_type (name_service_type) VALUES (?)", "سرویس تست"); err != nil {
 		t.Fatal(err)
