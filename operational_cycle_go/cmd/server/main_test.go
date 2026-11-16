@@ -6,9 +6,205 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 )
+
+func TestBasicLookupCanRenameAndSafelyDelete(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:basic-lookup-crud-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	application := &app{db: db, dialect: "sqlite", dbLabel: "test"}
+	if err := application.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec("PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatal(err)
+	}
+
+	callKind := func(kind, method, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, "/api/basic/"+kind, bytes.NewBufferString(body))
+		response := httptest.NewRecorder()
+		application.basic(response, request)
+		return response
+	}
+	call := func(method, body string) *httptest.ResponseRecorder {
+		return callKind("customers", method, body)
+	}
+	lookup := func(response *httptest.ResponseRecorder) []lookupItem {
+		t.Helper()
+		var items []lookupItem
+		if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+			t.Fatalf("decode customer lookup: %v; body=%s", err, response.Body.String())
+		}
+		return items
+	}
+	findID := func(items []lookupItem, name string) int64 {
+		t.Helper()
+		for _, item := range items {
+			if item.Name == name {
+				return item.ID
+			}
+		}
+		t.Fatalf("customer %q was not found in %#v", name, items)
+		return 0
+	}
+
+	created := call(http.MethodPost, "{\"name\":\"روسری+250_راه راه\"}")
+	if created.Code != http.StatusOK {
+		t.Fatalf("create customer failed: %d %s", created.Code, created.Body.String())
+	}
+	customerID := findID(lookup(created), "روسری+250_راه راه")
+	if _, err := application.exec(`INSERT INTO nakh_vor (moshname_nakh_vor,nakh_name_nakh_vor,hambaft_nakh_vor,w_vor_nakh_vor) VALUES ('روسری+250_راه راه','نخ تست','HB-1',10)`); err != nil {
+		t.Fatal(err)
+	}
+
+	renamed := call(http.MethodPut, "{\"id\":"+strconv.FormatInt(customerID, 10)+",\"name\":\"روسری راه‌راه ۲۵۰\"}")
+	if renamed.Code != http.StatusOK {
+		t.Fatalf("rename customer failed: %d %s", renamed.Code, renamed.Body.String())
+	}
+	if got := findID(lookup(renamed), "روسری راه‌راه ۲۵۰"); got != customerID {
+		t.Fatalf("rename changed customer id: got %d, want %d", got, customerID)
+	}
+	var historicalCustomer string
+	if err := application.queryRow(`SELECT moshname_nakh_vor FROM nakh_vor WHERE hambaft_nakh_vor='HB-1'`).Scan(&historicalCustomer); err != nil || historicalCustomer != "روسری راه‌راه ۲۵۰" {
+		t.Fatalf("rename did not preserve historical customer resolution: got %q err=%v", historicalCustomer, err)
+	}
+	sharedName := "نام مشترک مشتری و چله‌پیچ"
+	if _, err := application.exec("INSERT INTO mosh_name (name_mosh) VALUES (?)", sharedName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec("INSERT INTO chellepich (name_chellepich) VALUES (?)", sharedName); err != nil {
+		t.Fatal(err)
+	}
+	var sharedCustomerID, sharedWarperID int64
+	if err := application.queryRow("SELECT id_mosh_name FROM mosh_name WHERE name_mosh=?", sharedName).Scan(&sharedCustomerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.queryRow("SELECT id_chellepich FROM chellepich WHERE name_chellepich=?", sharedName).Scan(&sharedWarperID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec(`INSERT INTO nakh_khor (moshname_nakh_khor,owner_mosh_nakh_khor,nakh_name_nakh_khor,hambaft_nakh_khor,w_vor_nakh_khor,destination_type_nakh_khor) VALUES (?, 'مالک', 'نخ تست', 'HB-2', -1, 'warper'), (?, 'مالک', 'نخ تست', 'HB-2', -1, 'other')`, sharedName, sharedName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec("INSERT INTO v_kh_moto (person) VALUES (?)", "اپراتور قدیم"); err != nil {
+		t.Fatal(err)
+	}
+	var operatorID int64
+	if _, err := application.exec("INSERT INTO operator_name (name_operator) VALUES (?)", "اپراتور قدیم"); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.queryRow("SELECT id_operator FROM operator_name WHERE name_operator=?", "اپراتور قدیم").Scan(&operatorID); err != nil {
+		t.Fatal(err)
+	}
+	operatorRename := callKind("operators", http.MethodPut, "{\"id\":"+strconv.FormatInt(operatorID, 10)+",\"name\":\"اپراتور جدید\"}")
+	if operatorRename.Code != http.StatusOK {
+		t.Fatalf("operator rename failed: %d %s", operatorRename.Code, operatorRename.Body.String())
+	}
+	var renamedOperator string
+	if err := application.queryRow("SELECT person FROM v_kh_moto").Scan(&renamedOperator); err != nil || renamedOperator != "اپراتور جدید" {
+		t.Fatalf("operator rename did not update miscellaneous movement history: got %q err=%v", renamedOperator, err)
+	}
+	customerRename := call(http.MethodPut, "{\"id\":"+strconv.FormatInt(sharedCustomerID, 10)+",\"name\":\"مشتری تازه\"}")
+	if customerRename.Code != http.StatusOK {
+		t.Fatalf("customer rename failed: %d %s", customerRename.Code, customerRename.Body.String())
+	}
+	var otherDestination, warperDestination string
+	if err := application.queryRow("SELECT moshname_nakh_khor FROM nakh_khor WHERE destination_type_nakh_khor='other'").Scan(&otherDestination); err != nil || otherDestination != "مشتری تازه" {
+		t.Fatalf("customer rename did not update customer destination: got %q err=%v", otherDestination, err)
+	}
+	if err := application.queryRow("SELECT moshname_nakh_khor FROM nakh_khor WHERE destination_type_nakh_khor='warper'").Scan(&warperDestination); err != nil || warperDestination != sharedName {
+		t.Fatalf("customer rename changed a same-named warper destination: got %q err=%v", warperDestination, err)
+	}
+	warperRename := callKind("warpers", http.MethodPut, "{\"id\":"+strconv.FormatInt(sharedWarperID, 10)+",\"name\":\"چله‌پیچ تازه\"}")
+	if warperRename.Code != http.StatusOK {
+		t.Fatalf("warper rename failed: %d %s", warperRename.Code, warperRename.Body.String())
+	}
+	if err := application.queryRow("SELECT moshname_nakh_khor FROM nakh_khor WHERE destination_type_nakh_khor='warper'").Scan(&warperDestination); err != nil || warperDestination != "چله‌پیچ تازه" {
+		t.Fatalf("warper rename did not update warper destination: got %q err=%v", warperDestination, err)
+	}
+	if err := application.queryRow("SELECT moshname_nakh_khor FROM nakh_khor WHERE destination_type_nakh_khor='other'").Scan(&otherDestination); err != nil || otherDestination != "مشتری تازه" {
+		t.Fatalf("warper rename changed customer destination: got %q err=%v", otherDestination, err)
+	}
+
+	second := call(http.MethodPost, "{\"name\":\"مشتری دوم\"}")
+	if second.Code != http.StatusOK {
+		t.Fatalf("create second customer failed: %d %s", second.Code, second.Body.String())
+	}
+	secondID := findID(lookup(second), "مشتری دوم")
+	duplicate := call(http.MethodPut, "{\"id\":"+strconv.FormatInt(customerID, 10)+",\"name\":\"مشتری دوم\"}")
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("duplicate rename should be rejected, got %d %s", duplicate.Code, duplicate.Body.String())
+	}
+
+	if _, err := application.exec("CREATE TABLE basic_customer_reference (customer_id INTEGER NOT NULL REFERENCES mosh_name(id_mosh_name))"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec("INSERT INTO basic_customer_reference (customer_id) VALUES (?)", secondID); err != nil {
+		t.Fatal(err)
+	}
+	blockedDelete := call(http.MethodDelete, "{\"id\":"+strconv.FormatInt(secondID, 10)+"}")
+	if blockedDelete.Code != http.StatusOK {
+		t.Fatalf("referenced customer should be safely archived, got %d %s", blockedDelete.Code, blockedDelete.Body.String())
+	}
+	var preserved int
+	if err := application.queryRow("SELECT COUNT(*) FROM mosh_name WHERE id_mosh_name=?", secondID).Scan(&preserved); err != nil || preserved != 1 {
+		t.Fatalf("archived referenced customer was not preserved: count=%d err=%v", preserved, err)
+	}
+	var references int
+	if err := application.queryRow("SELECT COUNT(*) FROM basic_customer_reference WHERE customer_id=?", secondID).Scan(&references); err != nil || references != 1 {
+		t.Fatalf("reference to archived customer was lost: count=%d err=%v", references, err)
+	}
+	for _, item := range lookup(blockedDelete) {
+		if item.ID == secondID {
+			t.Fatalf("archived customer remains selectable: %#v", item)
+		}
+	}
+
+	deleted := call(http.MethodDelete, "{\"id\":"+strconv.FormatInt(customerID, 10)+"}")
+	if deleted.Code != http.StatusOK {
+		t.Fatalf("delete unused customer failed: %d %s", deleted.Code, deleted.Body.String())
+	}
+	for _, item := range lookup(deleted) {
+		if item.ID == customerID {
+			t.Fatalf("archived customer remains in lookup: %#v", item)
+		}
+	}
+	if err := application.queryRow("SELECT COUNT(*) FROM mosh_name WHERE id_mosh_name=? AND is_active=0", customerID).Scan(&preserved); err != nil || preserved != 1 {
+		t.Fatalf("archived customer data was not retained: count=%d err=%v", preserved, err)
+	}
+	restored := call(http.MethodPost, "{\"name\":\"روسری راه‌راه ۲۵۰\"}")
+	if restored.Code != http.StatusOK || findID(lookup(restored), "روسری راه‌راه ۲۵۰") != customerID {
+		t.Fatalf("adding an archived name should restore its existing entry: %d %s", restored.Code, restored.Body.String())
+	}
+
+	if _, err := application.exec("INSERT INTO service_type (name_service_type) VALUES (?)", "سرویس تست"); err != nil {
+		t.Fatal(err)
+	}
+	var serviceTypeID int64
+	if err := application.queryRow("SELECT id_service_type FROM service_type WHERE name_service_type=?", "سرویس تست").Scan(&serviceTypeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.exec("INSERT INTO machinery_service (service_type_id) VALUES (?)", serviceTypeID); err != nil {
+		t.Fatal(err)
+	}
+	serviceRequest := httptest.NewRequest(http.MethodDelete, "/api/basic/serviceTypes", bytes.NewBufferString("{\"id\":"+strconv.FormatInt(serviceTypeID, 10)+"}"))
+	serviceResponse := httptest.NewRecorder()
+	application.basic(serviceResponse, serviceRequest)
+	if serviceResponse.Code != http.StatusOK {
+		t.Fatalf("referenced service type should be archived without losing history, got %d %s", serviceResponse.Code, serviceResponse.Body.String())
+	}
+	var preservedServiceType string
+	if err := application.queryRow("SELECT st.name_service_type FROM machinery_service ms LEFT JOIN service_type st ON st.id_service_type=ms.service_type_id WHERE ms.service_type_id=?", serviceTypeID).Scan(&preservedServiceType); err != nil || preservedServiceType != "سرویس تست" {
+		t.Fatalf("service history lost its type after archive: got %q err=%v", preservedServiceType, err)
+	}
+}
 
 func TestMobileLoadingSessionTransfersValidatedTaghe(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:mobile-loading-test?mode=memory&cache=shared")
@@ -648,7 +844,7 @@ func TestFinancialAccountsHandlerReturnsEmptyOnSQLite(t *testing.T) {
 func TestNormalizeExpenseTarikhAcceptsJalaliGregorianAndPersianDigits(t *testing.T) {
 	cases := map[string]string{
 		"1405/06/10": "1405/06/10",
-		"۱۴۰۵/۶/۱۰": "1405/06/10",
+		"۱۴۰۵/۶/۱۰":  "1405/06/10",
 		"1405-6-10":  "1405/06/10",
 		"":           "",
 	}

@@ -703,6 +703,11 @@ func (a *app) migrate() error {
 			return err
 		}
 	}
+	for _, table := range []string{"mosh_name", "nakh_name", "kala_name", "chellepich", "kod_navard", "gerezan", "hazine", "operator_name", "driver_name", "weaver_name", "service_type", "spare_part"} {
+		if err := a.ensureColumn(table, "is_active", "INTEGER DEFAULT 1"); err != nil {
+			return err
+		}
+	}
 	var userCount int64
 	_ = a.queryRow(`SELECT COUNT(*) FROM users`).Scan(&userCount)
 	if userCount == 0 {
@@ -1602,50 +1607,6 @@ func (a *app) lookups(w http.ResponseWriter, r *http.Request) {
 		"hambaftYarn":  distinct(a.db, "SELECT DISTINCT hambaft_nakh_vor FROM nakh_vor WHERE COALESCE(hambaft_nakh_vor,'')<>'' ORDER BY hambaft_nakh_vor"),
 		"hamPod":       distinct(a.db, "SELECT DISTINCT ham_nakh_salon FROM nakh_salon WHERE COALESCE(ham_nakh_salon,'')<>'' ORDER BY ham_nakh_salon"),
 	})
-}
-
-func (a *app) basic(w http.ResponseWriter, r *http.Request) {
-	kind := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/basic/"), "/")
-	table, idCol, nameCol, ok := basicMap(kind)
-	if !ok {
-		fail(w, http.StatusNotFound, "نوع اطلاعات اولیه معتبر نیست")
-		return
-	}
-	if r.Method == http.MethodPost {
-		var p struct {
-			Name string `json:"name"`
-		}
-		if !decode(w, r, &p) {
-			return
-		}
-		p.Name = strings.TrimSpace(p.Name)
-		if p.Name == "" {
-			fail(w, http.StatusBadRequest, "نام را وارد کنید")
-			return
-		}
-		var exists int
-		checkStmt := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s=?", table, nameCol)
-		if a.dialect == "postgres" {
-			checkStmt = fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s=?", quoteIdent(table), quoteIdent(nameCol))
-		}
-		_ = a.queryRow(checkStmt, p.Name).Scan(&exists)
-		if exists == 0 {
-			stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (?)", table, nameCol)
-			if a.dialect == "postgres" {
-				stmt = fmt.Sprintf("INSERT INTO %s (%s) VALUES (?)", quoteIdent(table), quoteIdent(nameCol))
-			}
-			_, err := a.exec(stmt, p.Name)
-			if err != nil {
-				fail(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-		}
-	}
-	if r.Method == http.MethodDelete {
-		id := strings.TrimPrefix(kind, "")
-		_ = id
-	}
-	writeJSON(w, a.lookup(table, idCol, nameCol))
 }
 
 func (a *app) nakhVor(w http.ResponseWriter, r *http.Request) {
@@ -4879,7 +4840,7 @@ func (a *app) rebuildMachineConsumption(machine string) error {
 }
 
 func (a *app) lookup(table, idCol, nameCol string) []lookupItem {
-	rows, err := a.query(fmt.Sprintf("SELECT %s, %s FROM %s WHERE COALESCE(%s,'')<>'' ORDER BY %s", idCol, nameCol, table, nameCol, nameCol))
+	rows, err := a.query(fmt.Sprintf("SELECT %s, %s FROM %s WHERE COALESCE(%s,'')<>'' AND COALESCE(is_active,1)=1 ORDER BY %s", idCol, nameCol, table, nameCol, nameCol))
 	if err != nil {
 		return []lookupItem{}
 	}

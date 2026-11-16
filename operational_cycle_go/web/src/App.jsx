@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 import JsBarcode from 'jsbarcode';
 
 import QRCode from 'qrcode';
+import BasicDataManager from './BasicDataManager.jsx';
 import { monetaryColumnTotals } from './reportTotals.js';
 
 import { BrowserMultiFormatReader } from '@zxing/browser';
@@ -944,21 +945,7 @@ function buildMonthlyMachineTrend(rows) {
 
 function InitialData({ lookups, refresh, notify }) {
 
-  const [values, setValues] = useState({});
-
   const [confirm, setConfirm] = useState('');
-
-  const add = async (kind) => {
-
-    await api(`/basic/${kind}`, { method: 'POST', body: { name: values[kind] || '' } });
-
-    setValues({ ...values, [kind]: '' });
-
-    await refresh();
-
-    notify('اطلاعات اولیه ثبت شد');
-
-  };
 
   const reset = async () => {
 
@@ -970,15 +957,7 @@ function InitialData({ lookups, refresh, notify }) {
 
   return <Page title="اطلاعات اولیه">
 
-    <div className="grid two">{basicDefs.map(([kind, title]) => <section className="panel" key={kind}>
-
-      <h2>{title}</h2>
-
-      <div className="row"><input value={values[kind] || ''} onChange={e => setValues({ ...values, [kind]: e.target.value })} placeholder={`ثبت ${title}`} /><button onClick={() => add(kind)}>ثبت</button></div>
-
-      <div className="chips">{(lookups[kind] || []).map(x => <span key={x.id}>{x.name}</span>)}</div>
-
-    </section>)}</div>
+    <BasicDataManager basicDefs={basicDefs} lookups={lookups} refresh={refresh} notify={notify} request={api} />
 
     <section className="panel danger">
 
