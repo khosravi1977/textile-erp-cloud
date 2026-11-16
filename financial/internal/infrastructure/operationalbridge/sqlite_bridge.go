@@ -181,6 +181,10 @@ func getEnv(key, fallback string) string {
 }
 
 func (b *Bridge) query(q string, args ...any) (*sql.Rows, error) {
+	if len(args) > 0 && args[len(args)-1] == -1 && strings.HasSuffix(strings.TrimSpace(q), "LIMIT ?") {
+		q = strings.TrimSuffix(strings.TrimSpace(q), "LIMIT ?")
+		args = args[:len(args)-1]
+	}
 	if b.conn != nil {
 		return b.conn.QueryContext(context.Background(), rebind(b.dialect, q), args...)
 	}
@@ -338,7 +342,7 @@ func (b *Bridge) lookup(q string) ([]LookupRow, error) {
 }
 
 func (b *Bridge) OutInvoices(limit int) ([]OperationalOutInvoice, error) {
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 300
 	}
 	rows, err := b.query(`
@@ -362,7 +366,7 @@ func (b *Bridge) OutInvoices(limit int) ([]OperationalOutInvoice, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]OperationalOutInvoice, 0, limit)
+	out := make([]OperationalOutInvoice, 0)
 	for rows.Next() {
 		var r OperationalOutInvoice
 		if err := rows.Scan(&r.ID, &r.Date, &r.Number, &r.CustomerName, &r.KalaName, &r.PieceCount, &r.Meter, &r.Weight); err != nil {
@@ -382,7 +386,7 @@ func (b *Bridge) YarnOutgoing(limit int) ([]YarnTxn, error) {
 }
 
 func (b *Bridge) yarnTxns(table, idCol, dateCol, docCol, customerCol, yarnCol, weightCol, typ string, limit int) ([]YarnTxn, error) {
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 300
 	}
 	q := "SELECT " + idCol + ", COALESCE(" + dateCol + ",''), COALESCE(" + docCol + ",''), COALESCE(" + customerCol + ",''), COALESCE(" + yarnCol + ",''), COALESCE(" + weightCol + ",0) FROM " + table + " ORDER BY " + idCol + " DESC LIMIT ?"
@@ -391,7 +395,7 @@ func (b *Bridge) yarnTxns(table, idCol, dateCol, docCol, customerCol, yarnCol, w
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]YarnTxn, 0, limit)
+	out := make([]YarnTxn, 0)
 	for rows.Next() {
 		var r YarnTxn
 		if err := rows.Scan(&r.ID, &r.Date, &r.DocNo, &r.CustomerName, &r.YarnName, &r.Weight); err != nil {
@@ -404,7 +408,7 @@ func (b *Bridge) yarnTxns(table, idCol, dateCol, docCol, customerCol, yarnCol, w
 }
 
 func (b *Bridge) Expenses(limit int) ([]ExpenseRow, error) {
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 300
 	}
 	rows, err := b.query(`
@@ -432,7 +436,7 @@ func (b *Bridge) Expenses(limit int) ([]ExpenseRow, error) {
 		}
 	}
 	defer rows.Close()
-	out := make([]ExpenseRow, 0, limit)
+	out := make([]ExpenseRow, 0)
 	for rows.Next() {
 		var r ExpenseRow
 		if err := rows.Scan(&r.ID, &r.Date, &r.Title, &r.Operator, &r.Weaver, &r.Amount, &r.Description, &r.DocNo, &r.PayAccountID, &r.PayAccountName); err != nil {
@@ -444,7 +448,7 @@ func (b *Bridge) Expenses(limit int) ([]ExpenseRow, error) {
 }
 
 func (b *Bridge) MiscIncoming(limit int) ([]MiscIncomingRow, error) {
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 300
 	}
 	if !b.tableExists("v_kh_moto") {
@@ -462,7 +466,7 @@ func (b *Bridge) MiscIncoming(limit int) ([]MiscIncomingRow, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]MiscIncomingRow, 0, limit)
+	out := make([]MiscIncomingRow, 0)
 	for rows.Next() {
 		var r MiscIncomingRow
 		if err := rows.Scan(&r.ID, &r.Date, &r.Operation, &r.ItemName, &r.ItemNo, &r.FromLocation, &r.ToLocation, &r.Person, &r.Status, &r.Description, &r.ReturnDate); err != nil {
@@ -498,7 +502,7 @@ func (b *Bridge) tableExists(name string) bool {
 }
 
 func (b *Bridge) SparePartsInventory(limit int) ([]SparePartStockRow, error) {
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 300
 	}
 	rows, err := b.query(`
@@ -519,7 +523,7 @@ func (b *Bridge) SparePartsInventory(limit int) ([]SparePartStockRow, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]SparePartStockRow, 0, limit)
+	out := make([]SparePartStockRow, 0)
 	for rows.Next() {
 		var r SparePartStockRow
 		if err := rows.Scan(&r.ID, &r.Date, &r.PartName, &r.PartNumber, &r.Quantity, &r.Condition, &r.VendorName, &r.Description); err != nil {
@@ -531,7 +535,7 @@ func (b *Bridge) SparePartsInventory(limit int) ([]SparePartStockRow, error) {
 }
 
 func (b *Bridge) ChelleIncoming(limit int) ([]ChelleIncomingRow, error) {
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 300
 	}
 	rows, err := b.query(`
@@ -553,7 +557,7 @@ func (b *Bridge) ChelleIncoming(limit int) ([]ChelleIncomingRow, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]ChelleIncomingRow, 0, limit)
+	out := make([]ChelleIncomingRow, 0)
 	for rows.Next() {
 		var r ChelleIncomingRow
 		if err := rows.Scan(&r.ID, &r.Date, &r.DocNo, &r.YarnName, &r.Weight, &r.Warper, &r.CustomerName, &r.Hambaft, &r.Navard, &r.Machine); err != nil {

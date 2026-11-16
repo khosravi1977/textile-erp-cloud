@@ -637,7 +637,7 @@ func (h *APIHandler) GetOperationalOutInvoices(w http.ResponseWriter, r *http.Re
 		return
 	}
 	defer cleanup()
-	rows, err := bridge.OutInvoices(parseLimit(r, 300))
+	rows, err := bridge.OutInvoices(exportLimit(r, 300))
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -651,7 +651,7 @@ func (h *APIHandler) GetOperationalYarnIncoming(w http.ResponseWriter, r *http.R
 		return
 	}
 	defer cleanup()
-	rows, err := bridge.YarnIncoming(parseLimit(r, 300))
+	rows, err := bridge.YarnIncoming(exportLimit(r, 300))
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -665,7 +665,7 @@ func (h *APIHandler) GetOperationalChelleIncoming(w http.ResponseWriter, r *http
 		return
 	}
 	defer cleanup()
-	rows, err := bridge.ChelleIncoming(parseLimit(r, 300))
+	rows, err := bridge.ChelleIncoming(exportLimit(r, 300))
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -679,7 +679,7 @@ func (h *APIHandler) GetOperationalYarnOutgoing(w http.ResponseWriter, r *http.R
 		return
 	}
 	defer cleanup()
-	rows, err := bridge.YarnOutgoing(parseLimit(r, 300))
+	rows, err := bridge.YarnOutgoing(exportLimit(r, 300))
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -693,7 +693,7 @@ func (h *APIHandler) GetOperationalExpenses(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer cleanup()
-	rows, err := bridge.Expenses(parseLimit(r, 300))
+	rows, err := bridge.Expenses(exportLimit(r, 300))
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -707,7 +707,7 @@ func (h *APIHandler) GetOperationalMiscIncoming(w http.ResponseWriter, r *http.R
 		return
 	}
 	defer cleanup()
-	rows, err := bridge.MiscIncoming(parseLimit(r, 300))
+	rows, err := bridge.MiscIncoming(exportLimit(r, 300))
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -721,7 +721,7 @@ func (h *APIHandler) GetOperationalSparePartsInventory(w http.ResponseWriter, r 
 		return
 	}
 	defer cleanup()
-	rows, err := bridge.SparePartsInventory(parseLimit(r, 300))
+	rows, err := bridge.SparePartsInventory(exportLimit(r, 300))
 	if err != nil {
 		RespondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -909,4 +909,11 @@ func parseLimit(r *http.Request, fallback int) int {
 		return 1000
 	}
 	return limit
+}
+
+func exportLimit(r *http.Request, fallback int) int {
+	if r.URL.Query().Get("all") == "1" {
+		return -1
+	}
+	return parseLimit(r, fallback)
 }
