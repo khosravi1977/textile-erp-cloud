@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 import JsBarcode from 'jsbarcode';
 
 import QRCode from 'qrcode';
+import BasicDataManager from './BasicDataManager.jsx';
 import { monetaryColumnTotals } from './reportTotals.js';
 
 import { BrowserMultiFormatReader } from '@zxing/browser';
