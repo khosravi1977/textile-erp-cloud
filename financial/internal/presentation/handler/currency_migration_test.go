@@ -67,7 +67,7 @@ func TestRialMigrationAtomicAuditAndReversal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := json.RawMessage(`{"accounts":[{"id":"undated","name":"Undated bank","opening":99}],"expenses":[{"id":"e","amount":100,"date":"2026-11-01","group":"Test","source_type":"mobile_sms"}],"receivableDocs":[{"id":"c","amount":900,"customer":"Rial customer","date":"2026-11-01","dueDate":"2026-12-01","checkNo":"123","status":"open"}]}`)
+	raw := json.RawMessage(`{"accounts":[{"id":"undated","name":"Undated bank","opening":99},{"id":"mobile","name":"Mobile bank","opening":90,"lastReportedBalance":100,"date":"2026-11-01"}],"movements":[{"id":"m","accountId":"mobile","amount":10,"direction":"in","transactionType":"other_income","source_type":"mobile_sms","date":"2026-11-01"}],"expenses":[{"id":"e","amount":100,"date":"2026-11-01","group":"Test","source_type":"mobile_sms"}],"receivableDocs":[{"id":"c","amount":900,"customer":"Rial customer","date":"2026-11-01","dueDate":"2026-12-01","checkNo":"123","status":"open"}]}`)
 	_, checksum, err := validateWorkspaceState(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func TestRialMigrationAtomicAuditAndReversal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Applied || plan.WorkspaceConverted != 1 || plan.TypedConverted != 1 {
+	if plan.Applied || plan.WorkspaceConverted != 3 || plan.TypedConverted != 1 {
 		t.Fatalf("bad plan %+v", plan)
 	}
 	if _, err := MigrateCompanyToRials(ctx, db, company, true, "stale"); err == nil {
@@ -140,6 +140,18 @@ func TestRialMigrationAtomicAuditAndReversal(t *testing.T) {
 		}
 		if openingNet != 99 {
 			t.Fatalf("undated opening was lost or phantom-reversed: %f", openingNet)
+		}
+		if err := tx.QueryRow(`SELECT COALESCE(SUM(l.debit-l.credit),0) FROM journal_vouchers v JOIN journal_voucher_lines l ON l.journal_voucher_id=v.id JOIN accounts a ON a.id=l.account_id WHERE v.company_id=$1 AND v.source_reference='account-opening:mobile' AND a.type='Asset'`, company).Scan(&openingNet); err != nil {
+			return err
+		}
+		if openingNet != 900 {
+			t.Fatalf("converted integer rial opening missing from ledger: %f", openingNet)
+		}
+		if err := tx.QueryRow(`SELECT COALESCE(SUM(l.debit-l.credit),0) FROM journal_vouchers v JOIN journal_voucher_lines l ON l.journal_voucher_id=v.id JOIN accounts a ON a.id=l.account_id WHERE v.company_id=$1 AND v.source_reference='expense:e' AND a.type='Expense'`, company).Scan(&openingNet); err != nil {
+			return err
+		}
+		if openingNet != 1000 {
+			t.Fatalf("converted integer rial expense missing from ledger: %f", openingNet)
 		}
 		return nil
 	})

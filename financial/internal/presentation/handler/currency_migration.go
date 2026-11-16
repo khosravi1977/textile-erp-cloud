@@ -123,6 +123,9 @@ func MigrateCompanyToRials(ctx context.Context, db *sql.DB, companyID int64, app
 	if err := syncWorkspaceLedger(ctx, tx, companyID, 0, next, oldState, state); err != nil {
 		return result, err
 	}
+	if err := verifyRialLedger(ctx, tx, companyID, state); err != nil {
+		return result, err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE financial_workspace_states SET state=$2,revision=$3,checksum=$4,updated_at=CURRENT_TIMESTAMP WHERE company_id=$1`, companyID, canonical, next, checksum); err != nil {
 		return result, err
 	}

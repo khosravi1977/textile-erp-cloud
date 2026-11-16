@@ -535,6 +535,10 @@ func number(value any) float64 {
 	switch typed := value.(type) {
 	case float64:
 		return typed
+	case int64:
+		return float64(typed)
+	case int:
+		return float64(typed)
 	case json.Number:
 		n, _ := typed.Float64()
 		return n
