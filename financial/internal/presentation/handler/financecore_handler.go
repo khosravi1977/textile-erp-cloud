@@ -98,7 +98,7 @@ func (h *APIHandler) MobileTypedTransaction(w http.ResponseWriter, r *http.Reque
 	}
 	req := payload.TransactionRequest
 	if req.Currency == "" {
-		req.Currency = "IRT"
+		req.Currency = "IRR"
 	}
 	var moneyErr error
 	req, moneyErr = financecore.NormalizeRialRequest(req)

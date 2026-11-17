@@ -27,7 +27,7 @@ func verifyRialLedger(ctx context.Context, tx *sql.Tx, company int64, state map[
 		}
 	}
 	var invalid int
-	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM bank_transactions t LEFT JOIN LATERAL (SELECT SUM(debit) total FROM journal_voucher_lines WHERE company_id=t.company_id AND journal_voucher_id=t.journal_voucher_id) l ON TRUE WHERE t.company_id=$1 AND t.currency='IRR' AND t.source_currency='IRT' AND t.status='ACTIVE' AND t.posting_status='POSTED' AND t.journal_voucher_id IS NOT NULL AND COALESCE(l.total,0)<>t.amount`, company).Scan(&invalid)
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM bank_transactions t LEFT JOIN LATERAL (SELECT SUM(debit) total FROM journal_voucher_lines WHERE company_id=t.company_id AND journal_voucher_id=t.journal_voucher_id) l ON TRUE WHERE t.company_id=$1 AND t.currency='IRR' AND t.status='ACTIVE' AND t.posting_status='POSTED' AND t.journal_voucher_id IS NOT NULL AND COALESCE(l.total,0)<>t.amount`, company).Scan(&invalid)
 	if err != nil {
 		return err
 	}

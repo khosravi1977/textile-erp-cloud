@@ -5,10 +5,10 @@ import (
 	"github.com/erpsystem/textile-erp/internal/platform/monetary"
 )
 
-// Old Android releases store whole tomans. Keep that external contract at the
-// boundary; modern clients explicitly request IRR. Never round a rial away.
+// Bootstrap defaults to the verified rial contract. An explicitly requested
+// IRT response is an adapter only; never round a rial away.
 func adaptMobileBootstrap(payload map[string]any, requested string) error {
-	unit, err := monetary.Unit(requested, monetary.Toman)
+	unit, err := monetary.Unit(requested, monetary.Rial)
 	if err != nil {
 		return err
 	}
@@ -43,10 +43,10 @@ func adaptMobileBootstrap(payload map[string]any, requested string) error {
 	return nil
 }
 
-// The shipped Android client stores/sends toman regardless of its display
-// switch. Missing currency is IRT ONLY on that documented mobile contract.
+// The owner-verified HesabYar export and incoming payloads use rials.
+// Missing currency follows that IRR contract; only explicit IRT is converted.
 func normalizeMobileMoney(req *mobileTransactionRequest) error {
-	unit, err := monetary.Unit(req.Currency, monetary.Toman)
+	unit, err := monetary.Unit(req.Currency, monetary.Rial)
 	if err != nil {
 		return err
 	}

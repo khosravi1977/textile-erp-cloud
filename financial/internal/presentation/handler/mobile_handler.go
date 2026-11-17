@@ -830,7 +830,7 @@ func normalizeMobileDigits(value string) string {
 }
 
 func mobilePayableDocumentRow(req mobilePayableDocumentRequest, now time.Time) (map[string]any, error) {
-	unit, unitErr := monetary.Unit(req.Currency, monetary.Toman)
+	unit, unitErr := monetary.Unit(req.Currency, monetary.Rial)
 	if unitErr != nil {
 		return nil, unitErr
 	}
@@ -1248,7 +1248,7 @@ func (h *APIHandler) MobileSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range req.BankBalances {
-		unit, err := monetary.Unit(firstNonEmpty(req.BankBalances[i].Currency, req.Currency), monetary.Toman)
+		unit, err := monetary.Unit(firstNonEmpty(req.BankBalances[i].Currency, req.Currency), monetary.Rial)
 		if err != nil {
 			RespondError(w, http.StatusBadRequest, err.Error())
 			return
