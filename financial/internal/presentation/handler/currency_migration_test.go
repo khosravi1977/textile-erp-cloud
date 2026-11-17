@@ -68,6 +68,18 @@ func TestRialMigrationAtomicAuditAndReversal(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := json.RawMessage(`{"accounts":[{"id":"undated","name":"Undated bank","opening":99},{"id":"mobile","name":"Mobile bank","opening":90,"lastReportedBalance":100,"date":"2026-11-01"}],"movements":[{"id":"m","accountId":"mobile","amount":10,"direction":"in","transactionType":"other_income","source_type":"mobile_sms","date":"2026-11-01"}],"expenses":[{"id":"e","amount":100,"date":"2026-11-01","group":"Test","source_type":"mobile_sms"}],"receivableDocs":[{"id":"c","amount":900,"customer":"Rial customer","date":"2026-11-01","dueDate":"2026-12-01","checkNo":"123","status":"open"}]}`)
+	fixture := decodeWorkspaceMap(raw)
+	rowsFrom(fixture, "movements")[0]["sourceId"] = "movement"
+	rowsFrom(fixture, "expenses")[0]["sourceId"] = "expense"
+	fixture["mobileTransactions"] = []any{
+		map[string]any{"id": "sms-rial-fixture", "externalId": "rial-fixture", "amount": 100, "occurredJalali": "2026-11-01", "bank": "Rial test bank", "direction": "in"},
+		map[string]any{"id": "sms-movement", "externalId": "movement", "amount": 10, "occurredJalali": "2026-11-01", "bank": "Mobile bank", "direction": "in"},
+		map[string]any{"id": "sms-expense", "externalId": "expense", "amount": 100, "occurredJalali": "2026-11-01", "bank": "Mobile bank", "direction": "out"},
+	}
+	raw, err = json.Marshal(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, checksum, err := validateWorkspaceState(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +104,7 @@ func TestRialMigrationAtomicAuditAndReversal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Applied || plan.WorkspaceConverted != 3 || plan.TypedConverted != 1 {
+	if plan.Applied || plan.WorkspaceConverted != 6 || plan.TypedConverted != 1 {
 		t.Fatalf("bad plan %+v", plan)
 	}
 	if _, err := MigrateCompanyToRials(ctx, db, company, true, "stale"); err == nil {
@@ -161,6 +173,67 @@ func TestRialMigrationAtomicAuditAndReversal(t *testing.T) {
 	repeat, err := MigrateCompanyToRials(ctx, db, company, true, applied.Checksum)
 	if err != nil || !repeat.AlreadyApplied || repeat.Applied {
 		t.Fatalf("repeat %+v %v", repeat, err)
+	}
+	// Replay the verified forward correction against the actual retired policy,
+	// including a failure after audit insertion, ordinary reversal, and repeat.
+	balance := int64(100)
+	evidence := RialSourceEvidence{Currency: "IRR", SHA256: strings.Repeat("a", 64), Rows: []RialSourceRow{
+		{Row: 2, Date: "2026-11-01", Bank: "rial test bank", Direction: "in", Amount: 100},
+		{Row: 3, Date: "2026-11-01", Bank: "mobile bank", Direction: "in", Amount: 10, Balance: &balance},
+		{Row: 4, Date: "2026-11-01", Bank: "mobile bank", Direction: "out", Amount: 100},
+	}}
+	if _, err := ReconcileCompanyRialSource(ctx, db, company, evidence, true, "stale"); err == nil {
+		t.Fatal("source correction accepted stale checksum")
+	}
+	if err := postgres.WithCompanyTx(ctx, db, company, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE bank_transactions SET source_amount=101 WHERE company_id=$1 AND id=$2`, company, posted.BankTransactionID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReconcileCompanyRialSource(ctx, db, company, evidence, true, applied.Checksum); err == nil {
+		t.Fatal("accepted changed typed provenance")
+	}
+	if err := postgres.WithCompanyTx(ctx, db, company, func(tx *sql.Tx) error {
+		var count int
+		if err := tx.QueryRow(`SELECT count(*) FROM financial_currency_audits WHERE company_id=$1 AND policy_version=2`, company).Scan(&count); err != nil {
+			return err
+		}
+		if count != 0 {
+			return fmt.Errorf("failed correction retained audit")
+		}
+		_, err := tx.Exec(`UPDATE bank_transactions SET source_amount=100 WHERE company_id=$1 AND id=$2`, company, posted.BankTransactionID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	corrected, err := ReconcileCompanyRialSource(ctx, db, company, evidence, true, applied.Checksum)
+	if err != nil || !corrected.Applied || corrected.TypedCorrected != 1 || corrected.ExcelMatched != 3 {
+		t.Fatalf("correction %+v %v", corrected, err)
+	}
+	if err := postgres.WithCompanyTx(ctx, db, company, func(tx *sql.Tx) error {
+		var amount int64
+		var currency string
+		var partyBalance float64
+		if err := tx.QueryRow(`SELECT amount,source_currency,journal_voucher_id FROM bank_transactions WHERE company_id=$1 AND id=$2`, company, posted.BankTransactionID).Scan(&amount, &currency, &newVoucher); err != nil {
+			return err
+		}
+		if amount != 100 || currency != "IRR" {
+			return fmt.Errorf("typed source not restored")
+		}
+		if err := tx.QueryRow(`SELECT debit_balance FROM ar_ap_balances WHERE company_id=$1 AND party_id=$2`, company, party).Scan(&partyBalance); err != nil {
+			return err
+		}
+		if partyBalance != -100 {
+			return fmt.Errorf("party balance not corrected: %f", partyBalance)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := ReconcileCompanyRialSource(ctx, db, company, evidence, true, corrected.Checksum)
+	if err != nil || !repeated.AlreadyApplied || repeated.Applied {
+		t.Fatalf("source correction repeated %+v %v", repeated, err)
 	}
 	if err := service.ReverseTransaction(ctx, company, 0, posted.BankTransactionID, "test converted reversal"); err != nil {
 		t.Fatal(err)

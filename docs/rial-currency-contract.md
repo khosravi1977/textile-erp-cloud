@@ -1,76 +1,79 @@
 # Rial currency contract
 
-All persisted ERP amounts, invoice prices, cheque amounts, ledger amounts,
-reports, Excel exports and printed statements use **IRR (Iranian rials)**.
-Existing manually entered rial invoices and cheques retain their numeric values.
-`Money` JSON is integer rials, matching the existing `_rials` database columns.
-
-Direct financial and operational JSON writes accept rials only. Explicit IRT,
-unknown units, alternate ambiguous mobile unit fields, nonnumeric values,
-NaN/infinity and amounts outside JavaScript's exact safe range are rejected.
-Omitted units on established direct ERP forms mean IRR.
+All stored amounts, invoice prices, cheques, ledger postings, reports, exports
+and printed statements use **IRR (Iranian rials)**. Money is an exact integer
+within JavaScript's safe range. Manual rial documents retain their numbers.
+Direct ERP forms accept IRR only and reject unknown or ambiguous units,
+fractional money and unsafe numbers.
 
 ## HesabYar boundary
 
-The shipped Android client stores whole tomans internally (even when its display
-switch says rials), and its legacy sync omits a unit. Only the mobile adapter
-therefore treats an omitted unit as IRT. It converts the transaction, allocations,
-interest, cheque and reported bank balance to IRR before posting. Explicit IRR
-inputs remain unchanged; explicit IRT inputs are multiplied by ten exactly once.
-Canonical rows retain their source unit and original transaction amount.
+The owner-confirmed HesabYar export and incoming payloads use IRR. An omitted
+currency means IRR for transaction sync, typed posting, payable cheques,
+settings bank balances and bootstrap. Explicit IRR is unchanged. Only explicit
+IRT is multiplied by ten, exactly once, before posting. Original source amount
+and currency remain attached. Allocations, interest and reported balances use
+the same unit. Amount magnitude, source name and display settings never prove a
+currency unit.
 
-Legacy bootstrap responses use an explicit IRT boundary contract to prevent the
-old app from receiving rials and sending them back as tomans. Modern clients use
-`GET /api/mobile/bootstrap?currency=IRR`. Every response declares its unit and the
-canonical ERP unit. The legacy balance supersedes opening balance, which is
-omitted from IRT bootstrap. If a value cannot be represented in whole tomans,
-bootstrap rejects it instead of silently discarding rials; that client needs IRR
-support. This adapter does not change the Android app's local storage.
+Bootstrap defaults to IRR and declares both response and canonical currencies.
+An explicit ?currency=IRT requests an adapter response, which rejects values
+that cannot be represented in whole tomans instead of rounding away rials.
+This does not change the Android app's local storage.
 
-## Audited historical normalization
+## Verified forward correction
 
-The additive currency schema does **not** blindly rescale data. The maintenance
-command does not run seeds or migrations. Run it from the new API image, for an
-explicit tenant, first in read-only mode:
+Policy 1 incorrectly inferred omitted HesabYar units as IRT. The owner's source
+workbook proves these amounts were already rials. Its writer and all guessing
+helpers now compile only in historical test fixtures, never production binaries.
+The schema migration itself does not rescale any financial data.
 
-```sh
-docker exec textile-erp-financial-api ./currency-normalize -company COMPANY_ID
-docker exec textile-erp-financial-api ./currency-normalize -company COMPANY_ID \
-  -apply -expect-checksum CHECKSUM_FROM_READ_ONLY_PLAN
-```
+The replacement command requires explicit tenant, source file and confirmed IRR:
 
-Review the plan and rehearse on an isolated database before production apply.
-Only proven legacy Android sources (`mobile_sms`, `hesabyar_mobile`, mobile
-transaction projections, typed HESABYAR, and HY-prefixed IMPORT) or explicit IRT
-rows are rescaled. Manual documents and OPERATIONAL typed rows remain numeric
-rials. Reported mobile bank balances are converted and opening balances are
-reconciled against the converted movements, including transfer counterlegs.
-If later payments create a residual after the last bank report, an exact
-matching historical workspace supplies the balance anchor. Its revision is
-retained, so later manual rial payments are neither multiplied nor erased.
-An unprovable anchor stops the transaction.
+    ./currency-normalize -company COMPANY_ID \
+      -source-file /private/HesabYar-transactions.xls -source-currency IRR
 
-The apply uses one serializable tenant transaction and a shared writer lock. A
-changed workspace checksum, invalid amount, closed-period posting or accounting
-failure rolls the entire operation back. It retains the original workspace,
-typed transactions, allocations and party balances in tenant-scoped
-`financial_currency_audits`, appends a workspace revision, and records a policy
-version. Repeating a completed migration does not multiply anything again.
+It reads Excel 2003 XML without executing formulas, validates its headers, and
+matches existing transactions by normalized bank, date, available original time,
+direction, amount and available reported balance. It never imports unsent Excel
+rows, merges source duplicates or divides amounts based on magnitude. Every
+correction requires retained metadata proving current = original source x 10.
+Typed rows and allocations must also agree with policy-1 originals.
 
-Typed GL vouchers are reversed using the normal immutable reversal path, then
-reposted at their full rial value. The typed transaction points to the new
-voucher so a subsequent ordinary reversal reverses the correct amount. Currency
-vouchers use a separate `CUR:` namespace from derived `WS:` workspace vouchers.
-Allocations and AR/AP deltas use the same unit and posting rules.
-Undated legacy bank openings use their actual posted ledger net for reversal.
-An opening without a prior posted date receives an explicitly marked current
-UTC currency-adjustment date; no historical transaction date is fabricated.
+Unmatched external IDs require explicit owner approval to restore their retained
+original amount, supplied with -restore-audit-ids ID1,ID2. Existing mobile payable
+documents outside the transaction workbook are restored only when they exactly
+reproduce the policy-1 conversion of the preserved original document. Bank
+balances require the source report and matching Excel or retained original
+evidence. Later manual payment residuals remain intact. New canonical IRR
+transactions are preserved and need no historical repair.
+
+Review the read-only plan and rehearse on an isolated restored database first.
+Apply the same arguments with -apply -expect-checksum CHECKSUM_FROM_PLAN.
+
+Apply uses a serializable tenant transaction, shared writer lock, exact workspace
+checksum and policy-2 audit. That audit retains the entire pre-correction
+workspace, typed rows, allocations and party balances, source SHA-256, parsed
+source rows and approved restore IDs. Policy-1 originals remain untouched.
+No source transactions, vouchers, uploads, volumes or secrets are deleted.
+
+Typed vouchers use the ordinary immutable reversal path and are reposted at the
+verified full rial value. The transaction points to its corrected voucher so
+later ordinary reversal uses the correct amount. Linked workspace projections,
+allocations and AR/AP deltas are reconciled together. Currency vouchers retain
+a separate CUR: namespace from WS: projections. Bank openings use the actual
+posted opening net; undated adjustments receive a marked current UTC date.
+
+Independent database checks verify posted openings, full typed voucher amounts
+and balanced posted vouchers before commit. A stale checksum, changed allocation,
+unsupported source or posting error rolls back everything. Repeating the same
+completed correction is a no-op. A different file cannot silently replace the
+policy-2 source audit.
 
 ## Recovery
 
-Take the normal production database backup before applying. Do not deploy an old
-toman-assuming API after data normalization. Prefer a tested forward correction.
-If restoration is required, coordinate an API rollback with an audited database
-restore/replay including intervening transactions. The schema down migration is
-intentionally non-destructive; it does not delete the audit or blindly divide
-current values, vouchers or balances. No volumes, uploads or secrets are touched.
+Retain a fresh production backup and verify restoration before applying. Prefer
+an audited forward correction. Do not redeploy the retired toman-assuming API.
+Coordinate code and data rollback with intervening user writes; never overwrite
+new transactions with an old whole-database restore. Down migrations preserve
+audits and source evidence and never rescale money.

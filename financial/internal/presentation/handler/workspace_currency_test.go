@@ -43,19 +43,19 @@ func TestMobileBoundaryAndBootstrapRoundTrip(t *testing.T) {
 	if err := normalizeMobileMoney(&req); err != nil {
 		t.Fatal(err)
 	}
-	if req.Amount != 1000 || *req.ReportedBalance != 10000 || req.SourceAmount != 100 {
+	if req.Amount != 100 || *req.ReportedBalance != 1000 || req.SourceAmount != 100 || req.SourceCurrency != "IRR" {
 		t.Fatalf("%+v", req)
 	}
-	if err := normalizeMobileMoney(&req); err != nil || req.Amount != 1000 || *req.ReportedBalance != 10000 {
+	if err := normalizeMobileMoney(&req); err != nil || req.Amount != 100 || *req.ReportedBalance != 1000 {
 		t.Fatal("double conversion")
 	}
-	for _, currency := range []string{"", "IRR"} {
+	for _, currency := range []string{"", "IRR", "IRT"} {
 		payload := map[string]any{"accounts": []any{map[string]any{"balance": int64(10000), "opening": int64(9000)}}, "receivable_checks": []any{map[string]any{"amount": int64(1000)}}}
 		if err := adaptMobileBootstrap(payload, currency); err != nil {
 			t.Fatal(err)
 		}
 		want := int64(1000)
-		if currency == "IRR" {
+		if currency != "IRT" {
 			want = 10000
 		}
 		if mobileInt64(rowsFrom(payload, "accounts")[0]["balance"]) != want {
@@ -63,7 +63,7 @@ func TestMobileBoundaryAndBootstrapRoundTrip(t *testing.T) {
 		}
 	}
 	payload := map[string]any{"accounts": []any{map[string]any{"balance": int64(1)}}}
-	if adaptMobileBootstrap(payload, "") == nil {
+	if adaptMobileBootstrap(payload, "IRT") == nil {
 		t.Fatal("silently rounded one rial")
 	}
 	if !legacyTypedToman(map[string]any{"source": "IMPORT", "external_transaction_id": "HY-1"}) || legacyTypedToman(map[string]any{"source": "OPERATIONAL"}) {
@@ -89,7 +89,7 @@ func TestBankAnchorPreservesLaterManualRialPayment(t *testing.T) {
 		t.Fatal("anchor audit reference missing")
 	}
 	payload := map[string]any{"accounts": []map[string]any{{"balance": int64(10000), "opening": int64(9003)}}}
-	if err := adaptMobileBootstrap(payload, ""); err != nil {
+	if err := adaptMobileBootstrap(payload, "IRT"); err != nil {
 		t.Fatal(err)
 	}
 	row := payload["accounts"].([]map[string]any)[0]

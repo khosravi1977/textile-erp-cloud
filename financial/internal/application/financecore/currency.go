@@ -40,5 +40,5 @@ func ApplyCurrencyPartyDelta(ctx context.Context, tx *sql.Tx, companyID int64, r
 // ReverseCurrencyVoucher retains the original lines and links the reversal to
 // its original voucher, using the same immutable reversal as ordinary posting.
 func ReverseCurrencyVoucher(ctx context.Context, tx *sql.Tx, companyID, voucherID int64) error {
-	return reverseVoucher(ctx, tx, companyID, 0, voucherID, "Currency normalization IRT to IRR")
+	return reverseVoucher(ctx, tx, companyID, 0, voucherID, "Audited currency source correction")
 }
