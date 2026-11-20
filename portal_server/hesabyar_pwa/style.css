@@ -1,0 +1,33 @@
+*{box-sizing:border-box}
+:root{font-family:Tahoma,Arial,sans-serif;color:#152d29;background:#eef4f0;color-scheme:light}
+body{margin:0}
+main{max-width:640px;margin:auto;padding:20px 14px 32px}
+header{padding:25px 22px 22px;border-radius:18px;background:#182d29;color:#fff}
+header p{color:#e2f3ea;margin:0}
+h1{margin:12px 0 4px;font-size:2rem}
+h2{margin:0 0 9px;font-size:1.15rem}
+p{margin:0 0 12px;line-height:1.85}
+.badge{display:inline-block;padding:6px 9px;border-radius:8px;color:#193a33;background:#c8ebd8;font-size:.82rem}
+.card{margin-block:14px;padding:18px;border:1px solid #cdded5;background:white;border-radius:15px}
+.choices{display:flex;flex-wrap:wrap;gap:8px}
+button,.primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:9px;min-height:44px;padding:8px 12px;font:inherit}
+button{border:1px solid #9fb6ad;background:#f6faf8;color:#152d29;cursor:pointer}
+button[aria-pressed="true"]{background:#dfefe6;border-color:#275344}
+button:disabled{opacity:.55;cursor:default}
+.primary{background:#225344;color:white;border:1px solid #225344;text-decoration:none;text-align:center}
+:focus-visible{outline:3px solid #a65b14;outline-offset:3px}
+#setup,#actions{margin-block-start:13px;padding-block-start:13px;border-block-start:1px solid #cdded5}
+output:not(:empty){display:block;margin-top:12px;padding:10px;border-radius:8px;background:#edf5f1;line-height:1.8}
+.delivery{margin:0 0 16px;padding:9px 12px;border:1px solid #cdded5;border-radius:9px;min-width:0}
+.delivery legend,.command>label{font-weight:bold}
+.delivery label{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:3px 8px;cursor:pointer}
+.delivery input{min-width:18px;min-height:18px;accent-color:#225344}
+.delivery p,.status{font-size:.87rem;margin-block:6px 0}
+.status:empty{display:none}
+.command>input{display:block;width:100%;margin:8px 0;padding:10px;border:1px solid #9fb6ad;border-radius:8px;font:inherit;background:#fff;color:inherit}
+#examples{margin-top:9px}
+.delivery-result{margin-block-start:12px;padding:12px;border:1px solid #cdded5;border-radius:9px}
+.delivery-result h3{margin:0 0 6px;font-size:1rem}
+.delivery-result p{overflow-wrap:anywhere}
+.install p{font-size:.88rem;margin-block:7px 0}
+[hidden]{display:none!important}

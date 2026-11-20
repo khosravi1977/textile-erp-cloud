@@ -150,6 +150,12 @@ func resolveIdentity(r *http.Request) (resolvedIdentity, bool) {
 }
 
 func authorizeRequest(r *http.Request, identity resolvedIdentity) bool {
+	if strings.EqualFold(identity.role, HesabyarLookupRole) {
+		return allowHesabyarLookup(r, identity)
+	}
+	if isHesabyarPrivatePath(r.URL.Path) {
+		return false
+	}
 	if strings.EqualFold(identity.role, "mobile") {
 		return strings.HasPrefix(r.URL.Path, "/api/mobile/") && r.URL.Path != "/api/mobile/pairing"
 	}

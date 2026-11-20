@@ -539,6 +539,7 @@ func main() {
 	mux.HandleFunc("/pwa/", app.modulePWAAsset)
 	mux.HandleFunc("/executive", app.executiveApp)
 	mux.HandleFunc("/executive/", app.executiveApp)
+	mux.HandleFunc("/executive/hesabyar/", app.hesabyarPWA)
 	mux.Handle("/financial/", app.requireModuleAccess("financial", stripAndProxy("/financial", *financial)))
 	mux.Handle("/assets/", app.requireModuleAccess("financial", stripAndProxy("", *financial)))
 	mux.Handle("/operational/", app.requireModuleAccess("operational", stripAndProxy("/operational", *operational)))

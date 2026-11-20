@@ -574,6 +574,10 @@ func (h *APIHandler) GetOperationalCustomers(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *APIHandler) GetOperationalKalaItems(w http.ResponseWriter, r *http.Request) {
+	if requestctx.UserRole(r.Context()) == middleware.HesabyarLookupRole {
+		h.getHesabyarCatalog(w, r, "kala-items")
+		return
+	}
 	bridge, cleanup := h.requireOperational(w, r)
 	if bridge == nil {
 		return
@@ -583,6 +587,10 @@ func (h *APIHandler) GetOperationalKalaItems(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *APIHandler) GetOperationalYarnItems(w http.ResponseWriter, r *http.Request) {
+	if requestctx.UserRole(r.Context()) == middleware.HesabyarLookupRole {
+		h.getHesabyarCatalog(w, r, "yarn-items")
+		return
+	}
 	bridge, cleanup := h.requireOperational(w, r)
 	if bridge == nil {
 		return

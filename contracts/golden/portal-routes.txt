@@ -28,6 +28,7 @@
 /downloads/HesabYar.apk
 /executive
 /executive/
+/executive/hesabyar/
 /financial/
 /health
 /launch/
