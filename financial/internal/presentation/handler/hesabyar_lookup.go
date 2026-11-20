@@ -9,6 +9,7 @@ import (
 
 	"github.com/erpsystem/textile-erp/internal/infrastructure/persistence/postgres"
 	"github.com/erpsystem/textile-erp/internal/platform/requestctx"
+	"github.com/erpsystem/textile-erp/internal/presentation/middleware"
 )
 
 type hesabyarParty struct {
@@ -82,4 +83,30 @@ func (h *APIHandler) getHesabyarCatalog(w http.ResponseWriter, r *http.Request, 
 func writeHesabyarLookup(w http.ResponseWriter, rows any, count int) {
 	w.Header().Set("Cache-Control", "no-store")
 	RespondJSON(w, http.StatusOK, map[string]any{"success": true, "rows": rows, "total": count})
+}
+
+func (h *APIHandler) GetOperationalKalaItems(w http.ResponseWriter, r *http.Request) {
+	if requestctx.UserRole(r.Context()) == middleware.HesabyarLookupRole {
+		h.getHesabyarCatalog(w, r, "kala-items")
+		return
+	}
+	bridge, cleanup := h.requireOperational(w, r)
+	if bridge == nil {
+		return
+	}
+	defer cleanup()
+	h.handleOperationalLookup(w, r, "kala-items", bridge.KalaItems, bridge.CreateKalaItem)
+}
+
+func (h *APIHandler) GetOperationalYarnItems(w http.ResponseWriter, r *http.Request) {
+	if requestctx.UserRole(r.Context()) == middleware.HesabyarLookupRole {
+		h.getHesabyarCatalog(w, r, "yarn-items")
+		return
+	}
+	bridge, cleanup := h.requireOperational(w, r)
+	if bridge == nil {
+		return
+	}
+	defer cleanup()
+	h.handleOperationalLookup(w, r, "yarn-items", bridge.YarnItems, bridge.CreateYarnItem)
 }
