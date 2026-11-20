@@ -1,0 +1,10 @@
+{
+  "id": "./", "name": "حسابیار صوتی", "short_name": "حسابیار صوتی",
+  "lang": "fa", "dir": "rtl", "description": "نسخه آزمایشی موبایل حسابیار صوتی",
+  "start_url": "./", "scope": "./", "display": "standalone",
+  "background_color": "#eef4f0", "theme_color": "#182d29",
+  "icons": [
+    {"src":"./icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},
+    {"src":"./icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+  ]
+}

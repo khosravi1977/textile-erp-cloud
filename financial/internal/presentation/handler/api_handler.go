@@ -573,24 +573,6 @@ func (h *APIHandler) GetOperationalCustomers(w http.ResponseWriter, r *http.Requ
 	h.handleOperationalLookup(w, r, "customers", bridge.Customers, bridge.CreateCustomer)
 }
 
-func (h *APIHandler) GetOperationalKalaItems(w http.ResponseWriter, r *http.Request) {
-	bridge, cleanup := h.requireOperational(w, r)
-	if bridge == nil {
-		return
-	}
-	defer cleanup()
-	h.handleOperationalLookup(w, r, "kala-items", bridge.KalaItems, bridge.CreateKalaItem)
-}
-
-func (h *APIHandler) GetOperationalYarnItems(w http.ResponseWriter, r *http.Request) {
-	bridge, cleanup := h.requireOperational(w, r)
-	if bridge == nil {
-		return
-	}
-	defer cleanup()
-	h.handleOperationalLookup(w, r, "yarn-items", bridge.YarnItems, bridge.CreateYarnItem)
-}
-
 func (h *APIHandler) handleOperationalLookup(
 	w http.ResponseWriter,
 	r *http.Request,

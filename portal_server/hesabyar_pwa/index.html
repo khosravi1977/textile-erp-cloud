@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#182d29">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="robots" content="noindex, nofollow">
+  <title>حسابیار صوتی</title>
+  <meta name="apple-mobile-web-app-title" content="حسابیار صوتی">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="icon" href="./icon-192.png">
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <span id="mode" class="badge">نسخه آزمایشی محلی</span>
+      <h1>حسابیار صوتی</h1>
+      <p>اتصال به حسابداری و استعلام روی گوشی</p>
+    </header>
+    <section id="erp-guide" class="card" aria-labelledby="site-title">
+      <h2 id="site-title">ERP نساجی ویورا</h2>
+      <p>برای ورود به حساب واقعی، داشبورد رسمی را باز کن. حساب‌یار آزمایشی به حساب ERP دسترسی ندارد.</p>
+      <a class="primary" href="https://textile.vioraapps.com/executive/" rel="noreferrer">باز کردن داشبورد رسمی نساجی <span aria-hidden="true">↗</span></a>
+    </section>
+    <section class="card" aria-labelledby="demo-title">
+      <h2 id="demo-title">حسابداری شما کجاست؟</h2>
+      <p id="input-info">ابتدا یک منبع را انتخاب کن.</p>
+      <div id="unlock" class="command" hidden>
+        <label for="unlock-code">کد آغاز نشست از لینک خصوصی حسابیار صوتی</label>
+        <input id="unlock-code" type="password" maxlength="43" autocomplete="off" enterkeyhint="go" dir="ltr">
+        <button id="unlock-button" type="button">باز کردن نشست</button>
+      </div>
+      <a id="erp-login" class="primary" href="/login?next=%2Fexecutive%2Fhesabyar%2F" hidden>ورود به حساب Textile ERP</a>
+      <div class="choices" aria-label="انتخاب منبع">
+        <button type="button" data-source="site" aria-pressed="false">سایت</button>
+        <button type="button" data-source="database" aria-pressed="false">دیتابیس</button>
+        <button type="button" data-source="excel" aria-pressed="false">اکسل</button>
+      </div>
+      <div id="setup" hidden>
+        <p id="source-note"></p>
+        <button id="connect" class="primary" type="button">فعال کردن داده نمونه</button>
+      </div>
+      <p id="connection-status" class="status" role="status"></p>
+      <div id="actions" hidden>
+        <p id="active-source" class="connect-state"></p>
+        <button id="erp-disconnect" type="button" hidden>قطع اتصال حسابیار</button>
+        <fieldset class="delivery">
+          <legend>نتیجه را چطور بگیرم؟</legend>
+          <div class="choices">
+            <label><input id="voice-reply" type="checkbox" checked> پاسخ صوتی</label>
+            <label id="rubika-choice"><input id="rubika-reply" type="checkbox"> روبیکا</label>
+          </div>
+          <p id="delivery-hint">یکی یا هر دو گزینه را انتخاب کن.</p>
+          <div id="rubika-setup" hidden>
+            <button id="pair-rubika" type="button">اتصال گفت‌وگوی خصوصی روبیکا</button>
+            <p id="pair-command" dir="ltr"></p>
+            <button id="check-rubika" type="button" hidden>بررسی اتصال</button>
+            <button id="disconnect-rubika" type="button" hidden>قطع اتصال روبیکا</button>
+            <p id="pair-status" class="status" role="status"></p>
+          </div>
+        </fieldset>
+        <div class="command">
+          <label for="transcript">فرمان فارسی</label>
+          <input id="transcript" type="text" maxlength="240" placeholder="مثلاً موجودی کد ۱۲۳ را بگو" autocomplete="off" enterkeyhint="go">
+          <div class="choices">
+            <button id="listen" type="button" aria-pressed="false">🎙️ گفتن فرمان</button>
+            <button id="run" type="button" class="primary">اجرای فرمان</button>
+          </div>
+          <p id="voice-note" class="status"></p>
+          <label id="erp-speech-fallback" hidden><input id="allow-browser-speech" type="checkbox"> اگر تشخیص فارسی روی گوشی آماده نبود، اجازه می‌دهم صدای فرمان برای تشخیص به سرویس مرورگر فرستاده شود.</label>
+          <div id="examples" class="choices" aria-label="فرمان‌های آزمایشی">
+            <button type="button" data-example="موجودی کد SKU-01 را بگو">موجودی نمونه</button>
+            <button type="button" data-example="مانده مشتری کد CUST-01 را بگو">مانده نمونه</button>
+            <button type="button" data-example="پیش‌نویس نمونه">پیش‌نویس نمونه</button>
+          </div>
+        </div>
+        <output id="result" aria-live="polite"></output>
+        <div id="speech-panel" class="delivery-result" hidden>
+          <button id="replay" type="button">پخش پاسخ</button>
+          <p id="speech-status" class="status" role="status"></p>
+        </div>
+        <section id="rubika-panel" class="delivery-result" aria-labelledby="rubika-title" hidden>
+          <h3 id="rubika-title">متن آماده برای روبیکا</h3>
+          <p id="share-text"></p>
+          <button id="share" type="button" hidden>اشتراک‌گذاری…</button>
+          <button id="retry-rubika" type="button" hidden>تلاش دوباره برای تحویل</button>
+          <p id="share-status" class="status" role="status">در منوی گوشی، روبیکا و گفت‌وگوی درست را خودت انتخاب کن. اگر روبیکا در فهرست نیست، متن را کپی کن و در برنامهٔ روبیکا بچسبان.</p>
+        </section>
+      </div>
+    </section>
+    <section class="card install" aria-labelledby="install-title">
+      <h2 id="install-title">افزودن به صفحه اصلی</h2>
+      <button type="button" id="install-button" class="primary" hidden>نصب حسابیار صوتی</button>
+      <p>اندروید: منوی Chrome ← نصب برنامه یا افزودن به صفحه اصلی.</p>
+      <p>آیفون: در Safari، اشتراک‌گذاری ← افزودن به صفحه اصلی.</p>
+    </section>
+  </main>
+</body>
+</html>

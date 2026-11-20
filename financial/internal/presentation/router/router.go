@@ -75,6 +75,9 @@ func SetupRouter(services ...*telegramreport.Service) http.Handler {
 	mux.HandleFunc("/api/invoices/", h.GetInvoices)            // GET all or GET by ID
 
 	// Operational bridge API: reads source data from the old operational SQLite database.
+	mux.HandleFunc(middleware.HesabyarPartiesPath, h.GetHesabyarParties)
+	mux.HandleFunc(middleware.HesabyarStockPath, h.GetHesabyarStock)
+	mux.HandleFunc(middleware.HesabyarLedgerPath, h.GetHesabyarLedger)
 	mux.HandleFunc("/api/operational/customers", h.GetOperationalCustomers)
 	mux.HandleFunc("/api/operational/kala-items", h.GetOperationalKalaItems)
 	mux.HandleFunc("/api/operational/yarn-items", h.GetOperationalYarnItems)
