@@ -1,8 +1,8 @@
 {
   "id": "./", "name": "حسابیار صوتی", "short_name": "حسابیار صوتی",
-  "lang": "fa", "dir": "rtl", "description": "نسخه آزمایشی موبایل حسابیار صوتی",
+  "lang": "fa", "dir": "rtl", "description": "حسابیار صوتی برای استعلام از حسابداری و سامانهٔ عملیاتی",
   "start_url": "./", "scope": "./", "display": "standalone",
-  "background_color": "#eef4f0", "theme_color": "#182d29",
+  "background_color": "#eff5f2", "theme_color": "#123b34",
   "icons": [
     {"src":"./icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},
     {"src":"./icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}

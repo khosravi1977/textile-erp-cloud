@@ -4,6 +4,7 @@ const $ = id => document.getElementById(id);
 const sources = [...document.querySelectorAll("[data-source]")];
 const sourceNames = {site: "سایت", excel: "اکسل", database: "دیتابیس"};
 const examples = [...document.querySelectorAll("[data-example]")];
+const erpShortcuts = [...document.querySelectorAll("[data-erp-command]")];
 const shareGuide = $("share-status").textContent;
 const session = new URLSearchParams(location.hash.slice(1)).get("session");
 if (session) history.replaceState(null, "", location.pathname + location.search);
@@ -21,6 +22,7 @@ async function initialize() {
   try {
     const response = await fetch("./api/config", {headers, cache: "no-store"});
     if (response.status === 401) {
+      if (portalMode) $("demo-title").textContent = "ورود به Textile ERP";
       $("unlock").hidden = portalMode;
       $("erp-login").hidden = !portalMode;
       $("connection-status").textContent = portalMode ? "با حساب خودت در Textile ERP وارد شو." : "نشانی کامل را باز کن یا کد آغاز نشست را وارد کن.";
@@ -36,9 +38,13 @@ async function initialize() {
     $("erp-login").hidden = true;
     $("mode").textContent = config.demo ? `نسخه آزمایشی · داده ساختگی${config.glm ? " · GLM" : ""}`
       : config.kind === "site" ? (config.live ? "Textile ERP · دادهٔ شرکت" : "Textile ERP آزمایشی · فقط‌خواندنی") : "فایل واقعی · فقط روی این کامپیوتر";
+    $("mode").hidden = false;
+    $("demo-title").textContent = config.live ? "اتصال به Textile ERP" : "حسابداری شما کجاست؟";
     $("input-info").textContent = config.demo ? "با یکی از منابع و داده ساختگی شروع کن."
-      : config.kind === "site" ? (config.live ? "سایت را انتخاب کن. فرمان‌های در دسترس مطابق دسترسی حسابت نمایش داده می‌شوند." : "سایت را انتخاب کن. فقط جستجوی مشتری، پارچه و نخ فعال است.")
+      : config.kind === "site" ? "سایت را انتخاب کن. فقط جستجوی مشتری، پارچه و نخ فعال است."
       : "منبعی را که در PowerShell تعیین کردی انتخاب کن.";
+    $("input-info").hidden = Boolean(config.live);
+    $("source-choices").hidden = Boolean(config.live);
     $("connect").textContent = config.demo ? "فعال کردن داده نمونه" : "اتصال فقط‌خواندنی";
     $("examples").hidden = !config.demo;
     $("transcript").placeholder = config.live ? (config.commands.includes("جستجوی پارچه") ? "مثلاً جستجوی پارچه متقال" : "یکی از فرمان‌های مجاز را بگو یا بنویس")
@@ -52,6 +58,8 @@ async function initialize() {
     for (const button of sources) button.disabled = !config.demo && config.kind !== button.dataset.source;
     $("connection-status").textContent = "";
     if (config.live) {
+      for (const shortcut of erpShortcuts) shortcut.hidden = !config.commands.includes(shortcut.dataset.erpCommand);
+      $("erp-shortcuts").hidden = !erpShortcuts.some(shortcut => !shortcut.hidden);
       const site = sources.find(button => button.dataset.source === "site");
       site.click();
       if (config.granted) showConnected();
@@ -142,25 +150,28 @@ for (const button of sources) {
     $("source-note").textContent = config.demo ? (selected === "site"
       ? "این انتخاب اتصال ERP واقعی را فعال نمی‌کند. برای آزمون از داده نمونه استفاده می‌شود."
       : `جریان کار با ${sourceNames[selected]} را با داده نمونه امتحان می‌کنی.`)
-      : config.kind === "site" ? (config.live ? `حسابیار فقط از همین حساب می‌خواند. فرمان‌های مجاز: ${config.commands.join("، ")}.` : "فقط داده شرکت آزمایشی انتخاب‌شده خوانده می‌شود.")
+      : config.kind === "site" ? (config.live ? `حسابیار با دسترسی همین حساب فقط اطلاعات را می‌خواند. فرمان‌های مجاز: ${config.commands.join("، ")}.` : "فقط داده شرکت آزمایشی انتخاب‌شده خوانده می‌شود.")
       : "فایل انتخاب‌شده فقط خوانده می‌شود و پیش‌نویس در فایل جداگانه ذخیره می‌شود.";
   });
 }
 
-function showConnected() {
+function showConnected(focus = false) {
   connected = true;
   $("setup").hidden = true;
   $("actions").hidden = false;
   $("erp-disconnect").hidden = !config.live;
   $("connection-status").textContent = "";
-  $("active-source").textContent = config.demo ? "داده نمونه فعال است؛ اطلاعات واقعی نگو." : `اتصال ${sourceNames[selected]} فقط‌خواندنی است.`;
+  if (config.live) $("demo-title").textContent = "فرمان جدید";
+  $("active-source").textContent = config.live ? "متصل · فقط‌خواندنی"
+    : config.demo ? "داده نمونه فعال است؛ اطلاعات واقعی نگو." : `اتصال ${sourceNames[selected]} فقط‌خواندنی است.`;
   $("listen").disabled = !Recognition;
+  $("listen-label").textContent = Recognition ? "گفتن فرمان" : "فرمان صوتی در این مرورگر در دسترس نیست";
   $("erp-speech-fallback").hidden = !config.live || !Recognition;
   $("voice-note").textContent = Recognition ? (!config.live && (config.demo || config.kind === "site")
     ? "برای آزمایش صوت از کدهای نمونه استفاده کن؛ مرورگر ممکن است برای تشخیص صدا از سرویس خودش استفاده کند."
     : "فرمان صوتی با تشخیص فارسی روی دستگاه کار می‌کند. اگر در دسترس نبود، فرمان را بنویس.")
-    : "این مرورگر فرمان صوتی وب ندارد؛ فرمان را در کادر بنویس.";
-  $("listen").focus();
+    : "فرمان را در کادر زیر بنویس.";
+  if (focus) $(Recognition ? "listen" : "transcript").focus();
 }
 
 function endErpConnection(message) {
@@ -170,8 +181,10 @@ function endErpConnection(message) {
   clearAnswer();
   $("transcript").value = "";
   $("allow-browser-speech").checked = false;
+  $("erp-speech-fallback").open = false;
   $("actions").hidden = true;
   $("setup").hidden = false;
+  $("demo-title").textContent = "اتصال به Textile ERP";
   $("connection-status").textContent = message;
 }
 
@@ -180,7 +193,7 @@ $("connect").addEventListener("click", async () => {
   $("connect").disabled = true;
   try {
     if (config.live) await post("grant", {});
-    showConnected();
+    showConnected(true);
   } catch {
     $("connection-status").textContent = "اتصال برقرار نشد. مطمئن شو در حساب Textile ERP وارد شده‌ای.";
     if (config.live) $("erp-login").hidden = false;
@@ -194,6 +207,7 @@ $("erp-disconnect").addEventListener("click", async () => {
   try {
     await post("disconnect", {});
     endErpConnection("اتصال حسابیار قطع شد.");
+    $("connect").focus();
   } catch {
     $("connection-status").textContent = "قطع اتصال تأیید نشد؛ دوباره امتحان کن.";
   } finally {
@@ -335,13 +349,16 @@ async function execute() {
   const controller = new AbortController();
   request = controller;
   $("run").disabled = true;
+  $("transcript").blur?.();
   $("result").textContent = "در حال بررسی فرمان…";
+  $("result").scrollIntoView?.({block: "nearest"});
   try {
     const rubika = Boolean(config.rubika && wantRubika());
     const data = await post("command", rubika ? {text, rubika} : {text}, controller.signal);
     if (request !== controller) return;
     answer = data;
     $("result").textContent = data.text;
+    $("result").scrollIntoView?.({block: "nearest"});
     showDelivery(true);
     if (rubika) deliverRubika(data);
   } catch {
@@ -354,7 +371,7 @@ async function execute() {
 function releaseMic(active) {
   if (active !== microphone) return;
   microphone = undefined;
-  $("listen").textContent = "🎙️ گفتن فرمان";
+  $("listen-label").textContent = "گفتن فرمان";
   $("listen").setAttribute("aria-pressed", "false");
 }
 
@@ -382,7 +399,7 @@ $("listen").addEventListener("click", async () => {
   active.lang = "fa-IR";
   active.continuous = false;
   active.interimResults = false;
-  $("listen").textContent = "توقف شنیدن";
+  $("listen-label").textContent = "توقف شنیدن";
   $("listen").setAttribute("aria-pressed", "true");
   active.onend = () => {
     if (microphone !== active) return;
@@ -405,7 +422,7 @@ $("listen").addEventListener("click", async () => {
       return;
     }
     $("transcript").value = heard;
-    $("voice-note").textContent = "متن تشخیص‌داده‌شده در کادر بالاست.";
+    $("voice-note").textContent = "متن تشخیص‌داده‌شده در کادر فرمان است.";
     execute();
   };
   try {
@@ -440,6 +457,14 @@ for (const example of examples) {
     stopMic();
     $("transcript").value = example.dataset.example;
     execute();
+  });
+}
+for (const shortcut of erpShortcuts) {
+  shortcut.addEventListener("click", () => {
+    if (!connected || shortcut.hidden || request) return;
+    stopMic();
+    $("transcript").value = `${shortcut.dataset.template || shortcut.dataset.erpCommand} `;
+    $("transcript").focus();
   });
 }
 
