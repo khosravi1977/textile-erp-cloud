@@ -4,6 +4,7 @@ const $ = id => document.getElementById(id);
 const sources = [...document.querySelectorAll("[data-source]")];
 const sourceNames = {site: "سایت", excel: "اکسل", database: "دیتابیس"};
 const examples = [...document.querySelectorAll("[data-example]")];
+const erpShortcuts = [...document.querySelectorAll("[data-erp-command]")];
 const shareGuide = $("share-status").textContent;
 const session = new URLSearchParams(location.hash.slice(1)).get("session");
 if (session) history.replaceState(null, "", location.pathname + location.search);
@@ -21,6 +22,7 @@ async function initialize() {
   try {
     const response = await fetch("./api/config", {headers, cache: "no-store"});
     if (response.status === 401) {
+      if (portalMode) $("demo-title").textContent = "ورود به Textile ERP";
       $("unlock").hidden = portalMode;
       $("erp-login").hidden = !portalMode;
       $("connection-status").textContent = portalMode ? "با حساب خودت در Textile ERP وارد شو." : "نشانی کامل را باز کن یا کد آغاز نشست را وارد کن.";
@@ -36,9 +38,13 @@ async function initialize() {
     $("erp-login").hidden = true;
     $("mode").textContent = config.demo ? `نسخه آزمایشی · داده ساختگی${config.glm ? " · GLM" : ""}`
       : config.kind === "site" ? (config.live ? "Textile ERP · دادهٔ شرکت" : "Textile ERP آزمایشی · فقط‌خواندنی") : "فایل واقعی · فقط روی این کامپیوتر";
+    $("mode").hidden = false;
+    $("demo-title").textContent = config.live ? "اتصال به Textile ERP" : "حسابداری شما کجاست؟";
     $("input-info").textContent = config.demo ? "با یکی از منابع و داده ساختگی شروع کن."
-      : config.kind === "site" ? (config.live ? "سایت را انتخاب کن. فرمان‌های در دسترس مطابق دسترسی حسابت نمایش داده می‌شوند." : "سایت را انتخاب کن. فقط جستجوی مشتری، پارچه و نخ فعال است.")
+      : config.kind === "site" ? "سایت را انتخاب کن. فقط جستجوی مشتری، پارچه و نخ فعال است."
       : "منبعی را که در PowerShell تعیین کردی انتخاب کن.";
+    $("input-info").hidden = Boolean(config.live);
+    $("source-choices").hidden = Boolean(config.live);
     $("connect").textContent = config.demo ? "فعال کردن داده نمونه" : "اتصال فقط‌خواندنی";
     $("examples").hidden = !config.demo;
     $("transcript").placeholder = config.live ? (config.commands.includes("جستجوی پارچه") ? "مثلاً جستجوی پارچه متقال" : "یکی از فرمان‌های مجاز را بگو یا بنویس")
@@ -52,6 +58,8 @@ async function initialize() {
     for (const button of sources) button.disabled = !config.demo && config.kind !== button.dataset.source;
     $("connection-status").textContent = "";
     if (config.live) {
+      for (const shortcut of erpShortcuts) shortcut.hidden = !config.commands.includes(shortcut.dataset.erpCommand);
+      $("erp-shortcuts").hidden = !erpShortcuts.some(shortcut => !shortcut.hidden);
       const site = sources.find(button => button.dataset.source === "site");
       site.click();
       if (config.granted) showConnected();
@@ -137,30 +145,31 @@ for (const button of sources) {
     clearAnswer();
     $("transcript").value = "";
     $("voice-note").textContent = "";
+    $("speech-options").hidden = true;
     $("setup").hidden = false;
     $("actions").hidden = true;
     $("source-note").textContent = config.demo ? (selected === "site"
       ? "این انتخاب اتصال ERP واقعی را فعال نمی‌کند. برای آزمون از داده نمونه استفاده می‌شود."
       : `جریان کار با ${sourceNames[selected]} را با داده نمونه امتحان می‌کنی.`)
-      : config.kind === "site" ? (config.live ? `حسابیار فقط از همین حساب می‌خواند. فرمان‌های مجاز: ${config.commands.join("، ")}.` : "فقط داده شرکت آزمایشی انتخاب‌شده خوانده می‌شود.")
+      : config.kind === "site" ? (config.live ? `حسابیار با دسترسی همین حساب فقط اطلاعات را می‌خواند. فرمان‌های مجاز: ${config.commands.join("، ")}.` : "فقط داده شرکت آزمایشی انتخاب‌شده خوانده می‌شود.")
       : "فایل انتخاب‌شده فقط خوانده می‌شود و پیش‌نویس در فایل جداگانه ذخیره می‌شود.";
   });
 }
 
-function showConnected() {
+function showConnected(focus = false) {
   connected = true;
   $("setup").hidden = true;
   $("actions").hidden = false;
   $("erp-disconnect").hidden = !config.live;
   $("connection-status").textContent = "";
-  $("active-source").textContent = config.demo ? "داده نمونه فعال است؛ اطلاعات واقعی نگو." : `اتصال ${sourceNames[selected]} فقط‌خواندنی است.`;
-  $("listen").disabled = !Recognition;
-  $("erp-speech-fallback").hidden = !config.live || !Recognition;
-  $("voice-note").textContent = Recognition ? (!config.live && (config.demo || config.kind === "site")
+  if (config.live) $("demo-title").textContent = "فرمان جدید";
+  $("active-source").textContent = config.live ? "متصل · فقط‌خواندنی"
+    : config.demo ? "داده نمونه فعال است؛ اطلاعات واقعی نگو." : `اتصال ${sourceNames[selected]} فقط‌خواندنی است.`;
+  $("speech-options").hidden = true;
+  $("voice-note").textContent = !config.live && (config.demo || config.kind === "site")
     ? "برای آزمایش صوت از کدهای نمونه استفاده کن؛ مرورگر ممکن است برای تشخیص صدا از سرویس خودش استفاده کند."
-    : "فرمان صوتی با تشخیص فارسی روی دستگاه کار می‌کند. اگر در دسترس نبود، فرمان را بنویس.")
-    : "این مرورگر فرمان صوتی وب ندارد؛ فرمان را در کادر بنویس.";
-  $("listen").focus();
+    : "برای شروع روی «گفتن فرمان» بزن.";
+  if (focus) $("listen").focus();
 }
 
 function endErpConnection(message) {
@@ -169,9 +178,10 @@ function endErpConnection(message) {
   cancelRequest();
   clearAnswer();
   $("transcript").value = "";
-  $("allow-browser-speech").checked = false;
+  $("speech-options").hidden = true;
   $("actions").hidden = true;
   $("setup").hidden = false;
+  $("demo-title").textContent = "اتصال به Textile ERP";
   $("connection-status").textContent = message;
 }
 
@@ -180,7 +190,7 @@ $("connect").addEventListener("click", async () => {
   $("connect").disabled = true;
   try {
     if (config.live) await post("grant", {});
-    showConnected();
+    showConnected(true);
   } catch {
     $("connection-status").textContent = "اتصال برقرار نشد. مطمئن شو در حساب Textile ERP وارد شده‌ای.";
     if (config.live) $("erp-login").hidden = false;
@@ -194,6 +204,7 @@ $("erp-disconnect").addEventListener("click", async () => {
   try {
     await post("disconnect", {});
     endErpConnection("اتصال حسابیار قطع شد.");
+    $("connect").focus();
   } catch {
     $("connection-status").textContent = "قطع اتصال تأیید نشد؛ دوباره امتحان کن.";
   } finally {
@@ -335,13 +346,16 @@ async function execute() {
   const controller = new AbortController();
   request = controller;
   $("run").disabled = true;
+  $("transcript").blur?.();
   $("result").textContent = "در حال بررسی فرمان…";
+  $("result").scrollIntoView?.({block: "nearest"});
   try {
     const rubika = Boolean(config.rubika && wantRubika());
     const data = await post("command", rubika ? {text, rubika} : {text}, controller.signal);
     if (request !== controller) return;
     answer = data;
     $("result").textContent = data.text;
+    $("result").scrollIntoView?.({block: "nearest"});
     showDelivery(true);
     if (rubika) deliverRubika(data);
   } catch {
@@ -351,83 +365,142 @@ async function execute() {
   }
 }
 
-function releaseMic(active) {
-  if (active !== microphone) return;
-  microphone = undefined;
-  $("listen").textContent = "🎙️ گفتن فرمان";
-  $("listen").setAttribute("aria-pressed", "false");
-}
-
 function stopMic() {
   if (!microphone) return;
-  const active = microphone;
-  releaseMic(active);
-  try { active.abort(); } catch { /* Already stopped. */ }
+  const session = microphone;
+  microphone = undefined;
+  clearTimeout(session.timer);
+  $("listen-label").textContent = "گفتن فرمان";
+  $("listen").setAttribute("aria-pressed", "false");
+  try { session.recognizer?.abort(); } catch { /* Already stopped. */ }
 }
 
-$("listen").addEventListener("click", async () => {
-  if (!Recognition || !connected || request) return;
-  if (microphone) {
-    stopMic();
-    $("voice-note").textContent = "شنیدن فرمان متوقف شد.";
-    return;
-  }
-  if (!wantVoice() && !wantRubika()) {
-    $("voice-note").textContent = "اول روش دریافت نتیجه را انتخاب کن.";
-    return;
-  }
-  stopSpeaking();
-  const active = new Recognition();
-  microphone = active;
-  active.lang = "fa-IR";
-  active.continuous = false;
-  active.interimResults = false;
-  $("listen").textContent = "توقف شنیدن";
-  $("listen").setAttribute("aria-pressed", "true");
-  active.onend = () => {
-    if (microphone !== active) return;
-    releaseMic(active);
-    $("voice-note").textContent = "فرمانی دریافت نشد؛ دوباره بگو یا بنویس.";
+function offerSpeechOptions(message, browserFallback = false) {
+  stopMic();
+  $("voice-note").textContent = message;
+  $("browser-speech").hidden = !browserFallback;
+  $("speech-options").hidden = false;
+}
+
+function recognitionError(error, local) {
+  const messages = {
+    "not-allowed": "مجوز میکروفون برای این صفحه داده نشده است. می‌توانی از میکروفون صفحه‌کلید استفاده کنی.",
+    "audio-capture": "مرورگر به میکروفون دسترسی ندارد. می‌توانی از میکروفون صفحه‌کلید استفاده کنی.",
+    "service-not-allowed": "سرویس تشخیص صدا در این مرورگر در دسترس نیست.",
+    "language-not-supported": "تشخیص فارسی در این مرورگر آماده نیست.",
+    network: "سرویس تشخیص صدای مرورگر پاسخ نداد. دوباره امتحان کن یا از صفحه‌کلید استفاده کن.",
   };
-  active.onerror = () => {
-    if (microphone !== active) return;
-    releaseMic(active);
-    $("voice-note").textContent = "تشخیص فرمان ممکن نشد؛ مجوز میکروفون را بررسی کن یا فرمان را بنویس.";
+  offerSpeechOptions(messages[error] || "تشخیص صدا شروع نشد. دوباره امتحان کن یا از صفحه‌کلید استفاده کن.",
+    local && config.live && (error === "language-not-supported" || error === "service-not-allowed"));
+}
+
+function startRecognition(session, local, recognizer) {
+  let active;
+  try {
+    active = recognizer || new Recognition();
+    session.recognizer = active;
+    active.lang = "fa-IR";
+    active.continuous = false;
+    active.interimResults = false;
+    if (local) active.processLocally = true;
+  } catch {
+    recognitionError(undefined, local);
+    return;
+  }
+  const current = () => microphone === session && session.recognizer === active;
+  let speechStarted = false;
+  active.onstart = () => {
+    if (current()) $("voice-note").textContent = "در حال شنیدن… فرمان را بگو.";
+  };
+  active.onspeechstart = () => { speechStarted = true; };
+  active.onend = () => {
+    if (!current()) return;
+    if (!speechStarted && !session.retried) {
+      session.retried = true;
+      $("voice-note").textContent = "در حال آماده‌کردن دوبارهٔ میکروفون…";
+      startRecognition(session, local);
+    } else {
+      offerSpeechOptions("فرمانی دریافت نشد. دوباره بگو یا از صفحه‌کلید استفاده کن.", local && config.live);
+    }
+  };
+  active.onerror = event => {
+    if (current() && event.error !== "no-speech") recognitionError(event.error, local);
   };
   active.onresult = event => {
-    if (microphone !== active) return;
+    if (!current()) return;
     const result = event.results[event.resultIndex];
     const heard = result?.isFinal ? result[0]?.transcript?.trim() : "";
     if (!heard) return;
-    releaseMic(active);
+    stopMic();
     if (heard.length > 240) {
       $("voice-note").textContent = "فرمان طولانی بود؛ درخواست را کوتاه‌تر بگو.";
       return;
     }
     $("transcript").value = heard;
-    $("voice-note").textContent = "متن تشخیص‌داده‌شده در کادر بالاست.";
+    $("voice-note").textContent = "متن تشخیص‌داده‌شده در کادر فرمان است.";
     execute();
   };
+  try { active.start(); } catch (error) {
+    recognitionError(error.name === "NotAllowedError" ? "not-allowed" : undefined, local);
+  }
+}
+
+async function listen(useBrowser = false) {
+  if (!connected || request || microphone) return;
+  if (!wantVoice() && !wantRubika()) {
+    $("voice-note").textContent = "اول روش دریافت نتیجه را انتخاب کن.";
+    return;
+  }
+  if (!Recognition) {
+    offerSpeechOptions("تشخیص مستقیم صدا در این مرورگر در دسترس نیست. از میکروفون صفحه‌کلید استفاده کن.");
+    return;
+  }
+  stopSpeaking();
+  $("speech-options").hidden = true;
+  const session = {};
+  microphone = session;
+  $("listen-label").textContent = "توقف شنیدن";
+  $("listen").setAttribute("aria-pressed", "true");
+  $("voice-note").textContent = "در حال آماده‌کردن میکروفون…";
+  const local = !useBrowser && (config.live || (!config.demo && config.kind !== "site"));
+  session.timer = setTimeout(() => {
+    if (microphone === session) offerSpeechOptions("زمان دریافت فرمان تمام شد. دوباره امتحان کن یا از صفحه‌کلید استفاده کن.", local && config.live);
+  }, 25000);
+  if (!local) {
+    startRecognition(session, false);
+    return;
+  }
   try {
-    if (config.live || (!config.demo && config.kind !== "site")) {
-      let localReady = false;
-      if ("processLocally" in active && typeof Recognition.available === "function") {
-        try { localReady = await Recognition.available({langs: ["fa-IR"], processLocally: true}) === "available"; }
-        catch { /* The user may explicitly allow the browser fallback. */ }
+    if (typeof Recognition.available === "function") {
+      const active = new Recognition();
+      if ("processLocally" in active) {
+        const status = await Recognition.available({langs: ["fa-IR"], processLocally: true});
+        if (microphone !== session) return;
+        if (status === "available") {
+          startRecognition(session, true, active);
+          return;
+        }
       }
-      if (!localReady && !(config.live && $("allow-browser-speech").checked)) {
-        if (microphone !== active) return;
-        releaseMic(active);
-        $("voice-note").textContent = config.live ? "تشخیص فارسی روی دستگاه آماده نیست. فرمان را بنویس یا اجازهٔ تشخیص در سرویس مرورگر را فعال کن."
-          : "تشخیص فارسی روی دستگاه آماده نیست؛ برای این فایل، فرمان را تایپ کن.";
-        return;
-      }
-      if (localReady) active.processLocally = true;
     }
-    if (microphone !== active) return;
-    $("voice-note").textContent = "در حال شنیدن…";
-    active.start();
-  } catch { active.onerror(); }
+  } catch { /* Check whether the session can show alternatives. */ }
+  if (microphone === session) {
+    offerSpeechOptions("تشخیص فارسی روی دستگاه آماده نیست. یکی از راه‌های زیر را انتخاب کن.", config.live);
+  }
+}
+
+$("listen").addEventListener("click", () => {
+  if (!microphone) return listen();
+  stopMic();
+  $("voice-note").textContent = "شنیدن فرمان متوقف شد.";
+});
+$("start-browser-speech").addEventListener("click", () => {
+  if (config?.live && !$("speech-options").hidden && !$("browser-speech").hidden) return listen(true);
+});
+$("keyboard-dictation").addEventListener("click", () => {
+  if (!connected) return;
+  stopMic();
+  $("voice-note").textContent = "میکروفون صفحه‌کلید را بزن و فرمان را بگو. بعد از بررسی متن، «اجرا» را بزن.";
+  $("transcript").focus();
 });
 
 $("run").addEventListener("click", () => { stopMic(); execute(); });
@@ -440,6 +513,14 @@ for (const example of examples) {
     stopMic();
     $("transcript").value = example.dataset.example;
     execute();
+  });
+}
+for (const shortcut of erpShortcuts) {
+  shortcut.addEventListener("click", () => {
+    if (!connected || shortcut.hidden || request) return;
+    stopMic();
+    $("transcript").value = `${shortcut.dataset.template || shortcut.dataset.erpCommand} `;
+    $("transcript").focus();
   });
 }
 
