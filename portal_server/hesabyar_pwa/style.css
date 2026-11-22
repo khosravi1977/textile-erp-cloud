@@ -149,7 +149,7 @@ output:not(:empty) {
   border-radius: .75rem;
 }
 .delivery legend { padding-inline: .375rem; font-weight: 650; }
-.delivery label, .speech-options label {
+.delivery label {
   display: flex;
   align-items: center;
   gap: .5rem;
@@ -167,6 +167,15 @@ input[type="checkbox"] { flex: none; width: 1.25rem; height: 1.25rem; margin: 0;
 #rubika-panel { padding: .875rem; border: 1px solid var(--line); border-radius: .75rem; }
 #share-text { white-space: pre-wrap; margin-block-end: .625rem; }
 .speech-options, .install { color: var(--muted); }
+.speech-options {
+  display: grid;
+  gap: .5rem;
+  padding: .625rem;
+  border: 1px solid var(--line);
+  border-radius: .75rem;
+}
+.speech-options button { width: 100%; }
+.speech-options p { margin-block-end: .5rem; }
 .install {
   padding-inline: .875rem;
   border: 1px solid var(--line);

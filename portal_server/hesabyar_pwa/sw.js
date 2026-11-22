@@ -1,7 +1,7 @@
 "use strict";
 const root = self.registration.scope;
 const prefix = "hesabyar-pilot:";
-const key = prefix + root + ":6";
+const key = prefix + root + ":7";
 const assets = ["./", "./index.html", "./app.js", "./style.css", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 const allowed = new Set(assets.map(asset => new URL(asset, root).href));
 self.addEventListener("install", event => {

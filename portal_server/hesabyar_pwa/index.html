@@ -61,10 +61,13 @@
             <span id="listen-label">گفتن فرمان</span>
           </button>
           <p id="voice-note" class="status" role="status"></p>
-          <details id="erp-speech-fallback" class="speech-options" hidden>
-            <summary>تنظیمات تشخیص صدا</summary>
-            <label><input id="allow-browser-speech" type="checkbox"> اگر تشخیص روی گوشی در دسترس نبود، اجازه می‌دهم صدای فرمان به سرویس مرورگر فرستاده شود.</label>
-          </details>
+          <div id="speech-options" class="speech-options" hidden>
+            <div id="browser-speech" hidden>
+              <p id="browser-speech-info">اگر این گزینه را بزنید، ممکن است صدای این فرمان برای تبدیل به متن به سرویس مرورگر فرستاده شود.</p>
+              <button id="start-browser-speech" type="button" aria-describedby="browser-speech-info">شروع با سرویس مرورگر</button>
+            </div>
+            <button id="keyboard-dictation" type="button">گفتن با میکروفون صفحه‌کلید</button>
+          </div>
           <div class="text-command">
             <label for="transcript">یا فرمان را بنویس</label>
             <div class="command-entry">

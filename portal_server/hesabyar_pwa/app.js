@@ -145,6 +145,7 @@ for (const button of sources) {
     clearAnswer();
     $("transcript").value = "";
     $("voice-note").textContent = "";
+    $("speech-options").hidden = true;
     $("setup").hidden = false;
     $("actions").hidden = true;
     $("source-note").textContent = config.demo ? (selected === "site"
@@ -164,14 +165,11 @@ function showConnected(focus = false) {
   if (config.live) $("demo-title").textContent = "فرمان جدید";
   $("active-source").textContent = config.live ? "متصل · فقط‌خواندنی"
     : config.demo ? "داده نمونه فعال است؛ اطلاعات واقعی نگو." : `اتصال ${sourceNames[selected]} فقط‌خواندنی است.`;
-  $("listen").disabled = !Recognition;
-  $("listen-label").textContent = Recognition ? "گفتن فرمان" : "فرمان صوتی در این مرورگر در دسترس نیست";
-  $("erp-speech-fallback").hidden = !config.live || !Recognition;
-  $("voice-note").textContent = Recognition ? (!config.live && (config.demo || config.kind === "site")
+  $("speech-options").hidden = true;
+  $("voice-note").textContent = !config.live && (config.demo || config.kind === "site")
     ? "برای آزمایش صوت از کدهای نمونه استفاده کن؛ مرورگر ممکن است برای تشخیص صدا از سرویس خودش استفاده کند."
-    : "فرمان صوتی با تشخیص فارسی روی دستگاه کار می‌کند. اگر در دسترس نبود، فرمان را بنویس.")
-    : "فرمان را در کادر زیر بنویس.";
-  if (focus) $(Recognition ? "listen" : "transcript").focus();
+    : "برای شروع روی «گفتن فرمان» بزن.";
+  if (focus) $("listen").focus();
 }
 
 function endErpConnection(message) {
@@ -180,8 +178,7 @@ function endErpConnection(message) {
   cancelRequest();
   clearAnswer();
   $("transcript").value = "";
-  $("allow-browser-speech").checked = false;
-  $("erp-speech-fallback").open = false;
+  $("speech-options").hidden = true;
   $("actions").hidden = true;
   $("setup").hidden = false;
   $("demo-title").textContent = "اتصال به Textile ERP";
@@ -368,55 +365,73 @@ async function execute() {
   }
 }
 
-function releaseMic(active) {
-  if (active !== microphone) return;
-  microphone = undefined;
-  $("listen-label").textContent = "گفتن فرمان";
-  $("listen").setAttribute("aria-pressed", "false");
-}
-
 function stopMic() {
   if (!microphone) return;
-  const active = microphone;
-  releaseMic(active);
-  try { active.abort(); } catch { /* Already stopped. */ }
+  const session = microphone;
+  microphone = undefined;
+  clearTimeout(session.timer);
+  $("listen-label").textContent = "گفتن فرمان";
+  $("listen").setAttribute("aria-pressed", "false");
+  try { session.recognizer?.abort(); } catch { /* Already stopped. */ }
 }
 
-$("listen").addEventListener("click", async () => {
-  if (!Recognition || !connected || request) return;
-  if (microphone) {
-    stopMic();
-    $("voice-note").textContent = "شنیدن فرمان متوقف شد.";
-    return;
-  }
-  if (!wantVoice() && !wantRubika()) {
-    $("voice-note").textContent = "اول روش دریافت نتیجه را انتخاب کن.";
-    return;
-  }
-  stopSpeaking();
-  const active = new Recognition();
-  microphone = active;
-  active.lang = "fa-IR";
-  active.continuous = false;
-  active.interimResults = false;
-  $("listen-label").textContent = "توقف شنیدن";
-  $("listen").setAttribute("aria-pressed", "true");
-  active.onend = () => {
-    if (microphone !== active) return;
-    releaseMic(active);
-    $("voice-note").textContent = "فرمانی دریافت نشد؛ دوباره بگو یا بنویس.";
+function offerSpeechOptions(message, browserFallback = false) {
+  stopMic();
+  $("voice-note").textContent = message;
+  $("browser-speech").hidden = !browserFallback;
+  $("speech-options").hidden = false;
+}
+
+function recognitionError(error, local) {
+  const messages = {
+    "not-allowed": "مجوز میکروفون برای این صفحه داده نشده است. می‌توانی از میکروفون صفحه‌کلید استفاده کنی.",
+    "audio-capture": "مرورگر به میکروفون دسترسی ندارد. می‌توانی از میکروفون صفحه‌کلید استفاده کنی.",
+    "service-not-allowed": "سرویس تشخیص صدا در این مرورگر در دسترس نیست.",
+    "language-not-supported": "تشخیص فارسی در این مرورگر آماده نیست.",
+    network: "سرویس تشخیص صدای مرورگر پاسخ نداد. دوباره امتحان کن یا از صفحه‌کلید استفاده کن.",
   };
-  active.onerror = () => {
-    if (microphone !== active) return;
-    releaseMic(active);
-    $("voice-note").textContent = "تشخیص فرمان ممکن نشد؛ مجوز میکروفون را بررسی کن یا فرمان را بنویس.";
+  offerSpeechOptions(messages[error] || "تشخیص صدا شروع نشد. دوباره امتحان کن یا از صفحه‌کلید استفاده کن.",
+    local && config.live && (error === "language-not-supported" || error === "service-not-allowed"));
+}
+
+function startRecognition(session, local, recognizer) {
+  let active;
+  try {
+    active = recognizer || new Recognition();
+    session.recognizer = active;
+    active.lang = "fa-IR";
+    active.continuous = false;
+    active.interimResults = false;
+    if (local) active.processLocally = true;
+  } catch {
+    recognitionError(undefined, local);
+    return;
+  }
+  const current = () => microphone === session && session.recognizer === active;
+  let speechStarted = false;
+  active.onstart = () => {
+    if (current()) $("voice-note").textContent = "در حال شنیدن… فرمان را بگو.";
+  };
+  active.onspeechstart = () => { speechStarted = true; };
+  active.onend = () => {
+    if (!current()) return;
+    if (!speechStarted && !session.retried) {
+      session.retried = true;
+      $("voice-note").textContent = "در حال آماده‌کردن دوبارهٔ میکروفون…";
+      startRecognition(session, local);
+    } else {
+      offerSpeechOptions("فرمانی دریافت نشد. دوباره بگو یا از صفحه‌کلید استفاده کن.", local && config.live);
+    }
+  };
+  active.onerror = event => {
+    if (current() && event.error !== "no-speech") recognitionError(event.error, local);
   };
   active.onresult = event => {
-    if (microphone !== active) return;
+    if (!current()) return;
     const result = event.results[event.resultIndex];
     const heard = result?.isFinal ? result[0]?.transcript?.trim() : "";
     if (!heard) return;
-    releaseMic(active);
+    stopMic();
     if (heard.length > 240) {
       $("voice-note").textContent = "فرمان طولانی بود؛ درخواست را کوتاه‌تر بگو.";
       return;
@@ -425,26 +440,67 @@ $("listen").addEventListener("click", async () => {
     $("voice-note").textContent = "متن تشخیص‌داده‌شده در کادر فرمان است.";
     execute();
   };
+  try { active.start(); } catch (error) {
+    recognitionError(error.name === "NotAllowedError" ? "not-allowed" : undefined, local);
+  }
+}
+
+async function listen(useBrowser = false) {
+  if (!connected || request || microphone) return;
+  if (!wantVoice() && !wantRubika()) {
+    $("voice-note").textContent = "اول روش دریافت نتیجه را انتخاب کن.";
+    return;
+  }
+  if (!Recognition) {
+    offerSpeechOptions("تشخیص مستقیم صدا در این مرورگر در دسترس نیست. از میکروفون صفحه‌کلید استفاده کن.");
+    return;
+  }
+  stopSpeaking();
+  $("speech-options").hidden = true;
+  const session = {};
+  microphone = session;
+  $("listen-label").textContent = "توقف شنیدن";
+  $("listen").setAttribute("aria-pressed", "true");
+  $("voice-note").textContent = "در حال آماده‌کردن میکروفون…";
+  const local = !useBrowser && (config.live || (!config.demo && config.kind !== "site"));
+  session.timer = setTimeout(() => {
+    if (microphone === session) offerSpeechOptions("زمان دریافت فرمان تمام شد. دوباره امتحان کن یا از صفحه‌کلید استفاده کن.", local && config.live);
+  }, 25000);
+  if (!local) {
+    startRecognition(session, false);
+    return;
+  }
   try {
-    if (config.live || (!config.demo && config.kind !== "site")) {
-      let localReady = false;
-      if ("processLocally" in active && typeof Recognition.available === "function") {
-        try { localReady = await Recognition.available({langs: ["fa-IR"], processLocally: true}) === "available"; }
-        catch { /* The user may explicitly allow the browser fallback. */ }
+    if (typeof Recognition.available === "function") {
+      const active = new Recognition();
+      if ("processLocally" in active) {
+        const status = await Recognition.available({langs: ["fa-IR"], processLocally: true});
+        if (microphone !== session) return;
+        if (status === "available") {
+          startRecognition(session, true, active);
+          return;
+        }
       }
-      if (!localReady && !(config.live && $("allow-browser-speech").checked)) {
-        if (microphone !== active) return;
-        releaseMic(active);
-        $("voice-note").textContent = config.live ? "تشخیص فارسی روی دستگاه آماده نیست. فرمان را بنویس یا اجازهٔ تشخیص در سرویس مرورگر را فعال کن."
-          : "تشخیص فارسی روی دستگاه آماده نیست؛ برای این فایل، فرمان را تایپ کن.";
-        return;
-      }
-      if (localReady) active.processLocally = true;
     }
-    if (microphone !== active) return;
-    $("voice-note").textContent = "در حال شنیدن…";
-    active.start();
-  } catch { active.onerror(); }
+  } catch { /* Check whether the session can show alternatives. */ }
+  if (microphone === session) {
+    offerSpeechOptions("تشخیص فارسی روی دستگاه آماده نیست. یکی از راه‌های زیر را انتخاب کن.", config.live);
+  }
+}
+
+$("listen").addEventListener("click", () => {
+  if (!microphone) return listen();
+  stopMic();
+  $("voice-note").textContent = "شنیدن فرمان متوقف شد.";
+});
+$("start-browser-speech").addEventListener("click", () => {
+  if (config?.live && !$("speech-options").hidden && !$("browser-speech").hidden) return listen(true);
+});
+$("keyboard-dictation").addEventListener("click", () => {
+  if (!connected) return;
+  stopMic();
+  $("voice-note").textContent = "میکروفون صفحه‌کلید را بزن و فرمان را بگو. بعد از بررسی متن، «اجرا» را بزن.";
+  $("transcript").focus();
 });
 
 $("run").addEventListener("click", () => { stopMic(); execute(); });
